@@ -1,0 +1,1 @@
+ALTER TABLE "pratos" ADD COLUMN "tempo_preparo_min" integer;

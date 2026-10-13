@@ -1,0 +1,342 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1775873569706,
+      "tag": "20260411021249_parallel_grim_reaper",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1775875522591,
+      "tag": "20260411024522_dapper_zuras",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1776383716990,
+      "tag": "20260416235516_ambiguous_goliath",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1776390273066,
+      "tag": "20260417014433_third_lyja",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1776393958804,
+      "tag": "20260417024558_public_purifiers",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1776394304616,
+      "tag": "20260417025144_smooth_bloodstorm",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1776524903290,
+      "tag": "20260418150823_left_pestilence",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1776528236549,
+      "tag": "20260418160356_even_angel",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1776528561445,
+      "tag": "20260418160921_previous_hiroim",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1776600827109,
+      "tag": "20260419121347_freezing_scarlet_witch",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1776628456484,
+      "tag": "20260419195416_sweet_the_liberteens",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1776715090624,
+      "tag": "20260420195810_harsh_slyde",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1776868664062,
+      "tag": "20260422143744_quiet_lilith",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1776875817088,
+      "tag": "20260422163657_dazzling_giant_girl",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1777057205046,
+      "tag": "20260424190005_thankful_veda",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1785184565095,
+      "tag": "20260727203605_great_quentin_quire",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1745884800000,
+      "tag": "20260429000000_add_restaurante_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1745884801000,
+      "tag": "20260429000001_backfill_restaurante_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1785191443153,
+      "tag": "20260727223043_black_queen_noir",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1785192058749,
+      "tag": "20260727224058_optimal_mongu",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1785192206292,
+      "tag": "20260727224326_perpetual_vampiro",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1785192317221,
+      "tag": "20260727224517_elite_abomination",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1785192500000,
+      "tag": "20260727225000_add_restaurante_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1785192538851,
+      "tag": "20260727224858_quick_stick",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1785193163147,
+      "tag": "20260727225923_unusual_doctor_doom",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1785196792403,
+      "tag": "20260727235952_wealthy_sauron",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1785249601036,
+      "tag": "20260728144001_spotty_thunderbolt",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1785258852026,
+      "tag": "20260728171412_petite_wild_pack",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1785282168893,
+      "tag": "20260728234248_curved_lorna_dane",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1785286800000,
+      "tag": "20260729120000_add_subscription_columns",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1785283469358,
+      "tag": "20260729000429_broken_eternity",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1785286060685,
+      "tag": "20260729004740_reflective_tana_nile",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1785615785653,
+      "tag": "20260801202305_wet_eternity",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1786134985036,
+      "tag": "20260807203625_melodic_scorpion",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1786629445901,
+      "tag": "20260813135725_spooky_zemo",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1786907357750,
+      "tag": "20260816190917_young_fabian_cortez",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1787594400000,
+      "tag": "20260824180000_backfill_usuarios_legacy",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1789500734023,
+      "tag": "20260915193214_small_squadron_supreme",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1789500891446,
+      "tag": "20260915193451_thin_jack_flag",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1789500956157,
+      "tag": "20260915193556_crazy_black_crow",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1789584428743,
+      "tag": "20260916184708_closed_dorian_gray",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1789662570560,
+      "tag": "20260917162930_red_wolfsbane",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1789665985597,
+      "tag": "20260917172625_needy_wendigo",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1790358735019,
+      "tag": "20260925175215_sweet_hydra",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1790704778409,
+      "tag": "20260929175938_cancelamento_pedido",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1791401818165,
+      "tag": "20261007193658_round_starjammers",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1791555922066,
+      "tag": "20261009142522_restaurante_id_cnpj",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1791761640763,
+      "tag": "20261011233400_short_human_robot",
+      "breakpoints": true
+    }
+  ]
+}
