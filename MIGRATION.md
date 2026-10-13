@@ -10,7 +10,12 @@
 - Historical chat reviewed as reference only: restaurant management, Portuguese UI, role-based accounts; latest exchanges report duplicate mode-hook declarations and an unfinished five-file replacement. No remote source replacement or GitHub synchronization is performed here.
 
 ## Validation
-Pending frozen installation, typecheck, native builds and simulator interaction.
+- Frozen baseline installation passed with pnpm 9.15.9; lockfile unchanged during baseline installation.
+- Added exact prerequisites from installed Expo 54.0.37 bundledNativeModules.json: expo-dev-client 6.0.21 and @expo/fingerprint 0.15.5. Added missing optional polyfill dependencies @stardazed/streams-text-encoding 1.0.2 and @ungap/structured-clone 1.3.2. Reviewed manifest/lock diff: all pre-existing direct dependency locked versions unchanged.
+- Added a typecheck script. Corrected unsupported iOS symbol event props using a Pressable wrapper, corrected shared list icon props, removed an unsupported swipeable prop and two obsolete ts-expect-error comments. No restaurant flow redesign.
+- `bun run typecheck` passed.
+- `expo install --check` reports preserved baseline mismatches: datetimepicker 8.6.0 vs 8.4.4; RN 0.81.4 vs 0.81.5; gesture-handler 2.32.0 vs ~2.28.0; safe-area-context 5.9.1 vs ~5.6.0; SVG 15.15.5 vs 15.12.1; webview 13.17.0 vs 13.15.0. No automatic fix/runtime upgrade performed. react-leaflet also declares React 18 peers against preserved React 19.1.0; Web untested.
+- Native builds and simulator interaction pending.
 
 ## Service bindings
 - Existing Specular project `proj_VYBAkYDNNJQvQgPVQsU2H` is kept, not recreated.
