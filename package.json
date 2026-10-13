@@ -94,5 +94,6 @@
   "resolutions": {
     "@expo/prebuild-config": "latest"
   },
+  "packageManager": "pnpm@9.15.9",
   "private": true
 }
