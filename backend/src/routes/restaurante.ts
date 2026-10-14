@@ -389,7 +389,7 @@ export function registerRestauranteRoutes(app: App) {
       if (!MODO_COMANDA_ADMIN_ROLES.includes(userRole)) {
         app.logger.warn(
           { userId: authUser.id, detectedRole: userRole, permittedRoles: MODO_COMANDA_ADMIN_ROLES },
-          "User role not permitted to change comanda mode"
+          "modo_comanda: troca recusada, papel sem permissão"
         );
         return await reply.code(403).send({ error: "Você não tem permissão para esta ação." });
       }
