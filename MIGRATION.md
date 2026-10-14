@@ -44,5 +44,13 @@ Observed startup issue: SecureStore read reports 'A required entitlement is not 
 - Successful login, role-specific restaurant operations, saved sessions, shared list component interactions, billing, fiscal services and software-keyboard layout were not tested. No credentials recovered from history were used.
 - Android builder must support the preserved pnpm lock graph for Android verification. No workaround lock or runtime upgrade was introduced.
 
+## Authorized Android build compatibility migration — 2026-10-14
+- After repeated Android exit 42 failures, the user explicitly chose a separate migration to a supported dependency format, retaining the original lockfile and checking version changes. This supersedes the initial migration's package-manager preservation restriction for this separate compatibility step only.
+- Tested Bun 1.3.14 (installed exact version). Generated root bun.lock with `bun install --lockfile-only --ignore-scripts`; Bun explicitly reported migration from pnpm-lock.yaml. Original pnpm-lock.yaml and backend/bun.lock remain untouched.
+- Compared all unique package name/version pairs: 1,387 before and after; zero added, zero missing; all direct dependency versions match. Expo remains 54.0.37; React Native remains 0.81.4; original ranges and resolution override retained. This checks package versions, not equivalence of every package manager's peer layout.
+- Frozen Bun installation and typecheck passed. However, build_mobile_preview refused source checkpoint: 'Legacy migration runtime changed: the original package manager or recorded version was replaced. Restore the imported baseline; stage runtime upgrades in a separate session after explicit user approval.' No iOS or Android build was submitted for this attempt, so no new native/runtime verification occurred.
+- Restored package.json to pnpm@9.15.9 and reinstalled with frozen pnpm lockfile; typecheck passed again. The conversion is staged only as `migration-candidates/bun-1.3.14.lock`, NOT an active root lockfile. Requires a separate supported migration session/checkpoint approval before adopting. User approval is recorded above; do not ask for the same approval again.
+- No backend/configuration/data changes. Android remains blocked by the previously recorded builder limitation; iOS was not newly verified this turn.
+
 ## Rollback
 Revert migration commits to the preserved imported baseline, or reopen the untouched original project.
