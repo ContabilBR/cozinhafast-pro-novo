@@ -6,6 +6,9 @@ import { requireAuth as customRequireAuth, requireTenant, requireRole } from "..
 import { validarRestauranteParaNfce } from "../utils/fiscal-payloads.js";
 import { cnpjValido, idEhCnpj } from "../utils/cnpj.js";
 
+// Papéis que podem trocar o modo de comandas do restaurante
+const PAPEIS_TROCA_MODO_COMANDA = ["administrador", "admin", "gerente", "manager", "superadmin", "super_admin"];
+
 interface UpdateRestauranteBody {
   nome: string;
   filial?: string;
@@ -353,12 +356,12 @@ export function registerRestauranteRoutes(app: App) {
     }
   );
 
-  // PUT /api/restaurante/modo-comanda - só o administrador altera; bloqueado com comanda de mesa aberta
+  // PUT /api/restaurante/modo-comanda - administrador, admin ou gerente alteram; bloqueado com comanda de mesa aberta
   app.fastify.put<{ Body: { modo_comanda: string } }>(
     "/api/restaurante/modo-comanda",
     {
       schema: {
-        description: "Change the comanda mode of the restaurant (administrador only; blocked while there are open mesa comandas)",
+        description: "Change the comanda mode of the restaurant (administrador, admin or gerente; blocked while there are open mesa comandas)",
         tags: ["restaurante"],
         body: { type: "object", required: ["modo_comanda"], properties: { modo_comanda: { type: "string" } } },
         response: {
@@ -380,7 +383,16 @@ export function registerRestauranteRoutes(app: App) {
     ) => {
       const authUser = await customRequireAuth(app, request, reply);
       if (!authUser) return;
-      if (!(await requireRole(authUser, ["administrador"], reply))) return;
+      // Papel normalizado (sem espaços e sem diferenciar maiúsculas). Quando recusa, registra no log
+      // o papel que o servidor viu, para o motivo ficar visível se acontecer de novo.
+      const papel = String(authUser.role ?? "").trim().toLowerCase();
+      if (!PAPEIS_TROCA_MODO_COMANDA.includes(papel)) {
+        app.logger.warn(
+          { userId: authUser.id, papel, permitidos: PAPEIS_TROCA_MODO_COMANDA },
+          "modo_comanda: troca recusada, papel sem permissão"
+        );
+        return await reply.code(403).send({ error: "Você não tem permissão para esta ação." });
+      }
 
       try {
         let tenantId: string;
