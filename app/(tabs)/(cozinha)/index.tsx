@@ -1035,14 +1035,17 @@ export default function CozinhaScreen() {
   // Comandas ativas (não canceladas) para contagens e fila
   const comandasAtivas = comandas.filter(c => c.status !== "cancelada" && c.status !== "cancelado");
 
-  const deliveryCount = comandasAtivas.filter(c => isDelivery(c)).length;
-
-  const filaComandas = comandasAtivas
-    .filter((c) =>
-      (Array.isArray(c.pedidos) ? c.pedidos : []).some(
-        (p) => p.status === "pendente" || p.status === "em_preparo"
-      )
+  // Comandas que realmente têm item aguardando preparo (pendente ou em preparo).
+  // O contador de delivery usa esta mesma base da fila, para nunca divergir da lista.
+  const comandasNaFila = comandasAtivas.filter((c) =>
+    (Array.isArray(c.pedidos) ? c.pedidos : []).some(
+      (p) => p.status === "pendente" || p.status === "em_preparo"
     )
+  );
+
+  const deliveryCount = comandasNaFila.filter(c => isDelivery(c)).length;
+
+  const filaComandas = comandasNaFila
     .filter(c => {
       if (filtroTipo === "mesas") return !isDelivery(c) && !isBalcao(c);
       if (filtroTipo === "delivery") return isDelivery(c);
