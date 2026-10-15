@@ -7,9 +7,9 @@
     "icon": "./assets/images/app-icon-bip.png",
     "userInterfaceStyle": "automatic",
     "splash": {
-      "image": "./assets/images/app-icon-bip.png",
+      "image": "./assets/images/splash-cozinhafast.png",
       "resizeMode": "contain",
-      "backgroundColor": "#000000"
+      "backgroundColor": "#FF4713"
     },
     "ios": {
       "supportsTablet": true,
@@ -23,10 +23,6 @@
       }
     },
     "android": {
-      "adaptiveIcon": {
-        "foregroundImage": "./assets/images/app-icon-bip.png",
-        "backgroundColor": "#000000"
-      },
       "package": "com.contabilbr.cozinhafastpro",
       "permissions": [
         "BLUETOOTH",

@@ -314,7 +314,7 @@ export default function MesaDetailScreen() {
                         key={c.id}
                         onPress={() => {
                           console.log("[Mesa] Comanda pressionada:", c.id, "nome:", nome);
-                          router.push({ pathname: `/comanda/${c.id}`, params: { mesa_numero: String(mesa?.numero ?? ""), mesa_id: String(mesa?.id ?? "") } });
+                          router.push({ pathname: "/comanda/[id]", params: { id: c.id, mesa_numero: String(mesa?.numero ?? ""), mesa_id: String(mesa?.id ?? "") } });
                         }}
                         style={{
                           backgroundColor: COLORS.surface,
@@ -483,7 +483,7 @@ export default function MesaDetailScreen() {
           {/* Action buttons */}
           {comandaId ? (
             <AnimatedPressable
-              onPress={() => { console.log("[Mesa] Ver comanda pressionado:", comandaId, "mesa_numero:", mesaNumero, "mesa_id:", mesa?.id); router.push({ pathname: `/comanda/${comandaId}`, params: { mesa_numero: String(mesa?.numero ?? ''), mesa_id: String(mesa?.id ?? '') } }); }}
+              onPress={() => { console.log("[Mesa] Ver comanda pressionado:", comandaId, "mesa_numero:", mesaNumero, "mesa_id:", mesa?.id); router.push({ pathname: "/comanda/[id]", params: { id: String(comandaId), mesa_numero: String(mesa?.numero ?? ''), mesa_id: String(mesa?.id ?? '') } }); }}
               style={{ backgroundColor: COLORS.primaryMuted, borderRadius: 14, height: 52, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: COLORS.primary + "30" }}
             >
               <Text style={{ fontFamily: "Outfit_700Bold", fontSize: 16, color: COLORS.primary }}>Ver comanda ativa</Text>

@@ -421,7 +421,7 @@ export default function MesasScreen() {
       return;
     }
     if (isOcupada(mesa.status) && mesa.comanda_id) {
-      router.push({ pathname: `/comanda/${mesa.comanda_id}`, params: { mesa_numero: String(mesa.numero) } });
+      router.push({ pathname: "/comanda/[id]", params: { id: mesa.comanda_id, mesa_numero: String(mesa.numero) } });
     } else if (canOpenComanda(mesa.status)) {
       router.push({ pathname: "/comanda/nova", params: { mesa_id: mesa.id, mesa_numero: String(mesa.numero) } });
     } else {

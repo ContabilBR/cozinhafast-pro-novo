@@ -1,5 +1,4 @@
 import { fetch as expoFetch } from 'expo/fetch';
-// @ts-expect-error — untyped internal RN module
 import { polyfillGlobal } from 'react-native/Libraries/Utilities/PolyfillFunctions';
 
 // Replace global fetch with expo/fetch which supports streaming response bodies

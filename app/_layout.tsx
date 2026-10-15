@@ -1,6 +1,7 @@
 import "react-native-reanimated";
 import React, { useEffect } from "react";
-import { View, ActivityIndicator } from "react-native";
+import { View } from "react-native";
+import { StartupSplash } from "@/components/StartupSplash";
 import { Stack, useRouter, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { SystemBars } from "react-native-edge-to-edge";
@@ -70,11 +71,7 @@ function RootLayoutNav() {
   }, [user, isLoading, mesaClienteConfigured, mesaClienteLoading, segments, router]);
 
   if (isLoading || mesaClienteLoading) {
-    return (
-      <View style={{ flex: 1, backgroundColor: "#1a1a2e", alignItems: "center", justifyContent: "center" }}>
-        <ActivityIndicator size="large" color="#e94560" />
-      </View>
-    );
+    return <StartupSplash />;
   }
 
   return (
@@ -121,13 +118,7 @@ export default function RootLayout() {
     Outfit_700Bold,
   });
 
-  useEffect(() => {
-    if (fontsLoaded) {
-      SplashScreen.hideAsync();
-    }
-  }, [fontsLoaded]);
-
-  if (!fontsLoaded) return null;
+  if (!fontsLoaded) return <StartupSplash />;
 
   return (
     <>

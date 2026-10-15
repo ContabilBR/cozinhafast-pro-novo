@@ -9,6 +9,7 @@ import {
   ScrollView,
 } from "react-native";
 import { useRouter } from "expo-router";
+import { StatusBar } from "expo-status-bar";
 import { useAuth } from "@/contexts/AuthContext";
 import { AnimatedPressable } from "@/components/AnimatedPressable";
 import { TEST_MODE, TEST_ADMIN_EMAIL, TEST_ADMIN_PASSWORD } from "@/constants/testMode";
@@ -130,6 +131,7 @@ export default function AuthScreen() {
   if (isLoading) {
     return (
       <View style={{ flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: BG }}>
+        <StatusBar style="light" />
         <ActivityIndicator color={PRIMARY} size="large" />
       </View>
     );
@@ -137,6 +139,7 @@ export default function AuthScreen() {
 
   return (
     <View style={{ flex: 1, backgroundColor: BG }}>
+      <StatusBar style="light" />
       <ScrollView
         style={{ flex: 1 }}
         contentContainerStyle={{ paddingTop: insets.top + 20, paddingBottom: insets.bottom + 40, paddingHorizontal: 24 }}

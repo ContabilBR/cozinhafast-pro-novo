@@ -1,5 +1,4 @@
 import { Alert } from 'react-native';
-// @ts-expect-error — untyped internal RN module
 import { polyfillGlobal } from 'react-native/Libraries/Utilities/PolyfillFunctions';
 
 // Add global alert() on iOS/Android — it doesn't exist by default in React Native.
