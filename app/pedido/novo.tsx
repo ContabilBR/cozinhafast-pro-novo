@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import {
   View,
   Text,
@@ -7,6 +7,8 @@ import {
   ActivityIndicator,
   FlatList,
   Pressable,
+  KeyboardAvoidingView,
+  Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -61,6 +63,7 @@ export default function NovoPedidoScreen() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const listRef = useRef<FlatList<ApiPrato>>(null);
 
   const fetchData = useCallback(async () => {
     console.log("[NovoPedido] GET /api/pratos e /api/categorias");
@@ -216,6 +219,7 @@ export default function NovoPedidoScreen() {
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.background }} edges={["top", "left", "right"]}>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
       {/* Nav bar */}
       <View style={{ flexDirection: "row", alignItems: "center", height: 56, paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: COLORS.border, backgroundColor: COLORS.surface }}>
         <Pressable
@@ -257,50 +261,72 @@ export default function NovoPedidoScreen() {
         </View>
       ) : (
         <FlatList
+          ref={listRef}
           data={filteredPratos}
+          extraData={cart}
+          onScrollToIndexFailed={() => {}}
+          keyboardShouldPersistTaps="handled"
           keyExtractor={(item) => item.id}
           contentContainerStyle={{ padding: 12, paddingBottom: 120, gap: 10 }}
-          renderItem={({ item }) => {
+          renderItem={({ item, index }) => {
             const cartItem = cart.find((c) => c.prato.id === item.id);
             const qty = cartItem?.quantidade ?? 0;
             const price = formatCurrency(item.preco);
             const imageSource = resolveImageSource(item.imagem_url);
             return (
-              <View style={{ backgroundColor: COLORS.surface, borderRadius: 14, borderWidth: 1, borderColor: qty > 0 ? COLORS.primary + "40" : COLORS.border, flexDirection: "row", overflow: "hidden" }}>
-                <View style={{ width: 80, height: 80, backgroundColor: COLORS.surfaceSecondary }}>
-                  {item.imagem_url ? (
-                    <Image source={imageSource} style={{ width: "100%", height: "100%" }} contentFit="cover" />
-                  ) : (
-                    <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
-                      <UtensilsCrossed size={22} color={COLORS.textTertiary} />
+              <View style={{ backgroundColor: COLORS.surface, borderRadius: 14, borderWidth: 1, borderColor: qty > 0 ? COLORS.primary + "40" : COLORS.border, overflow: "hidden" }}>
+                <View style={{ flexDirection: "row" }}>
+                  <View style={{ width: 80, height: 80, backgroundColor: COLORS.surfaceSecondary }}>
+                    {item.imagem_url ? (
+                      <Image source={imageSource} style={{ width: "100%", height: "100%" }} contentFit="cover" />
+                    ) : (
+                      <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+                        <UtensilsCrossed size={22} color={COLORS.textTertiary} />
+                      </View>
+                    )}
+                  </View>
+                  <View style={{ flex: 1, padding: 12, justifyContent: "space-between" }}>
+                    <View>
+                      <Text numberOfLines={1} style={{ fontFamily: "Outfit_600SemiBold", fontSize: 14, color: COLORS.text }}>{item.nome}</Text>
+                      <Text style={{ fontFamily: "Outfit_700Bold", fontSize: 14, color: COLORS.primary, marginTop: 2 }}>{price}</Text>
                     </View>
-                  )}
-                </View>
-                <View style={{ flex: 1, padding: 12, justifyContent: "space-between" }}>
-                  <View>
-                    <Text numberOfLines={1} style={{ fontFamily: "Outfit_600SemiBold", fontSize: 14, color: COLORS.text }}>{item.nome}</Text>
-                    <Text style={{ fontFamily: "Outfit_700Bold", fontSize: 14, color: COLORS.primary, marginTop: 2 }}>{price}</Text>
-                  </View>
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                    {qty > 0 ? (
-                      <>
-                        <AnimatedPressable
-                          onPress={() => { console.log("[NovoPedido] Remover:", item.nome); removeFromCart(item.id); }}
-                          style={{ width: 28, height: 28, borderRadius: 8, backgroundColor: COLORS.surfaceSecondary, alignItems: "center", justifyContent: "center" }}
-                        >
-                          <Minus size={13} color={COLORS.text} />
-                        </AnimatedPressable>
-                        <Text style={{ fontFamily: "Outfit_700Bold", fontSize: 15, color: COLORS.text, minWidth: 18, textAlign: "center" }}>{qty}</Text>
-                      </>
-                    ) : null}
-                    <AnimatedPressable
-                      onPress={() => { console.log("[NovoPedido] Adicionar:", item.nome); addToCart(item); }}
-                      style={{ width: 28, height: 28, borderRadius: 8, backgroundColor: COLORS.primaryMuted, alignItems: "center", justifyContent: "center" }}
-                    >
-                      <Plus size={13} color={COLORS.primary} />
-                    </AnimatedPressable>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                      {qty > 0 ? (
+                        <>
+                          <AnimatedPressable
+                            onPress={() => { console.log("[NovoPedido] Remover:", item.nome); removeFromCart(item.id); }}
+                            style={{ width: 28, height: 28, borderRadius: 8, backgroundColor: COLORS.surfaceSecondary, alignItems: "center", justifyContent: "center" }}
+                          >
+                            <Minus size={13} color={COLORS.text} />
+                          </AnimatedPressable>
+                          <Text style={{ fontFamily: "Outfit_700Bold", fontSize: 15, color: COLORS.text, minWidth: 18, textAlign: "center" }}>{qty}</Text>
+                        </>
+                      ) : null}
+                      <AnimatedPressable
+                        onPress={() => { console.log("[NovoPedido] Adicionar:", item.nome); addToCart(item); }}
+                        style={{ width: 28, height: 28, borderRadius: 8, backgroundColor: COLORS.primaryMuted, alignItems: "center", justifyContent: "center" }}
+                      >
+                        <Plus size={13} color={COLORS.primary} />
+                      </AnimatedPressable>
+                    </View>
                   </View>
                 </View>
+                {qty > 0 ? (
+                  <TextInput
+                    value={cartItem?.observacao ?? ""}
+                    onChangeText={(t) => updateObservacao(item.id, t)}
+                    onFocus={() => {
+                      // Espera o teclado abrir e leva o cartão para a parte de cima da lista
+                      setTimeout(() => {
+                        listRef.current?.scrollToIndex({ index, viewPosition: 0.1, animated: true });
+                      }, 250);
+                    }}
+                    placeholder="Observação (ex: sem cebola)"
+                    placeholderTextColor={COLORS.textTertiary}
+                    maxLength={200}
+                    style={{ marginHorizontal: 12, marginBottom: 12, backgroundColor: COLORS.surfaceSecondary, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8, fontFamily: "Outfit_400Regular", fontSize: 13, color: COLORS.text }}
+                  />
+                ) : null}
               </View>
             );
           }}
@@ -327,6 +353,7 @@ export default function NovoPedidoScreen() {
           </AnimatedPressable>
         </View>
       ) : null}
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
