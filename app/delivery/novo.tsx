@@ -11,6 +11,8 @@ import {
   Modal,
   ImageSourcePropType,
   Animated,
+  KeyboardAvoidingView,
+  Platform,
 } from "react-native";
 import { Image } from "expo-image";
 import { useRouter } from "expo-router";
@@ -98,6 +100,9 @@ function PratoCard({
   onAdd,
   onIncrement,
   onDecrement,
+  observacao,
+  onChangeObservacao,
+  onFocusObservacao,
   index,
 }: {
   prato: ApiPrato;
@@ -105,6 +110,9 @@ function PratoCard({
   onAdd: () => void;
   onIncrement: () => void;
   onDecrement: () => void;
+  observacao: string;
+  onChangeObservacao: (text: string) => void;
+  onFocusObservacao: () => void;
   index: number;
 }) {
   const COLORS = useColors();
@@ -280,6 +288,30 @@ function PratoCard({
             </AnimatedPressable>
           )}
         </View>
+
+        {/* Observação do item: só aparece para pratos já selecionados */}
+        {inCart && (
+          <TextInput
+            value={observacao}
+            onChangeText={onChangeObservacao}
+            onFocus={onFocusObservacao}
+            placeholder="Observação (ex: sem cebola)"
+            placeholderTextColor={COLORS.textTertiary}
+            maxLength={200}
+            style={{
+              marginTop: 10,
+              backgroundColor: COLORS.surfaceSecondary,
+              borderWidth: 1,
+              borderColor: COLORS.border,
+              borderRadius: 8,
+              paddingHorizontal: 10,
+              paddingVertical: 7,
+              fontSize: 13,
+              fontFamily: "Outfit_400Regular",
+              color: COLORS.text,
+            }}
+          />
+        )}
       </View>
     </Animated.View>
   );
@@ -312,6 +344,9 @@ function DishSelectorModal({
 
   // Snapshot of itens when modal opened (for discard detection)
   const initialRef = useRef<ItemPedido[]>([]);
+
+  // Lista de pratos (para rolar até o campo de observação quando o teclado abre)
+  const listRef = useRef<FlatList<ApiPrato>>(null);
 
   // Load pratos once when modal opens
   const fetchPratos = useCallback(async () => {
@@ -420,6 +455,15 @@ function DishSelectorModal({
     });
   };
 
+  const getDraftObs = (pratoId: string) =>
+    draft.find((i) => i.prato_id === pratoId)?.observacao ?? "";
+
+  const updateDraftObservacao = (pratoId: string, text: string) => {
+    setDraft((prev) =>
+      prev.map((i) => (i.prato_id === pratoId ? { ...i, observacao: text } : i))
+    );
+  };
+
   // ── Category badge counts ────────────────────────────────────────────────────
   const categoryCount = useMemo(() => {
     const map: Record<string, number> = {};
@@ -441,7 +485,13 @@ function DishSelectorModal({
     if (draft.length !== init.length) return true;
     for (const d of draft) {
       const orig = init.find((i) => i.prato_id === d.prato_id);
-      if (!orig || orig.quantidade !== d.quantidade) return true;
+      if (
+        !orig ||
+        orig.quantidade !== d.quantidade ||
+        (orig.observacao ?? "") !== (d.observacao ?? "")
+      ) {
+        return true;
+      }
     }
     return false;
   };
@@ -471,7 +521,9 @@ function DishSelectorModal({
 
   const handleCommit = () => {
     console.log("[NovoDelivery] Modal: concluir pressionado, itens:", draft.length, "total:", draftTotalQty);
-    onCommit(draft);
+    onCommit(
+      draft.map((i) => ({ ...i, observacao: (i.observacao ?? "").trim() }))
+    );
   };
 
   // ── Render ───────────────────────────────────────────────────────────────────
@@ -484,6 +536,14 @@ function DishSelectorModal({
       onAdd={() => addToDraft(item)}
       onIncrement={() => incrementDraft(item.id)}
       onDecrement={() => decrementDraft(item.id)}
+      observacao={getDraftObs(item.id)}
+      onChangeObservacao={(t) => updateDraftObservacao(item.id, t)}
+      onFocusObservacao={() => {
+        // Espera o teclado abrir e leva o cartão para a parte de cima da lista
+        setTimeout(() => {
+          listRef.current?.scrollToIndex({ index, viewPosition: 0.1, animated: true });
+        }, 250);
+      }}
       index={index}
     />
   );
@@ -518,7 +578,10 @@ function DishSelectorModal({
       statusBarTranslucent
       onRequestClose={handleClose}
     >
-      <View style={{ flex: 1, backgroundColor: COLORS.background }}>
+      <KeyboardAvoidingView
+        style={{ flex: 1, backgroundColor: COLORS.background }}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
         {/* Header */}
         <View
           style={{
@@ -697,9 +760,12 @@ function DishSelectorModal({
           />
         ) : (
           <FlatList
+            ref={listRef}
             data={filteredPratos}
+            extraData={draft}
             keyExtractor={(p) => p.id}
             renderItem={renderItem}
+            onScrollToIndexFailed={() => {}}
             ListEmptyComponent={<ListEmpty />}
             contentContainerStyle={{ paddingTop: 8, paddingBottom: footerHeight + 16 }}
             keyboardShouldPersistTaps="handled"
@@ -749,7 +815,7 @@ function DishSelectorModal({
             </Text>
           </AnimatedPressable>
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -841,7 +907,7 @@ export default function NovoDelivery() {
         itens: itens.map((i) => ({
           prato_id: i.prato_id,
           quantidade: i.quantidade,
-          observacao: i.observacao,
+          observacao: i.observacao?.trim() || undefined,
         })),
         pagamento: {
           momento: pagMomento,
