@@ -6,6 +6,7 @@ import { requireAuth as customRequireAuth, requireTenant, requireRole } from "..
 import { realtimeHub } from "../realtime/hub.js";
 import { cancelarPedido, MOTIVOS_CANCELAMENTO, ROLES_ATENDIMENTO } from "../services/cancelamento-pedido.js";
 import { liberarMesaSeVazia } from "../services/liberar-mesa.js";
+import { lancarItens } from "../services/lancamento-pedidos.js";
 
 interface CreatePedidoBody {
   comanda_id?: string;
@@ -148,12 +149,15 @@ export function registerOrderItemRoutes(app: App) {
     }
   );
 
-  // POST /api/pedidos - Create a new pedido
+  // POST /api/pedidos - Cria um pedido (rota legada: mantida só para os aplicativos já instalados).
+  // O aplicativo atual lança os itens em POST /api/comandas/:id/pedidos (todos de uma vez, tudo ou nada).
+  // As regras ficam em services/lancamento-pedidos.ts.
   app.fastify.post<{ Body: CreatePedidoBody }>(
     "/api/pedidos",
     {
       schema: {
-        description: "Create a new pedido",
+        description:
+          "Cria um pedido em uma comanda aberta (legada; prefira POST /api/comandas/:id/pedidos). O preço vem sempre do cadastro do prato.",
         tags: ["pedidos"],
         body: {
           type: "object",
@@ -163,8 +167,8 @@ export function registerOrderItemRoutes(app: App) {
             comandaId: { type: "string", format: "uuid" },
             prato_id: { type: "string", format: "uuid" },
             pratoId: { type: "string", format: "uuid" },
-            quantidade: { type: "number" },
-            observacao: { type: "string" },
+            quantidade: { type: "integer", minimum: 1, maximum: 99 },
+            observacao: { type: "string", maxLength: 500 },
           },
         },
         response: {
@@ -179,7 +183,7 @@ export function registerOrderItemRoutes(app: App) {
                   prato_id: { type: "string" },
                   quantidade: { type: "number" },
                   preco_unitario: { type: "string" },
-                  observacao: { type: "string" },
+                  observacao: { type: ["string", "null"] },
                   status: { type: "string" },
                   created_at: { type: "string" },
                 },
@@ -187,7 +191,9 @@ export function registerOrderItemRoutes(app: App) {
             },
           },
           400: { type: "object", properties: { error: { type: "string" } } },
+          403: { type: "object", properties: { error: { type: "string" } } },
           404: { type: "object", properties: { error: { type: "string" } } },
+          409: { type: "object", properties: { error: { type: "string" } } },
         },
       },
     },
@@ -210,78 +216,30 @@ export function registerOrderItemRoutes(app: App) {
 
         app.logger.info({ comandaId, pratoId, restauranteId }, "Creating pedido");
 
-        const prato = await app.db
-          .select()
-          .from(schema.pratos)
-          .where(eq(schema.pratos.id, pratoId))
-          .limit(1);
+        const resultado = await lancarItens(app, {
+          restauranteId,
+          comandaId,
+          usuario: { id: session.id, role: session.role },
+          itens: [{ pratoId, quantidade: request.body.quantidade ?? 1, observacao: request.body.observacao ?? null }],
+        });
 
-        if (!prato.length) {
-          return await reply.code(404).send({ error: "Prato not found" });
+        switch (resultado.tipo) {
+          case "itens_invalidos":
+            return await reply.code(400).send({ error: resultado.mensagem });
+          case "comanda_nao_encontrada":
+            return await reply.code(404).send({ error: "Comanda não encontrada" });
+          case "comanda_delivery":
+            return await reply.code(409).send({ error: "Pedido de delivery: use a tela de Delivery." });
+          case "comanda_nao_aberta":
+            return await reply.code(409).send({ error: "Esta comanda não está aberta." });
+          case "sem_permissao":
+            return await reply.code(403).send({ error: "Sem permissão para adicionar itens a esta comanda." });
+          case "prato_indisponivel":
+            return await reply.code(400).send({ error: "Prato indisponível ou não encontrado." });
         }
 
-        const comanda = await app.db
-          .select()
-          .from(schema.comandas)
-          .where(eq(schema.comandas.id, comandaId))
-          .limit(1);
-
-        if (!comanda.length) {
-          return await reply.code(404).send({ error: "Comanda not found" });
-        }
-
-        const quantidade = request.body.quantidade || 1;
-        const precoUnitario = prato[0].preco;
-        const itemTotal = parseFloat(precoUnitario) * quantidade;
-
-        const [pedido] = await app.db
-          .insert(schema.pedidos)
-          .values({
-            comandaId,
-            pratoId,
-            quantidade,
-            precoUnitario,
-            observacao: request.body.observacao,
-            status: "pendente",
-            restauranteId,
-          })
-          .returning();
-
-        const subtotalResult = await app.db
-          .select({
-            subtotal: sql<string>`COALESCE(SUM(quantidade * preco_unitario) FILTER (WHERE status <> 'cancelado'), 0)`,
-          })
-          .from(schema.pedidos)
-          .where(eq(schema.pedidos.comandaId, comandaId));
-
-        const subtotalValue = subtotalResult[0]?.subtotal || "0";
-        const subtotal = parseFloat(String(subtotalValue));
-
-        const comandaData = await app.db
-          .select({ gorjeta: schema.comandas.gorjeta })
-          .from(schema.comandas)
-          .where(eq(schema.comandas.id, comandaId));
-
-        const gorjetaValue = comandaData[0]?.gorjeta || "0";
-        const gorjeta = parseFloat(String(gorjetaValue));
-        const newTotal = (subtotal + gorjeta).toFixed(2);
-
-        await app.db
-          .update(schema.comandas)
-          .set({ subtotal: subtotal.toString(), total: newTotal })
-          .where(eq(schema.comandas.id, comandaId));
-
+        const pedido = resultado.pedidos[0];
         app.logger.info({ pedidoId: pedido.id }, "Pedido created successfully");
-
-        try {
-          realtimeHub.publish(restauranteId, {
-            type: "pedido.created",
-            entityId: pedido.id,
-            occurredAt: new Date().toISOString(),
-          });
-        } catch (err) {
-          app.logger.error({ err }, "Failed to publish pedido.created event");
-        }
 
         return await reply.code(201).send({
           pedido: {
