@@ -112,22 +112,23 @@ export default function NovoPedidoScreen() {
     setSubmitting(true);
     setError("");
     try {
-      console.log("[NovoPedido] POST /api/pedidos (múltiplos itens)");
-      await Promise.all(
-        cart.map((item) =>
-          apiPost("/api/pedidos", {
-            comanda_id,
-            prato_id: item.prato.id,
-            quantidade: item.quantidade,
-            observacao: item.observacao || undefined,
-          })
-        )
-      );
+      console.log("[NovoPedido] POST /api/comandas/" + comanda_id + "/pedidos (lote único)");
+      // Uma única chamada: o servidor grava todos os itens ou nenhum e usa o preço do cadastro do prato
+      await apiPost(`/api/comandas/${comanda_id}/pedidos`, {
+        items: cart.map((item) => ({
+          prato_id: item.prato.id,
+          quantidade: item.quantidade,
+          preco_unitario: item.prato.preco,
+          ...(item.observacao?.trim() ? { observacao: item.observacao.trim() } : {}),
+        })),
+      });
       console.log("[NovoPedido] Pedidos criados com sucesso");
       router.back();
     } catch (e: any) {
       console.error("[NovoPedido] Erro ao enviar:", e);
-      setError("Não foi possível criar o pedido. Tente novamente.");
+      // Mostra o motivo vindo do servidor (comanda fechada, sem permissão, prato indisponível...); erros de validação técnica ficam na mensagem genérica
+      const motivo = [400, 403, 404, 409].includes(e?.status) && typeof e?.message === "string" && !/^(body|params|querystring)\b/.test(e.message) ? e.message : null;
+      setError(motivo ?? "Não foi possível criar o pedido. Tente novamente.");
     } finally {
       setSubmitting(false);
     }
