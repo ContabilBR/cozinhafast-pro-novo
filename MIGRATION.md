@@ -82,5 +82,12 @@ Observed startup issue: SecureStore read reports 'A required entitlement is not 
 - Existing MesaCliente secure-read warning appeared again; underlying error remains uncaptured (React Native registry empty). Do not suppress it or claim persistence fixed. Authenticated backend reads, billing/fiscal flows and Web untested. No data writes.
 - Screenshot `/tmp/argent-artifacts/repo-37f121/20261014-120540-1502/482141AE-35A0-4303-9E63-C505E1C2908A/331828000-1791979639336.png`. Managed build also updated .newly-native-fingerprint; did not edit it manually.
 
+## Lockfile authority repair — 2026-10-15
+- Automated preview preparation reported `Conflicting package-manager lockfiles. Select the authoritative graph in a reviewed migration commit before installing.` No simulator runtime evidence was available: `No active run.cloud agent simulator is linked to this project session.`
+- Authority: preserve the original root pnpm graph and existing `packageManager: pnpm@9.15.9`. Source inventory remains revision `651f81320050abb717b8441288160b5d4de808b5`; Expo resolves to 54.0.37 and React Native remains 0.81.4. No install, dependency resolution, runtime upgrade, backend edit or data write is part of this repair.
+- Move the additive root `bun.lock` to `migration-candidates/bun-root-2026-10-14.lock` without changing any bytes. Its SHA-256 is `8add2bee95b9380e5ad630e8de0bdbd753ace372e2c79e4da6017e6731a77546`, identical to the existing Bun candidate. Preserve both archival copies and every backend lockfile. Root `pnpm-lock.yaml` SHA-256 remains `21bc326b611629c17913cac5ef2fe5d37da965afe25f858ceafa31f36edf871a`.
+- This supersedes the earlier additive-root-lock workaround: two active root graphs are now rejected. Keeping pnpm as the sole active root lock resolves ambiguity, but Android support for this graph must be checked again with the managed builder, not presumed. If the builder still rejects pnpm, report that infrastructure constraint instead of cycling between conflicting locks or changing the package manager.
+- Historical `legacy-chat-history.md` is still absent; the saved migration notes are available. Existing SecureStore warnings and backend refresh limitations are not claimed fixed.
+
 ## Rollback
 Revert migration commits to the preserved imported baseline, or reopen the untouched original project.
