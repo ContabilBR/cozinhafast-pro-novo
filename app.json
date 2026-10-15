@@ -23,10 +23,6 @@
       }
     },
     "android": {
-      "adaptiveIcon": {
-        "foregroundImage": "./assets/images/app-icon-bip.png",
-        "backgroundColor": "#000000"
-      },
       "package": "com.contabilbr.cozinhafastpro",
       "permissions": [
         "BLUETOOTH",
