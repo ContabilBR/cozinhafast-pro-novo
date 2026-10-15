@@ -646,17 +646,12 @@ export function registerOrderRoutes(app: App) {
           return await reply.code(409).send({ error: "Esta comanda não está aberta." });
         }
 
-        // Role check: cozinheiro blocked; garçom only for own comanda; gerente/administrador/admin for any
+        // Role check: cozinheiro blocked. Garçom, gerente e administrador lançam itens em qualquer
+        // comanda aberta do restaurante (o cliente pode pedir a qualquer garçom; o dono da comanda não muda).
         const userRole = authUser.role?.toLowerCase() ?? "";
         if (userRole === "cozinheiro" || userRole === "kitchen") {
           return await reply.code(403).send({ error: "Sem permissão para adicionar itens a esta comanda." });
         }
-        if (userRole === "garcom") {
-          if (comanda.garcomId !== authUser.id) {
-            return await reply.code(403).send({ error: "Sem permissão para adicionar itens a esta comanda." });
-          }
-        }
-        // gerente, administrador, admin can add to any comanda of the tenant — no further check needed
 
         // Validate quantities
         for (const item of request.body.items) {

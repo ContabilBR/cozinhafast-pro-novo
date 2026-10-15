@@ -304,19 +304,16 @@ export default function ComandaDetailScreen() {
     console.log('[ComandaDetail] handleEnviarPedido pressed', { comandaId: id, itemCount: stagedItems.length });
     setSending(true);
     try {
-      console.log('[ComandaDetail] POST /api/pedidos (batch)', stagedItems.length, 'items');
-      await Promise.all(
-        stagedItems.map((item) =>
-          apiPost('/api/pedidos', {
-            comanda_id: id,
-            prato_id: item.pratoId,
-            quantidade: item.quantidade,
-            preco_unitario: item.pratoPreco,
-            observacao: item.observacao || null,
-            status: 'pendente',
-          })
-        )
-      );
+      console.log('[ComandaDetail] POST /api/comandas/' + id + '/pedidos (lote único)', stagedItems.length, 'items');
+      // Uma única chamada: o servidor grava todos os itens ou nenhum e usa o preço do cadastro do prato
+      await apiPost('/api/comandas/' + id + '/pedidos', {
+        items: stagedItems.map((item) => ({
+          prato_id: item.pratoId,
+          quantidade: item.quantidade,
+          preco_unitario: item.pratoPreco,
+          ...(item.observacao?.trim() ? { observacao: item.observacao.trim() } : {}),
+        })),
+      });
       setStagedItems([]);
       console.log('[ComandaDetail] GET /api/pedidos (refresh after send)');
       const pedidosRes = await apiGet<any>('/api/pedidos?comanda_id=' + id);
@@ -327,7 +324,9 @@ export default function ComandaDetailScreen() {
       Alert.alert('Sucesso', 'Pedido enviado para a cozinha!');
       setActiveTab('pedido');
     } catch (e: any) {
-      Alert.alert('Erro', 'Não foi possível enviar o pedido. Tente novamente.');
+      // Mostra o motivo vindo do servidor (comanda fechada, sem permissão, prato indisponível...); erros de validação técnica ficam na mensagem genérica
+      const motivo = [400, 403, 404, 409].includes(e?.status) && typeof e?.message === 'string' && !/^(body|params|querystring)\b/.test(e.message) ? e.message : null;
+      Alert.alert('Erro', motivo ?? 'Não foi possível enviar o pedido. Tente novamente.');
     } finally {
       setSending(false);
     }
