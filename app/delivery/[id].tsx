@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback } from "react";
-import { View, Text, ScrollView, Pressable, Alert, ActivityIndicator, TextInput, Modal } from "react-native";
+import React, { useState, useEffect, useCallback, useRef } from "react";
+import { View, Text, ScrollView, Pressable, Alert, ActivityIndicator, TextInput, Modal, Platform } from "react-native";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -8,9 +8,8 @@ import { apiGet, apiPut } from "@/utils/api";
 import { formatCurrency, formatRelativeTime, parseBRL } from "@/utils/helpers";
 import { formatViaEntrega, formatEtiquetaLacre, imprimirViaDelivery } from "@/utils/deliveryPrinter";
 import { useAuth } from "@/contexts/AuthContext";
-import * as Print from "expo-print";
-import * as FileSystem from "expo-file-system/legacy";
-import * as Sharing from "expo-sharing";
+import { useReceiptPreview } from "@/components/ReceiptPreview";
+import { generateReceiptPdf, printReceiptOnDevice } from "@/utils/receiptPdf";
 import { CampoMoeda } from "@/components/CampoMoeda";
 
 const ETAPA_FLOW = ["pendente", "preparando", "pronto_para_despachar", "saiu_entrega", "entregue"] as const;
@@ -66,6 +65,7 @@ const MOTIVO_LABELS: Record<string, string> = {
 
 export default function DeliveryDetalhes() {
   const COLORS = useColors();
+  const { previewReceipt, previewModal } = useReceiptPreview();
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
   const insets = useSafeAreaInsets();
@@ -90,6 +90,9 @@ export default function DeliveryDetalhes() {
   const [confirmarErro, setConfirmarErro] = useState<string | null>(null);
   const [imprimindo, setImprimindo] = useState(false);
   const [perguntarImpressao, setPerguntarImpressao] = useState(false);
+  const previewAfterDispatch = useRef(false);
+  const dispatchPreviewTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (dispatchPreviewTimer.current) clearTimeout(dispatchPreviewTimer.current); }, []);
 
   const fetch = useCallback(async () => {
     console.log("[DeliveryDetalhes] Fetching delivery order:", id);
@@ -194,6 +197,11 @@ export default function DeliveryDetalhes() {
             bairro: params.bairro,
             pagamento: { jaFoiPago: params.pagamento.jaFoiPago, total: params.total },
           });
+      if (tipo === "via") {
+        await previewReceipt(texto, "Via de entrega");
+        return;
+      }
+      // Seal labels intentionally retain direct printing.
       console.log("[DeliveryDetalhes] Calling imprimirViaDelivery, tipo:", tipo);
       const resultado = await imprimirViaDelivery(texto);
       console.log("[DeliveryDetalhes] imprimirViaDelivery result:", resultado);
@@ -217,27 +225,10 @@ export default function DeliveryDetalhes() {
               text: "Imprimir pelo aparelho",
               onPress: async () => {
                 console.log("[DeliveryDetalhes] Fallback PDF print pressed, tipo:", tipo);
-                const params2 = buildViaParams(data);
-                const texto2 =
-                  tipo === "via"
-                    ? formatViaEntrega(params2)
-                    : formatEtiquetaLacre({
-                        codigo: params2.codigo,
-                        clienteNome: params2.clienteNome,
-                        bairro: params2.bairro,
-                        pagamento: { jaFoiPago: params2.pagamento.jaFoiPago, total: params2.total },
-                      });
-                const escaped = texto2
-                  .replace(/&/g, "&amp;")
-                  .replace(/</g, "&lt;")
-                  .replace(/>/g, "&gt;");
-                const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"/></head><body style="font-family:monospace;font-size:13px;line-height:1.4;white-space:pre;width:280px;background:#fff;color:#000;padding:8px;margin:0;">${escaped}</body></html>`;
                 try {
-                  const { uri } = await Print.printToFileAsync({ html, base64: false });
-                  const dest = (FileSystem.cacheDirectory ?? "") + "via_delivery_" + Date.now() + ".pdf";
-                  await FileSystem.copyAsync({ from: uri, to: dest });
-                  await Sharing.shareAsync(dest, { mimeType: "application/pdf", dialogTitle: "Via de entrega" });
-                  console.log("[DeliveryDetalhes] Fallback PDF shared successfully");
+                  const pdf = await generateReceiptPdf(texto);
+                  await printReceiptOnDevice(pdf);
+                  console.log("[DeliveryDetalhes] Fallback PDF print opened");
                 } catch (err) {
                   console.error("[DeliveryDetalhes] Fallback PDF error:", err);
                 }
@@ -1049,6 +1040,13 @@ export default function DeliveryDetalhes() {
         transparent
         animationType="fade"
         onRequestClose={() => setPerguntarImpressao(false)}
+        onDismiss={() => {
+          // iOS must finish dismissing this native modal before presenting another.
+          if (previewAfterDispatch.current) {
+            previewAfterDispatch.current = false;
+            void handleImprimir("via");
+          }
+        }}
       >
         <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "center", alignItems: "center", padding: 24 }}>
           <View style={{ backgroundColor: COLORS.background, borderRadius: 16, padding: 20, width: "100%" }}>
@@ -1062,7 +1060,17 @@ export default function DeliveryDetalhes() {
                 <Text style={{ color: COLORS.text }}>Agora não</Text>
               </Pressable>
               <Pressable
-                onPress={() => { console.log("[DeliveryDetalhes] Impressao pos-despacho: imprimir"); setPerguntarImpressao(false); handleImprimir("via"); }}
+                onPress={() => {
+                  if (previewAfterDispatch.current || dispatchPreviewTimer.current) return;
+                  console.log("[DeliveryDetalhes] Impressao pos-despacho: visualizar PDF");
+                  previewAfterDispatch.current = Platform.OS === "ios";
+                  setPerguntarImpressao(false);
+                  // Android/web do not provide Modal.onDismiss; wait for the fade.
+                  if (Platform.OS !== "ios") dispatchPreviewTimer.current = setTimeout(() => {
+                    dispatchPreviewTimer.current = null;
+                    void handleImprimir("via");
+                  }, 350);
+                }}
                 style={{ flex: 2, backgroundColor: COLORS.primary, borderRadius: 10, padding: 12, alignItems: "center" }}
               >
                 <Text style={{ color: "white", fontWeight: "600" }}>Imprimir</Text>
@@ -1071,6 +1079,7 @@ export default function DeliveryDetalhes() {
           </View>
         </View>
       </Modal>
+      {previewModal}
     </View>
   );
 }

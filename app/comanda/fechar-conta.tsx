@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { View, Text, ScrollView, Pressable, Alert, ActivityIndicator, TextInput, Share } from "react-native";
+import { View, Text, ScrollView, Pressable, Alert, ActivityIndicator, TextInput } from "react-native";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -7,7 +7,8 @@ import { useColors } from "@/hooks/useColors";
 import { apiGet, apiPost } from "@/utils/api";
 import { formatCurrency } from "@/utils/helpers";
 import { CampoMoeda } from "@/components/CampoMoeda";
-import { printBluetooth, formatReceipt } from "@/utils/printer";
+import { formatReceipt } from "@/utils/printer";
+import { useReceiptPreview } from "@/components/ReceiptPreview";
 
 const ETAPAS = ["resumo", "gorjeta", "divisao", "pagamento"] as const;
 type Etapa = typeof ETAPAS[number];
@@ -21,6 +22,7 @@ const FORMAS = [
 
 export default function FecharContaScreen() {
   const COLORS = useColors();
+  const { previewReceipt, previewModal } = useReceiptPreview();
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
   const insets = useSafeAreaInsets();
@@ -171,6 +173,7 @@ export default function FecharContaScreen() {
 
   return (
     <View style={{ flex: 1, backgroundColor: COLORS.background }}>
+      {previewModal}
       <View style={{ paddingTop: insets.top + 8, paddingHorizontal: 16, paddingBottom: 8, flexDirection: "row", alignItems: "center", gap: 12 }}>
         <Pressable onPress={etapaAnterior}><Ionicons name="arrow-back" size={24} color={COLORS.text} /></Pressable>
         <Text style={{ fontSize: 20, fontWeight: "700", color: COLORS.text }}>Fechar conta</Text>
@@ -253,8 +256,7 @@ export default function FecharContaScreen() {
               preco: parseFloat(p.precoUnitario || p.preco_unitario || "0") * (p.quantidade || 1),
             }));
             const texto = formatReceipt({ restaurante: comanda?.restaurante_nome, mesa: comanda?.mesa_numero, itens: itensRecibo, subtotal, gorjeta: gorjetaValue, total: totalFinal });
-            const imprimiu = await printBluetooth(texto);
-            if (!imprimiu) { await Share.share({ message: texto }); }
+            await previewReceipt(texto, "Conferência de conta da mesa");
           }} style={{ borderWidth: 1, borderColor: COLORS.primary, borderRadius: 12, padding: 14, alignItems: "center", flexDirection: "row", justifyContent: "center", gap: 8, marginBottom: 10 }}>
             <Ionicons name="print-outline" size={20} color={COLORS.primary} />
             <Text style={{ color: COLORS.primary, fontSize: 15, fontWeight: "600" }}>Imprimir conferência</Text>

@@ -1,5 +1,9 @@
 import { Alert } from "react-native";
 
+// Shared paper geometry for Bluetooth text and PDF previews.
+export const RECEIPT_COLUMNS = 32;
+export const RECEIPT_WIDTH_MM = 58;
+
 let ThermalPrinterModule: any = null;
 
 export async function loadPrinterModule() {
@@ -20,7 +24,7 @@ export async function printBluetooth(payload: string): Promise<boolean> {
       return false;
     }
     if (!mod || !mod.printBluetooth) return false;
-    await mod.printBluetooth({ payload, printerWidthMM: 58 });
+    await mod.printBluetooth({ payload, printerWidthMM: RECEIPT_WIDTH_MM });
     return true;
   } catch (err: any) {
     return false;
@@ -29,7 +33,7 @@ export async function printBluetooth(payload: string): Promise<boolean> {
 
 export function formatReceipt(params: { restaurante?: string; mesa?: number | string; itens: { quantidade: number; nome: string; preco: number }[]; subtotal: number; gorjeta: number; total: number; }): string {
   const lines: string[] = [];
-  const w = 32;
+  const w = RECEIPT_COLUMNS;
   const center = (text: string) => { const pad = Math.max(0, Math.floor((w - text.length) / 2)); return " ".repeat(pad) + text; };
   const line = () => "━".repeat(w);
   const row = (left: string, right: string) => { const space = Math.max(1, w - left.length - right.length); return left + " ".repeat(space) + right; };
