@@ -299,6 +299,12 @@ SELECT r.chave AS chave,MAX(r.prato_id::text) AS prato_id,MAX(r.nome) AS nome,MA
 FROM pratos_resolvidos r GROUP BY r.chave`
         ) as any[];
 
+        // Adjustment 1: Guard - validate query1Result is Array
+        if (!Array.isArray(query1Result)) {
+          app.logger.error({ tenantId, query: 'pratos_vendidos', resultType: typeof query1Result }, "Query 1 result is not an array");
+          return await reply.code(500).send({ error: "Não foi possível gerar o relatório de mix de pratos: resultado inválido na consulta de pratos vendidos." });
+        }
+
         // Query 2: Get dishes with no sales
         const query2Result = await (app.db as any).execute(
           sql`${baseVendidos}
@@ -308,6 +314,12 @@ WHERE p.restaurante_id=${tenantId} AND p.disponivel=true
 AND NOT EXISTS (SELECT 1 FROM itens_vendidos i WHERE i.prato_id=p.id AND i.restaurante_id=p.restaurante_id)
 ORDER BY p.nome ASC,p.id ASC LIMIT 50`
         ) as any[];
+
+        // Adjustment 1: Guard - validate query2Result is Array
+        if (!Array.isArray(query2Result)) {
+          app.logger.error({ tenantId, query: 'sem_vendas', resultType: typeof query2Result }, "Query 2 result is not an array");
+          return await reply.code(500).send({ error: "Não foi possível gerar o relatório de mix de pratos: resultado inválido na consulta de pratos sem vendas." });
+        }
 
         // Process Query 1 results: build raw pratos array
         const pratosRaw: Array<{
@@ -319,18 +331,27 @@ ORDER BY p.nome ASC,p.id ASC LIMIT 50`
           faturamento_bruto: number;
         }> = [];
 
-        if (Array.isArray(query1Result)) {
-          for (const row of query1Result) {
-            pratosRaw.push({
-              chave: row.chave || '',
-              prato_id: row.prato_id || null,
-              nome: row.nome || '',
-              categoria: row.categoria || '',
-              quantidade_bruta: Number(row.quantidade_vendida) || 0,
-              faturamento_bruto: Number(row.faturamento) || 0,
-            });
-          }
+        for (const row of query1Result) {
+          pratosRaw.push({
+            chave: row.chave || '',
+            prato_id: row.prato_id || null,
+            nome: row.nome || '',
+            categoria: row.categoria || '',
+            quantidade_bruta: Number(row.quantidade_vendida) || 0,
+            faturamento_bruto: Number(row.faturamento) || 0,
+          });
         }
+
+        // Adjustment 2: Sort pratosRaw before calculations by faturamento_bruto desc, nome asc, chave asc
+        pratosRaw.sort((a, b) => {
+          if (b.faturamento_bruto !== a.faturamento_bruto) {
+            return b.faturamento_bruto - a.faturamento_bruto;
+          }
+          if (a.nome !== b.nome) {
+            return a.nome.localeCompare(b.nome);
+          }
+          return a.chave.localeCompare(b.chave);
+        });
 
         // Calculate total faturamento for percentual calculations
         const totalFaturamento = pratosRaw.reduce((sum, p) => sum + p.faturamento_bruto, 0);
@@ -383,11 +404,14 @@ ORDER BY p.nome ASC,p.id ASC LIMIT 50`
         abcMap.set('B', { quantidade_pratos: 0, faturamento_bruto: 0 });
         abcMap.set('C', { quantidade_pratos: 0, faturamento_bruto: 0 });
 
-        for (const prato of pratos) {
-          const entry = abcMap.get(prato.classe_abc) || { quantidade_pratos: 0, faturamento_bruto: 0 };
+        // Adjustment 3: Loop using pratosRaw by index, using class from pratos[index] but sum raw faturamento_bruto
+        for (let index = 0; index < pratosRaw.length; index++) {
+          const pratoRaw = pratosRaw[index];
+          const pratoCalculated = pratos[index];
+          const entry = abcMap.get(pratoCalculated.classe_abc) || { quantidade_pratos: 0, faturamento_bruto: 0 };
           entry.quantidade_pratos++;
-          entry.faturamento_bruto += prato.faturamento;
-          abcMap.set(prato.classe_abc, entry);
+          entry.faturamento_bruto += pratoRaw.faturamento_bruto;
+          abcMap.set(pratoCalculated.classe_abc, entry);
         }
 
         const resumo_abc = ['A', 'B', 'C'].map(classe => {
@@ -409,14 +433,20 @@ ORDER BY p.nome ASC,p.id ASC LIMIT 50`
           categoriaMap.set(prato.categoria, entry);
         }
 
+        // Adjustment 4: Sort entries by faturamento_bruto desc, categoria asc BEFORE mapping
         const por_categoria = Array.from(categoriaMap.entries())
+          .sort(([catA, dataA], [catB, dataB]) => {
+            if (dataB.faturamento_bruto !== dataA.faturamento_bruto) {
+              return dataB.faturamento_bruto - dataA.faturamento_bruto;
+            }
+            return catA.localeCompare(catB);
+          })
           .map(([categoria, data]) => ({
             categoria,
             quantidade_vendida: data.quantidade_bruta,
             faturamento: Number(data.faturamento_bruto.toFixed(2)),
             percentual_faturamento: totalFaturamento > 0 ? Number(((data.faturamento_bruto / totalFaturamento) * 100).toFixed(2)) : 0,
-          }))
-          .sort((a, b) => b.faturamento - a.faturamento || a.categoria.localeCompare(b.categoria));
+          }));
 
         // Build mais_vendidos_quantidade (top 10 by quantity)
         const mais_vendidos_quantidade = [...pratosRaw]
