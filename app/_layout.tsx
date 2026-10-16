@@ -116,6 +116,7 @@ export default function RootLayout() {
     Outfit_500Medium,
     Outfit_600SemiBold,
     Outfit_700Bold,
+    ReceiptMono: require('../assets/fonts/ReceiptMono.ttf'),
   });
 
   if (!fontsLoaded) return <StartupSplash />;

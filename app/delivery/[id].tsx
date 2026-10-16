@@ -9,7 +9,6 @@ import { formatCurrency, formatRelativeTime, parseBRL } from "@/utils/helpers";
 import { formatViaEntrega, formatEtiquetaLacre, imprimirViaDelivery } from "@/utils/deliveryPrinter";
 import { useAuth } from "@/contexts/AuthContext";
 import { useReceiptPreview } from "@/components/ReceiptPreview";
-import { generateReceiptPdf, printReceiptOnDevice } from "@/utils/receiptPdf";
 import { CampoMoeda } from "@/components/CampoMoeda";
 
 const ETAPA_FLOW = ["pendente", "preparando", "pronto_para_despachar", "saiu_entrega", "entregue"] as const;
@@ -226,8 +225,8 @@ export default function DeliveryDetalhes() {
               onPress: async () => {
                 console.log("[DeliveryDetalhes] Fallback PDF print pressed, tipo:", tipo);
                 try {
-                  const pdf = await generateReceiptPdf(texto);
-                  await printReceiptOnDevice(pdf);
+                  const { printReceiptTextOnDevice } = await import("@/utils/receiptPdf");
+                  await printReceiptTextOnDevice(texto);
                   console.log("[DeliveryDetalhes] Fallback PDF print opened");
                 } catch (err) {
                   console.error("[DeliveryDetalhes] Fallback PDF error:", err);
@@ -1062,7 +1061,7 @@ export default function DeliveryDetalhes() {
               <Pressable
                 onPress={() => {
                   if (previewAfterDispatch.current || dispatchPreviewTimer.current) return;
-                  console.log("[DeliveryDetalhes] Impressao pos-despacho: visualizar PDF");
+                  console.log("[DeliveryDetalhes] Impressao pos-despacho: visualizar via");
                   previewAfterDispatch.current = Platform.OS === "ios";
                   setPerguntarImpressao(false);
                   // Android/web do not provide Modal.onDismiss; wait for the fade.

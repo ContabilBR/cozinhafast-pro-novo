@@ -1,5 +1,4 @@
 import { printBluetooth, RECEIPT_COLUMNS } from "./printer";
-import { generateReceiptPdf, printReceiptOnDevice, releaseReceiptPdf, shareReceiptPdf } from "./receiptPdf";
 import { Platform } from "react-native";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -267,11 +266,16 @@ export function formatEtiquetaLacre(params: EtiquetaParams): string {
 /** Direct printing is reserved for the seal label. Delivery slips use the preview. */
 export async function imprimirViaDelivery(texto: string): Promise<"bluetooth" | "fallback" | "erro"> {
   try {
-    if (Platform.OS !== "web" && await printBluetooth(texto)) return "bluetooth";
+    if (Platform.OS === "web") {
+      const { printReceiptTextOnDevice } = await import("./receiptPdf");
+      await printReceiptTextOnDevice(texto);
+      return "fallback";
+    }
+    if (await printBluetooth(texto)) return "bluetooth";
+    const { generateReceiptPdf, releaseReceiptPdf, shareReceiptPdf } = await import("./receiptPdf");
     const pdf = await generateReceiptPdf(texto);
     try {
-      if (Platform.OS === "web") await printReceiptOnDevice(pdf);
-      else await shareReceiptPdf(pdf);
+      await shareReceiptPdf(pdf);
       return "fallback";
     } finally { await releaseReceiptPdf(pdf).catch(() => {}); }
   } catch (err) {

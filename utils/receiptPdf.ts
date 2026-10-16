@@ -37,7 +37,28 @@ function paperLines(text: string): string[] {
   });
 }
 
-/** One PDF generator for delivery slips and table checks, on all platforms. */
+// Browser/system-print HTML belongs here, never in the on-screen preview.
+function receiptHtml(text: string, bytes: Uint8Array, size: number): string {
+  const fontBase64 = encodeToBase64(bytes);
+  const escape = (value: string) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return `<!doctype html><html><head><meta charset="utf-8"><style>@font-face{font-family:ReceiptMono;src:url(data:font/ttf;base64,${fontBase64})} @page{size:58mm auto;margin:3mm}html,body{margin:0;padding:0;color:#000;background:#fff}pre{font-family:ReceiptMono,monospace;font-size:${size}pt;line-height:${size * 1.35}pt;width:52mm;white-space:pre;margin:0;font-variant-ligatures:none}</style></head><body><pre>${escape(text)}</pre></body></html>`;
+}
+
+/** Called only after confirming web print or choosing 'Imprimir pelo aparelho'. */
+export async function printReceiptTextOnDevice(text: string): Promise<void> {
+  if (Platform.OS === 'web') {
+    // The browser dialog needs HTML, not a PDF/Blob or temporary file.
+    const bytes = await loadReceiptFont();
+    const size = (WIDTH - MARGIN * 2) / (RECEIPT_COLUMNS * (1233 / 2048));
+    await Print.printAsync({ html: receiptHtml(text, bytes, size) });
+    return;
+  }
+  const pdf = await generateReceiptPdf(text);
+  try { await printReceiptOnDevice(pdf); }
+  finally { await releaseReceiptPdf(pdf).catch(() => {}); }
+}
+
+/** PDF generation is retained only for system-print/share fallbacks, not preview. */
 export async function generateReceiptPdf(text: string): Promise<ReceiptPdf> {
   const doc = await PDFDocument.create();
   doc.registerFontkit(fontkit);
@@ -57,11 +78,7 @@ export async function generateReceiptPdf(text: string): Promise<ReceiptPdf> {
     });
   }
   const base64 = await doc.saveAsBase64();
-  // Browser printing uses the identical line grid and embedded font. Only this
-  // utility owns receipt HTML; native device printing uses the generated PDF.
-  const fontBase64 = encodeToBase64(bytes);
-  const escape = (value: string) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const html = `<!doctype html><html><head><meta charset="utf-8"><style>@font-face{font-family:ReceiptMono;src:url(data:font/ttf;base64,${fontBase64})} @page{size:58mm auto;margin:3mm}html,body{margin:0;padding:0;color:#000;background:#fff}pre{font-family:ReceiptMono,monospace;font-size:${size}pt;line-height:${leading}pt;width:52mm;white-space:pre;margin:0;font-variant-ligatures:none}</style></head><body><pre>${escape(lines.join('\n'))}</pre></body></html>`;
+  const html = receiptHtml(lines.join('\n'), bytes, size);
   let uri: string;
   if (Platform.OS === 'web') {
     const buffer = Uint8Array.from(decodeFromBase64(base64)).buffer;

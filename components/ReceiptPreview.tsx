@@ -1,36 +1,30 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useColors } from '@/hooks/useColors';
-import ReceiptPdfView from './ReceiptPdfView';
-import { printBluetooth } from '@/utils/printer';
-import { generateReceiptPdf, printReceiptOnDevice, ReceiptPdf, releaseReceiptPdf, shareReceiptPdf } from '@/utils/receiptPdf';
+import { printBluetooth, RECEIPT_COLUMNS, RECEIPT_WIDTH_MM } from '@/utils/printer';
 
 type Request = { text: string; title: string };
 type Props = { request: Request; onClose: (printed: boolean) => void };
-const errorMessage = (error: unknown) => error instanceof Error ? error.message : 'Não foi possível abrir o PDF. Tente novamente.';
+const errorMessage = (error: unknown) => error instanceof Error ? error.message : 'Não foi possível imprimir. Tente novamente.';
 
 function ReceiptPreview({ request, onClose }: Props) {
   const colors = useColors();
-  const [pdf, setPdf] = useState<ReceiptPdf | null>(null);
-  const [loaded, setLoaded] = useState(false);
+  // The snapshot shown here is also the exact Bluetooth payload. Do not trim,
+  // reformat, wrap or regenerate it when the user confirms printing.
+  const { text, title } = request;
+  const lines = text.split('\n');
+  const columns = lines.reduce((max, line) => Math.max(max, Array.from(line).length), RECEIPT_COLUMNS);
+  const [paperWidth, setPaperWidth] = useState(0);
+  // ReceiptMono is bundled DejaVu Sans Mono (advance 0.60205 em). A small
+  // allowance prevents subpixel rounding from clipping the final column.
+  // Extra-long original lines fit too, without changing the restaurant header.
+  const fontSize = paperWidth > 0 ? (paperWidth - 1) / (columns * 0.61) : 1;
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const lock = useRef(false);
   const alive = useRef(true);
-  const [attempt, setAttempt] = useState(0);
-  useEffect(() => () => { alive.current = false; }, []);
-  useEffect(() => {
-    let active = true;
-    let generated: ReceiptPdf | undefined;
-    setPdf(null); setLoaded(false); setError('');
-    generateReceiptPdf(request.text).then(async value => {
-      generated = value;
-      if (active) setPdf(value);
-      else await releaseReceiptPdf(value).catch(() => {});
-    }).catch(value => { if (active) setError(errorMessage(value)); });
-    return () => { active = false; if (generated) void releaseReceiptPdf(generated).catch(() => {}); };
-  }, [request.text, attempt]);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
 
   const deviceFallback = () => new Promise<'retry' | 'device' | 'cancel'>(resolve => {
     Alert.alert('Impressora não disponível', 'Não foi possível imprimir via Bluetooth. O que deseja fazer?', [
@@ -40,51 +34,51 @@ function ReceiptPreview({ request, onClose }: Props) {
     ], { cancelable: true, onDismiss: () => resolve('cancel') });
   });
   const print = async () => {
-    if (!pdf || !loaded || lock.current) return;
-    lock.current = true; setBusy(true);
+    if (paperWidth <= 0 || lock.current) return;
+    lock.current = true; setBusy(true); setError('');
     try {
-      if (Platform.OS === 'web') { await printReceiptOnDevice(pdf); return; }
+      // Load PDF/system-print code only after an explicit print confirmation.
+      if (Platform.OS === 'web') {
+        const { printReceiptTextOnDevice } = await import('@/utils/receiptPdf');
+        await printReceiptTextOnDevice(text);
+        return;
+      }
       while (alive.current) {
-        if (await printBluetooth(pdf.text)) { onClose(true); return; }
+        if (await printBluetooth(text)) { onClose(true); return; }
         const choice = await deviceFallback();
         if (choice === 'cancel' || !alive.current) return;
-        if (choice === 'device') { await printReceiptOnDevice(pdf); return; }
+        if (choice === 'device') {
+          const { printReceiptTextOnDevice } = await import('@/utils/receiptPdf');
+          await printReceiptTextOnDevice(text);
+          return;
+        }
       }
     } catch (value) {
-      // A cancelled system print panel leaves the preview available, never
-      // automatically retries Bluetooth or consumes another sheet of paper.
+      // Cancelling a system print panel never triggers a Bluetooth retry.
       if (alive.current) setError(errorMessage(value));
     } finally { lock.current = false; if (alive.current) setBusy(false); }
-  };
-  const share = async () => {
-    if (!pdf || lock.current) return;
-    lock.current = true; setBusy(true);
-    try { await shareReceiptPdf(pdf); }
-    catch (value) { if ((value as { name?: string })?.name !== 'AbortError' && alive.current) setError(errorMessage(value)); }
-    finally { lock.current = false; if (alive.current) setBusy(false); }
   };
   return <Modal visible animationType="slide" onRequestClose={() => { if (!lock.current) onClose(false); }}>
     <SafeAreaView style={[styles.page, { backgroundColor: colors.background }]}>
       <View style={styles.header}>
-        <Text style={[styles.title, { color: colors.text }]}>Pré-visualização em PDF</Text>
-        <Text style={{ color: colors.textSecondary }}>{request.title} · 58 mm · 32 colunas</Text>
-        <Text style={{ color: colors.textSecondary }}>Confira a via. Nada é impresso ao abrir esta tela.</Text>
+        <Text style={[styles.title, { color: colors.text }]}>Pré-visualização da impressão</Text>
+        <Text style={{ color: colors.textSecondary }}>{title} · {RECEIPT_WIDTH_MM} mm · {RECEIPT_COLUMNS} colunas</Text>
+        <Text style={{ color: colors.textSecondary }}>Confira a via antes de imprimir.</Text>
       </View>
-      <View style={styles.document}>
-        {pdf && <ReceiptPdfView uri={pdf.uri} onLoad={() => setLoaded(true)} onError={value => { setLoaded(false); setError(errorMessage(value)); }} />}
-        {!loaded && !error && <View style={styles.loading}><ActivityIndicator color={colors.primary} /><Text>Preparando PDF…</Text></View>}
-      </View>
-      {!!error && <View style={styles.error} accessibilityLiveRegion="polite"><Text style={{ color: colors.text }}>{error}</Text>
-        {!loaded && <Pressable accessibilityRole="button" onPress={() => setAttempt(value => value + 1)} style={styles.retry}><Text style={{ color: colors.primary }}>Gerar PDF novamente</Text></Pressable>}
-      </View>}
+      <ScrollView style={styles.document} contentContainerStyle={styles.roll}>
+        <View style={styles.paper}>
+          <View onLayout={event => setPaperWidth(event.nativeEvent.layout.width)}>
+            {paperWidth > 0 && lines.map((line, index) => <Text key={index} allowFontScaling={false}
+              numberOfLines={1} ellipsizeMode="clip"
+              style={[styles.receiptText, { fontSize, lineHeight: fontSize * 1.35 }]}>{line || ' '}</Text>)}
+          </View>
+        </View>
+      </ScrollView>
+      {!!error && <View style={styles.error} accessibilityLiveRegion="polite"><Text style={{ color: colors.text }}>{error}</Text></View>}
       <View style={styles.actions}>
-        <Pressable accessibilityRole="button" disabled={busy || !loaded} onPress={print}
-          style={[styles.button, { backgroundColor: colors.primary, opacity: busy || !loaded ? 0.45 : 1 }]}>
+        <Pressable accessibilityRole="button" accessibilityLabel="Imprimir" disabled={busy || paperWidth <= 0} onPress={print}
+          style={[styles.button, { backgroundColor: colors.primary, opacity: busy || paperWidth <= 0 ? 0.45 : 1 }]}>
           {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryLabel}>Imprimir</Text>}
-        </Pressable>
-        <Pressable accessibilityRole="button" disabled={busy || !loaded} onPress={share}
-          style={[styles.button, { borderWidth: 1, borderColor: colors.primary, opacity: busy || !loaded ? 0.45 : 1 }]}>
-          <Text style={[styles.label, { color: colors.primary }]}>Compartilhar PDF</Text>
         </Pressable>
         <Pressable accessibilityRole="button" disabled={busy} onPress={() => onClose(false)} style={styles.button}>
           <Text style={[styles.label, { color: colors.textSecondary, opacity: busy ? 0.45 : 1 }]}>Cancelar</Text>
@@ -111,9 +105,11 @@ export function useReceiptPreview() {
 
 const styles = StyleSheet.create({
   page: { flex: 1 }, header: { padding: 16, gap: 6 }, title: { fontSize: 20, fontWeight: '700' },
-  document: { flex: 1, overflow: 'hidden', backgroundColor: '#e5e7eb' },
-  loading: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', gap: 12, backgroundColor: '#e5e7eb' },
-  error: { paddingHorizontal: 16, paddingTop: 12 }, retry: { paddingVertical: 14 },
+  document: { flex: 1, backgroundColor: '#e5e7eb' }, roll: { padding: 16, alignItems: 'center' },
+  paper: { width: '100%', maxWidth: 420, backgroundColor: '#fff', paddingHorizontal: 16, paddingVertical: 24,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.12, shadowRadius: 5, elevation: 3 },
+  receiptText: { color: '#000', fontFamily: 'ReceiptMono', fontWeight: '400', letterSpacing: 0, includeFontPadding: false },
+  error: { paddingHorizontal: 16, paddingTop: 12 },
   actions: { padding: 12, gap: 4 }, button: { minHeight: 48, justifyContent: 'center', alignItems: 'center', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 12 },
   label: { fontWeight: '600', fontSize: 16 }, primaryLabel: { color: '#fff', fontWeight: '700', fontSize: 16 },
 });

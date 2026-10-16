@@ -1,6 +1,6 @@
 import { Alert } from "react-native";
 
-// Shared paper geometry for Bluetooth text and PDF previews.
+// Shared paper geometry for Bluetooth text, on-screen paper and device printing.
 export const RECEIPT_COLUMNS = 32;
 export const RECEIPT_WIDTH_MM = 58;
 
