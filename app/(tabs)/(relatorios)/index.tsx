@@ -236,6 +236,21 @@ export default function RelatoriosScreen() {
               </View>
               <Ionicons name="chevron-forward" size={20} color={COLORS.textSecondary} />
             </AnimatedPressable>
+            <AnimatedPressable
+              accessibilityRole="button"
+              accessibilityLabel="Cancelamentos. Itens cancelados, perdas e motivos no período selecionado"
+              onPress={() => router.push({ pathname: '/relatorio-detalhe/cancelamentos', params: { periodo } } as any)}
+              style={{ flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: COLORS.surface, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: COLORS.border }}
+            >
+              <View style={{ padding: 10, borderRadius: 12, backgroundColor: COLORS.primaryMuted }}>
+                <Ionicons name="close-circle-outline" size={24} color={COLORS.primary} />
+              </View>
+              <View style={{ flex: 1, gap: 4 }}>
+                <Text style={{ fontFamily: 'Outfit_600SemiBold', fontSize: 16, color: COLORS.text }}>Cancelamentos</Text>
+                <Text style={{ fontFamily: 'Outfit_400Regular', fontSize: 13, color: COLORS.textSecondary }}>Itens cancelados, perdas e motivos</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={COLORS.textSecondary} />
+            </AnimatedPressable>
           </View>
         )}
 
