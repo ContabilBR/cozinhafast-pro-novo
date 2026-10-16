@@ -1533,4 +1533,469 @@ export function registerRelatoriosRoutes(app: App) {
       }
     }
   );
+
+  // GET /api/relatorios/vendas-detalhe - Detailed sales report with hourly, daily, payment, and staff breakdown
+  app.fastify.get(
+    "/api/relatorios/vendas-detalhe",
+    {
+      schema: {
+        description: "Get detailed sales report with breakdown by hour, day of week, payment method, and staff (requires authentication)",
+        tags: ["relatorios"],
+        querystring: {
+          type: "object",
+          properties: {
+            periodo: { type: "string", enum: ["hoje", "7dias", "mes", "personalizado"] },
+            dataInicio: { type: "string" },
+            dataFim: { type: "string" },
+          },
+        },
+        response: {
+          200: {
+            type: "object",
+            properties: {
+              por_hora: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    hora: { type: "integer" },
+                    comandas: { type: "integer" },
+                    faturamento_itens: { type: "number" },
+                    ticket_medio: { type: "number" },
+                  },
+                  required: ["hora", "comandas", "faturamento_itens", "ticket_medio"],
+                },
+              },
+              por_dia_semana: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    dia_semana: { type: "integer" },
+                    nome: { type: "string" },
+                    ocorrencias_no_periodo: { type: "integer" },
+                    comandas: { type: "integer" },
+                    faturamento_itens: { type: "number" },
+                    ticket_medio: { type: "number" },
+                  },
+                  required: ["dia_semana", "nome", "ocorrencias_no_periodo", "comandas", "faturamento_itens", "ticket_medio"],
+                },
+              },
+              formas_pagamento: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    forma: { type: "string", enum: ["pix", "dinheiro", "cartao_credito", "cartao_debito"] },
+                    valor_recebido: { type: "number" },
+                    quantidade_pagamentos: { type: "integer" },
+                    percentual: { type: "number" },
+                    troco: { type: "number" },
+                  },
+                  required: ["forma", "valor_recebido", "quantidade_pagamentos", "percentual", "troco"],
+                },
+              },
+              nao_conciliado: {
+                type: "object",
+                properties: {
+                  comandas_pago_menor: { type: "integer" },
+                  valor_faltante: { type: "number" },
+                  comandas_pago_maior: { type: "integer" },
+                  valor_excedente: { type: "number" },
+                },
+                required: ["comandas_pago_menor", "valor_faltante", "comandas_pago_maior", "valor_excedente"],
+              },
+              por_garcom: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    garcom_id: { type: ["string", "null"] },
+                    nome: { type: "string" },
+                    comandas: { type: "integer" },
+                    faturamento_itens: { type: "number" },
+                    gorjeta_total: { type: "number" },
+                    ticket_medio: { type: "number" },
+                    gorjeta_media_por_comanda_com_gorjeta: { type: "number" },
+                  },
+                  required: ["garcom_id", "nome", "comandas", "faturamento_itens", "gorjeta_total", "ticket_medio", "gorjeta_media_por_comanda_com_gorjeta"],
+                },
+              },
+            },
+            required: ["por_hora", "por_dia_semana", "formas_pagamento", "nao_conciliado", "por_garcom"],
+          },
+          400: { type: "object", properties: { error: { type: "string" } } },
+          401: { type: "object", properties: { error: { type: "string" } } },
+          403: { type: "object", properties: { error: { type: "string" } } },
+          500: { type: "object", properties: { error: { type: "string" } } },
+        },
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const authUser = await customRequireAuth(app, request, reply);
+      if (!authUser) return;
+      if (!(await requireRole(authUser, ["administrador", "gerente"], reply))) return;
+
+      try {
+        const tenantId = requireTenant(authUser);
+        const query = request.query as { periodo?: string; dataInicio?: string; dataFim?: string };
+
+        // Resolve period
+        const { inicio, fim } = resolvePeriodo(query.periodo, query.dataInicio, query.dataFim);
+
+        // Check custom period length (max 366 days)
+        if (query.periodo === "personalizado") {
+          const daysDiff = Math.ceil((fim.getTime() - inicio.getTime()) / (1000 * 60 * 60 * 24));
+          if (daysDiff > 366) {
+            app.logger.warn({ tenantId, daysDiff }, "Custom period exceeds 366 days");
+            return await reply.code(400).send({ error: "O período personalizado não pode ultrapassar 366 dias." });
+          }
+        }
+
+        app.logger.info({ tenantId, periodo: query.periodo, inicio, fim }, "Getting vendas-detalhe report");
+
+        // Fetch hourly breakdown
+        const porHoraResult = await (app.db as any).execute(
+          sql`
+            WITH vendas_atuais AS (
+              SELECT id, restaurante_id, tipo::text, status::text, closed_at, subtotal, gorjeta, total, garcom_id
+              FROM comandas
+              WHERE restaurante_id = ${tenantId} AND closed_at >= ${inicio.toISOString()}::timestamptz AND closed_at < ${fim.toISOString()}::timestamptz
+            ),
+            vendas_historico AS (
+              SELECT id, restaurante_id, 'mesa'::text, status::text, closed_at, subtotal, gorjeta, total, garcom_id
+              FROM comandas_historico
+              WHERE restaurante_id = ${tenantId} AND closed_at >= ${inicio.toISOString()}::timestamptz AND closed_at < ${fim.toISOString()}::timestamptz
+            ),
+            deduplicadas AS (
+              SELECT DISTINCT ON (restaurante_id, id) id, restaurante_id, status, closed_at, CAST(subtotal AS DECIMAL(10,2)) AS subtotal
+              FROM (SELECT * FROM vendas_atuais UNION ALL SELECT * FROM vendas_historico) v
+              ORDER BY restaurante_id, id, tipo DESC
+            ),
+            base_vendas AS (
+              SELECT * FROM deduplicadas WHERE status = 'fechada' AND subtotal > 0
+            )
+            SELECT
+              EXTRACT(HOUR FROM (closed_at AT TIME ZONE 'America/Sao_Paulo'))::integer AS hora,
+              COUNT(*)::integer AS comandas,
+              CAST(SUM(subtotal) AS DECIMAL(10,2)) AS faturamento_itens
+            FROM base_vendas
+            GROUP BY EXTRACT(HOUR FROM (closed_at AT TIME ZONE 'America/Sao_Paulo'))
+          `
+        ) as any[];
+
+        // Fetch daily breakdown
+        const porDiaSemanaResult = await (app.db as any).execute(
+          sql`
+            WITH vendas_atuais AS (
+              SELECT id, restaurante_id, tipo::text, status::text, closed_at, subtotal, gorjeta, total, garcom_id
+              FROM comandas
+              WHERE restaurante_id = ${tenantId} AND closed_at >= ${inicio.toISOString()}::timestamptz AND closed_at < ${fim.toISOString()}::timestamptz
+            ),
+            vendas_historico AS (
+              SELECT id, restaurante_id, 'mesa'::text, status::text, closed_at, subtotal, gorjeta, total, garcom_id
+              FROM comandas_historico
+              WHERE restaurante_id = ${tenantId} AND closed_at >= ${inicio.toISOString()}::timestamptz AND closed_at < ${fim.toISOString()}::timestamptz
+            ),
+            deduplicadas AS (
+              SELECT DISTINCT ON (restaurante_id, id) id, restaurante_id, status, closed_at, CAST(subtotal AS DECIMAL(10,2)) AS subtotal
+              FROM (SELECT * FROM vendas_atuais UNION ALL SELECT * FROM vendas_historico) v
+              ORDER BY restaurante_id, id, tipo DESC
+            ),
+            base_vendas AS (
+              SELECT * FROM deduplicadas WHERE status = 'fechada' AND subtotal > 0
+            )
+            SELECT
+              EXTRACT(DOW FROM (closed_at AT TIME ZONE 'America/Sao_Paulo'))::integer AS dia_semana,
+              COUNT(*)::integer AS comandas,
+              CAST(SUM(subtotal) AS DECIMAL(10,2)) AS faturamento_itens
+            FROM base_vendas
+            GROUP BY EXTRACT(DOW FROM (closed_at AT TIME ZONE 'America/Sao_Paulo'))
+          `
+        ) as any[];
+
+        // Fetch payment methods with reconciliation
+        const pagamentosResult = await (app.db as any).execute(
+          sql`
+            WITH base_vendas_ids AS (
+              WITH vendas_atuais AS (
+                SELECT id, restaurante_id, tipo::text, status::text, closed_at, subtotal, gorjeta, total
+                FROM comandas
+                WHERE restaurante_id = ${tenantId} AND closed_at >= ${inicio.toISOString()}::timestamptz AND closed_at < ${fim.toISOString()}::timestamptz
+              ),
+              vendas_historico AS (
+                SELECT id, restaurante_id, 'mesa'::text, status::text, closed_at, subtotal, gorjeta, total
+                FROM comandas_historico
+                WHERE restaurante_id = ${tenantId} AND closed_at >= ${inicio.toISOString()}::timestamptz AND closed_at < ${fim.toISOString()}::timestamptz
+              ),
+              deduplicadas AS (
+                SELECT DISTINCT ON (restaurante_id, id) id, restaurante_id, status, closed_at, CAST(subtotal AS DECIMAL(10,2)) AS subtotal, CAST(total AS DECIMAL(10,2)) AS total
+                FROM (SELECT * FROM vendas_atuais UNION ALL SELECT * FROM vendas_historico) v
+                ORDER BY restaurante_id, id, tipo DESC
+              )
+              SELECT id, total FROM deduplicadas WHERE status = 'fechada' AND subtotal > 0
+            ),
+            pagamentos_atuais AS (
+              SELECT id, comanda_id, forma_pagamento::text, status::text, CAST(valor AS DECIMAL(10,2)) AS valor, CAST(COALESCE(troco, 0) AS DECIMAL(10,2)) AS troco
+              FROM pagamentos WHERE restaurante_id = ${tenantId}
+            ),
+            pagamentos_historico AS (
+              SELECT id, comanda_id, forma_pagamento::text, 'confirmado'::text, CAST(valor AS DECIMAL(10,2)), CAST(COALESCE(troco, 0) AS DECIMAL(10,2))
+              FROM pagamentos_historico WHERE restaurante_id = ${tenantId}
+            ),
+            pagamentos_dedup AS (
+              SELECT DISTINCT ON (restaurante_id, id) id, comanda_id, forma_pagamento, status, valor, troco
+              FROM (SELECT id, '${tenantId}'::text, comanda_id, forma_pagamento, status, valor, troco FROM pagamentos_atuais UNION ALL SELECT id, '${tenantId}'::text, comanda_id, forma_pagamento, status, valor, troco FROM pagamentos_historico) p
+              ORDER BY restaurante_id, id, status DESC
+            ),
+            pagamentos_confirmados AS (
+              SELECT comanda_id, forma_pagamento, valor, troco FROM pagamentos_dedup
+              WHERE status = 'confirmado' AND comanda_id IN (SELECT id FROM base_vendas_ids)
+            ),
+            formas_agg AS (
+              SELECT forma_pagamento, CAST(SUM(valor) AS DECIMAL(10,2)) AS valor_recebido, COUNT(*)::integer AS quantidade, CAST(SUM(CASE WHEN forma_pagamento = 'dinheiro' THEN troco ELSE 0 END) AS DECIMAL(10,2)) AS troco_total
+              FROM pagamentos_confirmados
+              GROUP BY forma_pagamento
+            ),
+            reconciliacao_por_comanda AS (
+              SELECT
+                bvi.id,
+                bvi.total,
+                COALESCE(SUM(pc.valor), 0) AS pago
+              FROM base_vendas_ids bvi
+              LEFT JOIN pagamentos_confirmados pc ON bvi.id = pc.comanda_id
+              GROUP BY bvi.id, bvi.total
+            )
+            SELECT
+              'resultado'::text AS tipo,
+              CAST(SUM(CASE WHEN pago < total - 0.01 THEN 1 ELSE 0 END) AS INTEGER) AS comandas_faltante,
+              CAST(SUM(CASE WHEN pago < total - 0.01 THEN (total - pago) ELSE 0 END) AS DECIMAL(10,2)) AS valor_faltante,
+              CAST(SUM(CASE WHEN pago > total + 0.01 THEN 1 ELSE 0 END) AS INTEGER) AS comandas_excedente,
+              CAST(SUM(CASE WHEN pago > total + 0.01 THEN (pago - total) ELSE 0 END) AS DECIMAL(10,2)) AS valor_excedente,
+              CAST(SUM(CASE WHEN forma_pagamento = 'pix' THEN valor_recebido ELSE 0 END) AS DECIMAL(10,2)) AS pix_valor,
+              CAST(SUM(CASE WHEN forma_pagamento = 'pix' THEN quantidade ELSE 0 END) AS INTEGER) AS pix_qtd,
+              CAST(SUM(CASE WHEN forma_pagamento = 'dinheiro' THEN valor_recebido ELSE 0 END) AS DECIMAL(10,2)) AS dinheiro_valor,
+              CAST(SUM(CASE WHEN forma_pagamento = 'dinheiro' THEN quantidade ELSE 0 END) AS INTEGER) AS dinheiro_qtd,
+              CAST(SUM(CASE WHEN forma_pagamento = 'dinheiro' THEN troco_total ELSE 0 END) AS DECIMAL(10,2)) AS dinheiro_troco,
+              CAST(SUM(CASE WHEN forma_pagamento = 'cartao_credito' THEN valor_recebido ELSE 0 END) AS DECIMAL(10,2)) AS credito_valor,
+              CAST(SUM(CASE WHEN forma_pagamento = 'cartao_credito' THEN quantidade ELSE 0 END) AS INTEGER) AS credito_qtd,
+              CAST(SUM(CASE WHEN forma_pagamento = 'cartao_debito' THEN valor_recebido ELSE 0 END) AS DECIMAL(10,2)) AS debito_valor,
+              CAST(SUM(CASE WHEN forma_pagamento = 'cartao_debito' THEN quantidade ELSE 0 END) AS INTEGER) AS debito_qtd,
+              CAST(SUM(valor_recebido) AS DECIMAL(10,2)) AS total_recebido
+            FROM reconciliacao_por_comanda, formas_agg
+          `
+        ) as any[];
+
+        // Fetch staff breakdown
+        const porGarcomResult = await (app.db as any).execute(
+          sql`
+            WITH vendas_atuais AS (
+              SELECT id, restaurante_id, tipo::text, status::text, closed_at, subtotal, gorjeta, total, garcom_id
+              FROM comandas
+              WHERE restaurante_id = ${tenantId} AND closed_at >= ${inicio.toISOString()}::timestamptz AND closed_at < ${fim.toISOString()}::timestamptz
+            ),
+            vendas_historico AS (
+              SELECT id, restaurante_id, 'mesa'::text, status::text, closed_at, subtotal, gorjeta, total, garcom_id
+              FROM comandas_historico
+              WHERE restaurante_id = ${tenantId} AND closed_at >= ${inicio.toISOString()}::timestamptz AND closed_at < ${fim.toISOString()}::timestamptz
+            ),
+            deduplicadas AS (
+              SELECT DISTINCT ON (restaurante_id, id) id, restaurante_id, tipo, status, closed_at, CAST(subtotal AS DECIMAL(10,2)) AS subtotal, CAST(gorjeta AS DECIMAL(10,2)) AS gorjeta, garcom_id
+              FROM (SELECT * FROM vendas_atuais UNION ALL SELECT * FROM vendas_historico) v
+              ORDER BY restaurante_id, id, tipo DESC
+            ),
+            base_vendas AS (
+              SELECT * FROM deduplicadas WHERE status = 'fechada' AND subtotal > 0 AND tipo != 'delivery'
+            )
+            SELECT
+              bv.garcom_id,
+              COALESCE(u.nome, CASE WHEN (bv.garcom_id IS NULL OR TRIM(bv.garcom_id) = '') THEN 'Sem garçom identificado' ELSE 'Sem garçom identificado' END) AS nome,
+              COUNT(*)::integer AS comandas,
+              CAST(SUM(bv.subtotal) AS DECIMAL(10,2)) AS faturamento_itens,
+              CAST(SUM(bv.gorjeta) AS DECIMAL(10,2)) AS gorjeta_total,
+              COUNT(CASE WHEN bv.gorjeta > 0 THEN 1 END)::integer AS comandas_com_gorjeta
+            FROM base_vendas bv
+            LEFT JOIN usuarios u ON bv.garcom_id = u.id AND u.restaurante_id = ${tenantId} AND TRIM(u.nome) != ''
+            GROUP BY bv.garcom_id, u.nome
+            ORDER BY faturamento_itens DESC, COALESCE(u.nome, 'Sem garçom identificado'), bv.garcom_id
+          `
+        ) as any[];
+
+        const detalheResult = {
+          porHoraResult,
+          porDiaSemanaResult,
+          pagamentosResult,
+          porGarcomResult
+        };
+
+        // Build hourly data (24 hours)
+        const horaMap = new Map<number, { comandas: number; faturamento_itens: number }>();
+        for (let h = 0; h < 24; h++) {
+          horaMap.set(h, { comandas: 0, faturamento_itens: 0 });
+        }
+        if (Array.isArray(detalheResult.porHoraResult)) {
+          for (const row of detalheResult.porHoraResult) {
+            const hora = row.hora;
+            horaMap.set(hora, {
+              comandas: parseInt(String(row.comandas)) || 0,
+              faturamento_itens: Math.round(parseFloat(String(row.faturamento_itens)) * 100) / 100,
+            });
+          }
+        }
+
+        const porHora = Array.from({ length: 24 }, (_, i) => {
+          const metrics = horaMap.get(i) || { comandas: 0, faturamento_itens: 0 };
+          return {
+            hora: i,
+            comandas: metrics.comandas,
+            faturamento_itens: metrics.faturamento_itens,
+            ticket_medio: metrics.comandas > 0 ? Math.round((metrics.faturamento_itens / metrics.comandas) * 100) / 100 : 0,
+          };
+        });
+
+        // Build day of week data (0-6 with occurrences)
+        const diasSemana = ["Domingo", "Segunda-feira", "Terça-feira", "Quarta-feira", "Quinta-feira", "Sexta-feira", "Sábado"];
+        const diaMap = new Map<number, { comandas: number; faturamento_itens: number; ocorrencias: number }>();
+
+        for (let d = 0; d < 7; d++) {
+          diaMap.set(d, { comandas: 0, faturamento_itens: 0, ocorrencias: 0 });
+        }
+
+        // Count occurrences of each day of week in period
+        const inicioDia = diaLocalDeInstante(inicio);
+        const fimDia = diaLocalDeInstante(new Date(fim.getTime() - 1));
+        for (let d = new Date(Date.UTC(inicioDia.ano, inicioDia.mes0, inicioDia.dia));
+             d <= new Date(Date.UTC(fimDia.ano, fimDia.mes0, fimDia.dia));
+             d.setUTCDate(d.getUTCDate() + 1)) {
+          const dayOfWeek = new Date(d.getTime() + FUSO_HORAS * MS_HORA).getUTCDay();
+          const current = diaMap.get(dayOfWeek) || { comandas: 0, faturamento_itens: 0, ocorrencias: 0 };
+          diaMap.set(dayOfWeek, { ...current, ocorrencias: current.ocorrencias + 1 });
+        }
+
+        if (Array.isArray(detalheResult.porDiaSemanaResult)) {
+          for (const row of detalheResult.porDiaSemanaResult) {
+            const dia = row.dia_semana;
+            const current = diaMap.get(dia) || { comandas: 0, faturamento_itens: 0, ocorrencias: 0 };
+            diaMap.set(dia, {
+              ocorrencias: current.ocorrencias,
+              comandas: parseInt(String(row.comandas)) || 0,
+              faturamento_itens: Math.round(parseFloat(String(row.faturamento_itens)) * 100) / 100,
+            });
+          }
+        }
+
+        const porDiaSemana = Array.from({ length: 7 }, (_, i) => {
+          const metrics = diaMap.get(i) || { comandas: 0, faturamento_itens: 0, ocorrencias: 0 };
+          return {
+            dia_semana: i,
+            nome: diasSemana[i],
+            ocorrencias_no_periodo: metrics.ocorrencias,
+            comandas: metrics.comandas,
+            faturamento_itens: metrics.faturamento_itens,
+            ticket_medio: metrics.comandas > 0 ? Math.round((metrics.faturamento_itens / metrics.comandas) * 100) / 100 : 0,
+          };
+        });
+
+        // Build payment methods data
+        const formas = ["pix", "dinheiro", "cartao_credito", "cartao_debito"];
+        const formasMap = new Map<string, { valor_recebido: number; quantidade_pagamentos: number; troco: number }>();
+        for (const forma of formas) {
+          formasMap.set(forma, { valor_recebido: 0, quantidade_pagamentos: 0, troco: 0 });
+        }
+
+        let totalRecebido = 0;
+        if (Array.isArray(detalheResult.pagamentosResult) && detalheResult.pagamentosResult.length > 0) {
+          const row = detalheResult.pagamentosResult[0];
+          formasMap.set("pix", {
+            valor_recebido: Math.round(parseFloat(String(row.pix_valor || 0)) * 100) / 100,
+            quantidade_pagamentos: parseInt(String(row.pix_qtd || 0)) || 0,
+            troco: 0,
+          });
+          formasMap.set("dinheiro", {
+            valor_recebido: Math.round(parseFloat(String(row.dinheiro_valor || 0)) * 100) / 100,
+            quantidade_pagamentos: parseInt(String(row.dinheiro_qtd || 0)) || 0,
+            troco: Math.round(parseFloat(String(row.dinheiro_troco || 0)) * 100) / 100,
+          });
+          formasMap.set("cartao_credito", {
+            valor_recebido: Math.round(parseFloat(String(row.credito_valor || 0)) * 100) / 100,
+            quantidade_pagamentos: parseInt(String(row.credito_qtd || 0)) || 0,
+            troco: 0,
+          });
+          formasMap.set("cartao_debito", {
+            valor_recebido: Math.round(parseFloat(String(row.debito_valor || 0)) * 100) / 100,
+            quantidade_pagamentos: parseInt(String(row.debito_qtd || 0)) || 0,
+            troco: 0,
+          });
+          totalRecebido = Math.round(parseFloat(String(row.total_recebido || 0)) * 100) / 100;
+        }
+
+        const formasPagamento = formas.map((forma) => {
+          const metrics = formasMap.get(forma) || { valor_recebido: 0, quantidade_pagamentos: 0, troco: 0 };
+          const percentual = totalRecebido > 0 ? Math.round((metrics.valor_recebido / totalRecebido) * 10000) / 100 : 0;
+          return {
+            forma,
+            valor_recebido: metrics.valor_recebido,
+            quantidade_pagamentos: metrics.quantidade_pagamentos,
+            percentual,
+            troco: metrics.troco,
+          };
+        });
+
+        // Build reconciliation data
+        let naoReconciliado = {
+          comandas_pago_menor: 0,
+          valor_faltante: 0,
+          comandas_pago_maior: 0,
+          valor_excedente: 0,
+        };
+
+        if (Array.isArray(detalheResult.pagamentosResult) && detalheResult.pagamentosResult.length > 0) {
+          const row = detalheResult.pagamentosResult[0];
+          naoReconciliado = {
+            comandas_pago_menor: parseInt(String(row.comandas_faltante || 0)) || 0,
+            valor_faltante: Math.round(parseFloat(String(row.valor_faltante || 0)) * 100) / 100,
+            comandas_pago_maior: parseInt(String(row.comandas_excedente || 0)) || 0,
+            valor_excedente: Math.round(parseFloat(String(row.valor_excedente || 0)) * 100) / 100,
+          };
+        }
+
+        // Build staff breakdown data
+        const porGarcom = [];
+        if (Array.isArray(detalheResult.porGarcomResult)) {
+          for (const row of detalheResult.porGarcomResult) {
+            const faturamento = Math.round(parseFloat(String(row.faturamento_itens || 0)) * 100) / 100;
+            const gorjeta = Math.round(parseFloat(String(row.gorjeta_total || 0)) * 100) / 100;
+            const comandas = parseInt(String(row.comandas)) || 0;
+            const comandasComGorjeta = parseInt(String(row.comandas_com_gorjeta)) || 0;
+
+            porGarcom.push({
+              garcom_id: row.garcom_id || null,
+              nome: row.nome || "Sem garçom identificado",
+              comandas,
+              faturamento_itens: faturamento,
+              gorjeta_total: gorjeta,
+              ticket_medio: comandas > 0 ? Math.round((faturamento / comandas) * 100) / 100 : 0,
+              gorjeta_media_por_comanda_com_gorjeta: comandasComGorjeta > 0 ? Math.round((gorjeta / comandasComGorjeta) * 100) / 100 : 0,
+            });
+          }
+        }
+
+        app.logger.info(
+          { tenantId, horas: porHora.length, dias: porDiaSemana.length, formas: formasPagamento.length, garcons: porGarcom.length },
+          "Vendas-detalhe report retrieved successfully"
+        );
+
+        return await reply.code(200).send({
+          por_hora: porHora,
+          por_dia_semana: porDiaSemana,
+          formas_pagamento: formasPagamento,
+          nao_conciliado: naoReconciliado,
+          por_garcom: porGarcom,
+        });
+      } catch (error) {
+        app.logger.error({ err: error }, "Failed to get vendas-detalhe report");
+        return await reply.code(500).send({ error: "Internal server error" });
+      }
+    }
+  );
 }
