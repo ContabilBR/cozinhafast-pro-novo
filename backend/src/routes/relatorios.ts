@@ -785,4 +785,752 @@ export function registerRelatoriosRoutes(app: App) {
       }
     }
   );
+
+  // GET /api/relatorios/vendas - Sales report with period comparison
+  app.fastify.get(
+    "/api/relatorios/vendas",
+    {
+      schema: {
+        description: "Get sales report with period comparison (requires authentication)",
+        tags: ["relatorios"],
+        querystring: {
+          type: "object",
+          properties: {
+            periodo: { type: "string", enum: ["hoje", "7dias", "mes", "personalizado"] },
+            dataInicio: { type: "string" },
+            dataFim: { type: "string" },
+          },
+        },
+        response: {
+          200: {
+            type: "object",
+            properties: {
+              periodo: {
+                type: "object",
+                properties: {
+                  nome: { type: "string" },
+                  inicio: { type: "string" },
+                  fim: { type: "string" },
+                },
+              },
+              totais: {
+                type: "object",
+                properties: {
+                  comandas_fechadas: { type: "integer" },
+                  comandas_com_consumo: { type: "integer" },
+                  faturamento_itens: { type: "number" },
+                  gorjeta: { type: "number" },
+                  taxa_entrega: { type: "number" },
+                  total_recebido: { type: "number" },
+                  ticket_medio: { type: "number" },
+                },
+              },
+              por_canal: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    canal: { type: "string", enum: ["mesa", "delivery"] },
+                    comandas_fechadas: { type: "integer" },
+                    comandas_com_consumo: { type: "integer" },
+                    faturamento_itens: { type: "number" },
+                    gorjeta: { type: "number" },
+                    taxa_entrega: { type: "number" },
+                    total_recebido: { type: "number" },
+                    ticket_medio: { type: "number" },
+                  },
+                },
+              },
+              por_dia: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    data: { type: "string" },
+                    comandas_fechadas: { type: "integer" },
+                    comandas_com_consumo: { type: "integer" },
+                    faturamento_itens: { type: "number" },
+                    gorjeta: { type: "number" },
+                    taxa_entrega: { type: "number" },
+                    total_recebido: { type: "number" },
+                    ticket_medio: { type: "number" },
+                  },
+                },
+              },
+              comparacao_anterior: {
+                type: "object",
+                properties: {
+                  periodo: {
+                    type: "object",
+                    properties: {
+                      nome: { type: "string" },
+                      inicio: { type: "string" },
+                      fim: { type: "string" },
+                    },
+                  },
+                  totais: {
+                    type: "object",
+                    properties: {
+                      comandas_fechadas: { type: "integer" },
+                      comandas_com_consumo: { type: "integer" },
+                      faturamento_itens: { type: "number" },
+                      gorjeta: { type: "number" },
+                      taxa_entrega: { type: "number" },
+                      total_recebido: { type: "number" },
+                      ticket_medio: { type: "number" },
+                    },
+                  },
+                  variacao_percentual: {
+                    type: "object",
+                    properties: {
+                      faturamento_itens: { type: ["number", "null"] },
+                      total_recebido: { type: ["number", "null"] },
+                      ticket_medio: { type: ["number", "null"] },
+                    },
+                  },
+                },
+              },
+              comandas_inconsistentes: { type: "integer" },
+            },
+          },
+          400: { type: "object", properties: { error: { type: "string" } } },
+          401: { type: "object", properties: { error: { type: "string" } } },
+          403: { type: "object", properties: { error: { type: "string" } } },
+          500: { type: "object", properties: { error: { type: "string" } } },
+        },
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const authUser = await customRequireAuth(app, request, reply);
+      if (!authUser) return;
+      if (!(await requireRole(authUser, ["administrador", "gerente"], reply))) return;
+
+      try {
+        const tenantId = requireTenant(authUser);
+        const query = request.query as { periodo?: string; dataInicio?: string; dataFim?: string };
+
+        // Resolve current period
+        const { inicio, fim, label: periodoLabel } = resolvePeriodo(query.periodo, query.dataInicio, query.dataFim);
+
+        // Check custom period length (max 366 days)
+        if (query.periodo === "personalizado") {
+          const daysDiff = Math.ceil((fim.getTime() - inicio.getTime()) / (1000 * 60 * 60 * 24));
+          if (daysDiff > 366) {
+            app.logger.warn({ tenantId, daysDiff }, "Custom period exceeds 366 days");
+            return await reply.code(400).send({ error: "O período personalizado não pode ultrapassar 366 dias." });
+          }
+        }
+
+        app.logger.info({ tenantId, periodo: query.periodo, inicio, fim }, "Getting vendas report");
+
+        // Calculate previous period (same number of days)
+        const daysDiff = Math.ceil((fim.getTime() - inicio.getTime()) / (1000 * 60 * 60 * 24));
+        const periodoAnteriorFim = new Date(inicio.getTime());
+        const periodoAnteriorInicio = new Date(periodoAnteriorFim.getTime() - daysDiff * 24 * 60 * 60 * 1000);
+
+        app.logger.debug(
+          { tenantId, periodoAnteriorInicio, periodoAnteriorFim, daysDiff },
+          "Previous period calculated"
+        );
+
+        // Format label for previous period
+        const periodoAnteriorLabel = `${formatDiaBR(diaLocalDeInstante(periodoAnteriorInicio))} – ${formatDiaBR(diaLocalDeInstante(new Date(periodoAnteriorFim.getTime() - 1)))}`;
+
+        // Fetch sales data for current period (both comandas and comandas_historico)
+        const vendasPeriodoResult = await (app.db as any).execute(
+          sql`
+            WITH vendas_atuais AS (
+              SELECT
+                id,
+                restaurante_id,
+                tipo,
+                closed_at,
+                subtotal,
+                gorjeta,
+                total,
+                NULL::uuid AS entrega_id,
+                NULL::numeric AS taxa_entrega
+              FROM comandas
+              WHERE restaurante_id = ${tenantId}
+                AND status = 'fechada'
+                AND closed_at IS NOT NULL
+                AND total > 0
+                AND closed_at >= ${inicio.toISOString()}::timestamptz
+                AND closed_at < ${fim.toISOString()}::timestamptz
+            ),
+            vendas_historico AS (
+              SELECT
+                id,
+                restaurante_id,
+                'mesa'::text AS tipo,
+                closed_at,
+                subtotal,
+                gorjeta,
+                total,
+                NULL::uuid AS entrega_id,
+                NULL::numeric AS taxa_entrega
+              FROM comandas_historico
+              WHERE restaurante_id = ${tenantId}
+                AND status = 'fechada'
+                AND closed_at IS NOT NULL
+                AND total > 0
+                AND closed_at >= ${inicio.toISOString()}::timestamptz
+                AND closed_at < ${fim.toISOString()}::timestamptz
+            ),
+            todas_vendas AS (
+              SELECT * FROM vendas_atuais
+              UNION ALL
+              SELECT * FROM vendas_historico
+            ),
+            deduplicadas AS (
+              SELECT DISTINCT ON (restaurante_id, id)
+                id,
+                restaurante_id,
+                CASE
+                  WHEN tipo = 'delivery' THEN 'delivery'
+                  ELSE 'mesa'
+                END AS canal,
+                closed_at,
+                CAST(subtotal AS DECIMAL(10,2)) AS subtotal,
+                CAST(gorjeta AS DECIMAL(10,2)) AS gorjeta,
+                CAST(total AS DECIMAL(10,2)) AS total
+              FROM todas_vendas
+              ORDER BY restaurante_id, id, tipo DESC
+            ),
+            entregas_por_comanda AS (
+              SELECT DISTINCT ON (comanda_id)
+                comanda_id,
+                CAST(taxa_entrega AS DECIMAL(10,2)) AS taxa_entrega
+              FROM entregas
+              WHERE comanda_id IN (SELECT id FROM deduplicadas)
+              ORDER BY comanda_id, created_at DESC, id DESC
+            ),
+            vendas_com_taxa AS (
+              SELECT
+                d.id,
+                d.restaurante_id,
+                d.canal,
+                d.closed_at,
+                d.subtotal,
+                d.gorjeta,
+                d.total,
+                COALESCE(e.taxa_entrega, 0) AS taxa_entrega
+              FROM deduplicadas d
+              LEFT JOIN entregas_por_comanda e ON d.id = e.comanda_id
+            )
+            SELECT
+              COUNT(*) AS total_comandas,
+              CAST(SUM(subtotal) AS DECIMAL(10,2)) AS faturamento_itens,
+              CAST(SUM(gorjeta) AS DECIMAL(10,2)) AS gorjeta_total,
+              CAST(SUM(taxa_entrega) AS DECIMAL(10,2)) AS taxa_entrega_total,
+              CAST(SUM(total) AS DECIMAL(10,2)) AS total_recebido,
+              canal
+            FROM vendas_com_taxa
+            GROUP BY canal
+          `
+        ) as any[];
+
+        // Fetch sales data for previous period
+        const vendasAnteriorResult = await (app.db as any).execute(
+          sql`
+            WITH vendas_atuais AS (
+              SELECT
+                id,
+                restaurante_id,
+                tipo,
+                closed_at,
+                subtotal,
+                gorjeta,
+                total,
+                NULL::uuid AS entrega_id,
+                NULL::numeric AS taxa_entrega
+              FROM comandas
+              WHERE restaurante_id = ${tenantId}
+                AND status = 'fechada'
+                AND closed_at IS NOT NULL
+                AND total > 0
+                AND closed_at >= ${periodoAnteriorInicio.toISOString()}::timestamptz
+                AND closed_at < ${periodoAnteriorFim.toISOString()}::timestamptz
+            ),
+            vendas_historico AS (
+              SELECT
+                id,
+                restaurante_id,
+                'mesa'::text AS tipo,
+                closed_at,
+                subtotal,
+                gorjeta,
+                total,
+                NULL::uuid AS entrega_id,
+                NULL::numeric AS taxa_entrega
+              FROM comandas_historico
+              WHERE restaurante_id = ${tenantId}
+                AND status = 'fechada'
+                AND closed_at IS NOT NULL
+                AND total > 0
+                AND closed_at >= ${periodoAnteriorInicio.toISOString()}::timestamptz
+                AND closed_at < ${periodoAnteriorFim.toISOString()}::timestamptz
+            ),
+            todas_vendas AS (
+              SELECT * FROM vendas_atuais
+              UNION ALL
+              SELECT * FROM vendas_historico
+            ),
+            deduplicadas AS (
+              SELECT DISTINCT ON (restaurante_id, id)
+                id,
+                restaurante_id,
+                CASE
+                  WHEN tipo = 'delivery' THEN 'delivery'
+                  ELSE 'mesa'
+                END AS canal,
+                closed_at,
+                CAST(subtotal AS DECIMAL(10,2)) AS subtotal,
+                CAST(gorjeta AS DECIMAL(10,2)) AS gorjeta,
+                CAST(total AS DECIMAL(10,2)) AS total
+              FROM todas_vendas
+              ORDER BY restaurante_id, id, tipo DESC
+            ),
+            entregas_por_comanda AS (
+              SELECT DISTINCT ON (comanda_id)
+                comanda_id,
+                CAST(taxa_entrega AS DECIMAL(10,2)) AS taxa_entrega
+              FROM entregas
+              WHERE comanda_id IN (SELECT id FROM deduplicadas)
+              ORDER BY comanda_id, created_at DESC, id DESC
+            ),
+            vendas_com_taxa AS (
+              SELECT
+                d.id,
+                d.restaurante_id,
+                d.canal,
+                d.closed_at,
+                d.subtotal,
+                d.gorjeta,
+                d.total,
+                COALESCE(e.taxa_entrega, 0) AS taxa_entrega
+              FROM deduplicadas d
+              LEFT JOIN entregas_por_comanda e ON d.id = e.comanda_id
+            )
+            SELECT
+              COUNT(*) AS total_comandas,
+              CAST(SUM(subtotal) AS DECIMAL(10,2)) AS faturamento_itens,
+              CAST(SUM(gorjeta) AS DECIMAL(10,2)) AS gorjeta_total,
+              CAST(SUM(taxa_entrega) AS DECIMAL(10,2)) AS taxa_entrega_total,
+              CAST(SUM(total) AS DECIMAL(10,2)) AS total_recebido
+            FROM vendas_com_taxa
+          `
+        ) as any[];
+
+        // Fetch daily breakdown for current period
+        const vendasPorDiaResult = await (app.db as any).execute(
+          sql`
+            WITH vendas_atuais AS (
+              SELECT
+                id,
+                restaurante_id,
+                tipo,
+                closed_at,
+                subtotal,
+                gorjeta,
+                total
+              FROM comandas
+              WHERE restaurante_id = ${tenantId}
+                AND status = 'fechada'
+                AND closed_at IS NOT NULL
+                AND total > 0
+                AND closed_at >= ${inicio.toISOString()}::timestamptz
+                AND closed_at < ${fim.toISOString()}::timestamptz
+            ),
+            vendas_historico AS (
+              SELECT
+                id,
+                restaurante_id,
+                'mesa'::text AS tipo,
+                closed_at,
+                subtotal,
+                gorjeta,
+                total
+              FROM comandas_historico
+              WHERE restaurante_id = ${tenantId}
+                AND status = 'fechada'
+                AND closed_at IS NOT NULL
+                AND total > 0
+                AND closed_at >= ${inicio.toISOString()}::timestamptz
+                AND closed_at < ${fim.toISOString()}::timestamptz
+            ),
+            todas_vendas AS (
+              SELECT * FROM vendas_atuais
+              UNION ALL
+              SELECT * FROM vendas_historico
+            ),
+            deduplicadas AS (
+              SELECT DISTINCT ON (restaurante_id, id)
+                id,
+                restaurante_id,
+                CASE
+                  WHEN tipo = 'delivery' THEN 'delivery'
+                  ELSE 'mesa'
+                END AS canal,
+                closed_at,
+                CAST(subtotal AS DECIMAL(10,2)) AS subtotal,
+                CAST(gorjeta AS DECIMAL(10,2)) AS gorjeta,
+                CAST(total AS DECIMAL(10,2)) AS total
+              FROM todas_vendas
+              ORDER BY restaurante_id, id, tipo DESC
+            ),
+            entregas_por_comanda AS (
+              SELECT DISTINCT ON (comanda_id)
+                comanda_id,
+                CAST(taxa_entrega AS DECIMAL(10,2)) AS taxa_entrega
+              FROM entregas
+              WHERE comanda_id IN (SELECT id FROM deduplicadas)
+              ORDER BY comanda_id, created_at DESC, id DESC
+            ),
+            vendas_com_taxa AS (
+              SELECT
+                d.id,
+                d.restaurante_id,
+                d.canal,
+                d.closed_at,
+                d.subtotal,
+                d.gorjeta,
+                d.total,
+                COALESCE(e.taxa_entrega, 0) AS taxa_entrega
+              FROM deduplicadas d
+              LEFT JOIN entregas_por_comanda e ON d.id = e.comanda_id
+            ),
+            por_data AS (
+              SELECT
+                (closed_at AT TIME ZONE 'America/Sao_Paulo')::date AS data_local,
+                COUNT(*) AS total_comandas,
+                CAST(SUM(subtotal) AS DECIMAL(10,2)) AS faturamento_itens,
+                CAST(SUM(gorjeta) AS DECIMAL(10,2)) AS gorjeta_total,
+                CAST(SUM(taxa_entrega) AS DECIMAL(10,2)) AS taxa_entrega_total,
+                CAST(SUM(total) AS DECIMAL(10,2)) AS total_recebido
+              FROM vendas_com_taxa
+              GROUP BY (closed_at AT TIME ZONE 'America/Sao_Paulo')::date
+            )
+            SELECT
+              data_local,
+              total_comandas,
+              faturamento_itens,
+              gorjeta_total,
+              taxa_entrega_total,
+              total_recebido
+            FROM por_data
+            ORDER BY data_local
+          `
+        ) as any[];
+
+        // Fetch inconsistent comandas for current period
+        const inconsistentesResult = await (app.db as any).execute(
+          sql`
+            WITH vendas_atuais AS (
+              SELECT
+                id,
+                restaurante_id,
+                tipo,
+                closed_at,
+                subtotal,
+                gorjeta,
+                total
+              FROM comandas
+              WHERE restaurante_id = ${tenantId}
+                AND status = 'fechada'
+                AND closed_at IS NOT NULL
+                AND total > 0
+                AND closed_at >= ${inicio.toISOString()}::timestamptz
+                AND closed_at < ${fim.toISOString()}::timestamptz
+            ),
+            vendas_historico AS (
+              SELECT
+                id,
+                restaurante_id,
+                'mesa'::text AS tipo,
+                closed_at,
+                subtotal,
+                gorjeta,
+                total
+              FROM comandas_historico
+              WHERE restaurante_id = ${tenantId}
+                AND status = 'fechada'
+                AND closed_at IS NOT NULL
+                AND total > 0
+                AND closed_at >= ${inicio.toISOString()}::timestamptz
+                AND closed_at < ${fim.toISOString()}::timestamptz
+            ),
+            todas_vendas AS (
+              SELECT * FROM vendas_atuais
+              UNION ALL
+              SELECT * FROM vendas_historico
+            ),
+            deduplicadas AS (
+              SELECT DISTINCT ON (restaurante_id, id)
+                id,
+                restaurante_id,
+                CASE
+                  WHEN tipo = 'delivery' THEN 'delivery'
+                  ELSE 'mesa'
+                END AS canal,
+                closed_at,
+                CAST(subtotal AS DECIMAL(10,2)) AS subtotal,
+                CAST(gorjeta AS DECIMAL(10,2)) AS gorjeta,
+                CAST(total AS DECIMAL(10,2)) AS total
+              FROM todas_vendas
+              ORDER BY restaurante_id, id, tipo DESC
+            ),
+            entregas_por_comanda AS (
+              SELECT DISTINCT ON (comanda_id)
+                comanda_id,
+                CAST(taxa_entrega AS DECIMAL(10,2)) AS taxa_entrega
+              FROM entregas
+              WHERE comanda_id IN (SELECT id FROM deduplicadas)
+              ORDER BY comanda_id, created_at DESC, id DESC
+            ),
+            vendas_com_taxa AS (
+              SELECT
+                d.id,
+                d.restaurante_id,
+                d.canal,
+                d.closed_at,
+                d.subtotal,
+                d.gorjeta,
+                d.total,
+                COALESCE(e.taxa_entrega, 0) AS taxa_entrega
+              FROM deduplicadas d
+              LEFT JOIN entregas_por_comanda e ON d.id = e.comanda_id
+            )
+            SELECT COUNT(*)::integer AS inconsistent_count
+            FROM vendas_com_taxa
+            WHERE ABS((subtotal + gorjeta + taxa_entrega) - total) > 0.01
+          `
+        ) as any[];
+
+        // Process results
+        const canalMap = new Map<string, {
+          comandas_fechadas: number;
+          faturamento_itens: number;
+          gorjeta: number;
+          taxa_entrega: number;
+          total_recebido: number;
+        }>();
+
+        // Initialize both channels
+        canalMap.set("mesa", {
+          comandas_fechadas: 0,
+          faturamento_itens: 0,
+          gorjeta: 0,
+          taxa_entrega: 0,
+          total_recebido: 0,
+        });
+        canalMap.set("delivery", {
+          comandas_fechadas: 0,
+          faturamento_itens: 0,
+          gorjeta: 0,
+          taxa_entrega: 0,
+          total_recebido: 0,
+        });
+
+        // Process current period by channel
+        if (Array.isArray(vendasPeriodoResult)) {
+          for (const row of vendasPeriodoResult) {
+            const canal = row.canal || "mesa";
+            const existing = canalMap.get(canal) || {
+              comandas_fechadas: 0,
+              faturamento_itens: 0,
+              gorjeta: 0,
+              taxa_entrega: 0,
+              total_recebido: 0,
+            };
+            canalMap.set(canal, {
+              comandas_fechadas: existing.comandas_fechadas + (parseInt(String(row.total_comandas)) || 0),
+              faturamento_itens: existing.faturamento_itens + (parseFloat(String(row.faturamento_itens)) || 0),
+              gorjeta: existing.gorjeta + (parseFloat(String(row.gorjeta_total)) || 0),
+              taxa_entrega: existing.taxa_entrega + (parseFloat(String(row.taxa_entrega_total)) || 0),
+              total_recebido: existing.total_recebido + (parseFloat(String(row.total_recebido)) || 0),
+            });
+          }
+        }
+
+        // Process previous period totals
+        let anteriorMetricas = {
+          comandas_fechadas: 0,
+          faturamento_itens: 0,
+          gorjeta: 0,
+          taxa_entrega: 0,
+          total_recebido: 0,
+        };
+
+        if (Array.isArray(vendasAnteriorResult) && vendasAnteriorResult.length > 0) {
+          const row = vendasAnteriorResult[0];
+          anteriorMetricas = {
+            comandas_fechadas: parseInt(String(row.total_comandas)) || 0,
+            faturamento_itens: parseFloat(String(row.faturamento_itens)) || 0,
+            gorjeta: parseFloat(String(row.gorjeta_total)) || 0,
+            taxa_entrega: parseFloat(String(row.taxa_entrega_total)) || 0,
+            total_recebido: parseFloat(String(row.total_recebido)) || 0,
+          };
+        }
+
+        // Calculate totals for current period
+        const totalAtual = {
+          comandas_fechadas: 0,
+          faturamento_itens: 0,
+          gorjeta: 0,
+          taxa_entrega: 0,
+          total_recebido: 0,
+        };
+
+        for (const metrics of canalMap.values()) {
+          totalAtual.comandas_fechadas += metrics.comandas_fechadas;
+          totalAtual.faturamento_itens += metrics.faturamento_itens;
+          totalAtual.gorjeta += metrics.gorjeta;
+          totalAtual.taxa_entrega += metrics.taxa_entrega;
+          totalAtual.total_recebido += metrics.total_recebido;
+        }
+
+        // Calculate ticket médio
+        totalAtual.faturamento_itens = Math.round(totalAtual.faturamento_itens * 100) / 100;
+        totalAtual.gorjeta = Math.round(totalAtual.gorjeta * 100) / 100;
+        totalAtual.taxa_entrega = Math.round(totalAtual.taxa_entrega * 100) / 100;
+        totalAtual.total_recebido = Math.round(totalAtual.total_recebido * 100) / 100;
+
+        anteriorMetricas.faturamento_itens = Math.round(anteriorMetricas.faturamento_itens * 100) / 100;
+        anteriorMetricas.gorjeta = Math.round(anteriorMetricas.gorjeta * 100) / 100;
+        anteriorMetricas.taxa_entrega = Math.round(anteriorMetricas.taxa_entrega * 100) / 100;
+        anteriorMetricas.total_recebido = Math.round(anteriorMetricas.total_recebido * 100) / 100;
+
+        const ticketMedioAtual = totalAtual.comandas_fechadas > 0 ? totalAtual.faturamento_itens / totalAtual.comandas_fechadas : 0;
+        const ticketMedioAnterior = anteriorMetricas.comandas_fechadas > 0 ? anteriorMetricas.faturamento_itens / anteriorMetricas.comandas_fechadas : 0;
+
+        // Process daily breakdown
+        const diaMap = new Map<string, {
+          comandas_fechadas: number;
+          faturamento_itens: number;
+          gorjeta: number;
+          taxa_entrega: number;
+          total_recebido: number;
+          ticket_medio: number;
+        }>();
+
+        if (Array.isArray(vendasPorDiaResult)) {
+          for (const row of vendasPorDiaResult) {
+            const data = row.data_local;
+            const faturamento = parseFloat(String(row.faturamento_itens)) || 0;
+            const comandas = parseInt(String(row.total_comandas)) || 0;
+            const ticket = comandas > 0 ? faturamento / comandas : 0;
+
+            diaMap.set(data, {
+              comandas_fechadas: comandas,
+              faturamento_itens: Math.round(faturamento * 100) / 100,
+              gorjeta: Math.round((parseFloat(String(row.gorjeta_total)) || 0) * 100) / 100,
+              taxa_entrega: Math.round((parseFloat(String(row.taxa_entrega_total)) || 0) * 100) / 100,
+              total_recebido: Math.round((parseFloat(String(row.total_recebido)) || 0) * 100) / 100,
+              ticket_medio: Math.round(ticket * 100) / 100,
+            });
+          }
+        }
+
+        // Fill missing days with zeros
+        const inicioDia = diaLocalDeInstante(inicio);
+        const fimDia = diaLocalDeInstante(new Date(fim.getTime() - 1));
+
+        for (let d = new Date(Date.UTC(inicioDia.ano, inicioDia.mes0, inicioDia.dia));
+             d <= new Date(Date.UTC(fimDia.ano, fimDia.mes0, fimDia.dia));
+             d.setUTCDate(d.getUTCDate() + 1)) {
+          const dateStr = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+          if (!diaMap.has(dateStr)) {
+            diaMap.set(dateStr, {
+              comandas_fechadas: 0,
+              faturamento_itens: 0,
+              gorjeta: 0,
+              taxa_entrega: 0,
+              total_recebido: 0,
+              ticket_medio: 0,
+            });
+          }
+        }
+
+        // Build por_dia array sorted by date
+        const porDia = Array.from(diaMap.entries())
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([data, metrics]) => ({
+            data,
+            ...metrics,
+          }));
+
+        // Calculate variations
+        const calcularVariacao = (atual: number, anterior: number): number | null => {
+          if (anterior === 0) {
+            return atual === 0 ? null : null;
+          }
+          return Math.round(((atual - anterior) / anterior) * 10000) / 100;
+        };
+
+        const variacaoPercentual = {
+          faturamento_itens: calcularVariacao(totalAtual.faturamento_itens, anteriorMetricas.faturamento_itens),
+          total_recebido: calcularVariacao(totalAtual.total_recebido, anteriorMetricas.total_recebido),
+          ticket_medio: calcularVariacao(ticketMedioAtual, ticketMedioAnterior),
+        };
+
+        // Get inconsistent count
+        const inconsistentCount = inconsistentesResult?.[0]?.inconsistent_count || 0;
+
+        // Build response
+        const porCanalArray = Array.from(canalMap.entries())
+          .map(([canal, metrics]) => {
+            const ticket = metrics.comandas_fechadas > 0 ? metrics.faturamento_itens / metrics.comandas_fechadas : 0;
+            return {
+              canal,
+              ...metrics,
+              ticket_medio: Math.round(ticket * 100) / 100,
+            };
+          })
+          .sort((a, b) => b.faturamento_itens - a.faturamento_itens);
+
+        app.logger.info(
+          {
+            tenantId,
+            totalAtual,
+            ticketMedioAtual,
+            inconsistentCount,
+          },
+          "Vendas report retrieved successfully"
+        );
+
+        return await reply.code(200).send({
+          periodo: {
+            nome: periodoLabel,
+            inicio: inicio.toISOString(),
+            fim: fim.toISOString(),
+          },
+          totais: {
+            ...totalAtual,
+            comandas_com_consumo: totalAtual.comandas_fechadas,
+            ticket_medio: Math.round(ticketMedioAtual * 100) / 100,
+          },
+          por_canal: porCanalArray,
+          por_dia: porDia,
+          comparacao_anterior: {
+            periodo: {
+              nome: periodoAnteriorLabel,
+              inicio: periodoAnteriorInicio.toISOString(),
+              fim: periodoAnteriorFim.toISOString(),
+            },
+            totais: {
+              ...anteriorMetricas,
+              comandas_com_consumo: anteriorMetricas.comandas_fechadas,
+              ticket_medio: Math.round(ticketMedioAnterior * 100) / 100,
+            },
+            variacao_percentual: variacaoPercentual,
+          },
+          comandas_inconsistentes: inconsistentCount,
+        });
+      } catch (error) {
+        app.logger.error({ err: error }, "Failed to get vendas report");
+        return await reply.code(500).send({ error: "Internal server error" });
+      }
+    }
+  );
 }
