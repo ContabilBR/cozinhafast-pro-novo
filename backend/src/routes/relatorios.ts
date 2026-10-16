@@ -2400,7 +2400,7 @@ export function registerRelatoriosRoutes(app: App) {
             SELECT
               identificador AS responsavel_id,
               CASE WHEN identificador IS NULL THEN 'Não identificado' ELSE COALESCE(nome_snapshot, 'Não identificado') END AS nome,
-              role_snapshot AS role,
+              CASE WHEN identificador IS NULL THEN NULL ELSE role_snapshot END AS role,
               quantidade,
               valor,
               valor_perda
@@ -2414,13 +2414,13 @@ export function registerRelatoriosRoutes(app: App) {
           sql`
             WITH pedidos_vivos AS (
               SELECT id, prato_id, quantidade, preco_unitario, restaurante_id, status::text AS status,
-                cancelado_em, cancelado_apos_inicio, 0 AS prioridade_fonte
+                cancelado_em, cancelado_apos_inicio, NULL::text AS prato_nome, 0 AS prioridade_fonte
               FROM pedidos
               WHERE restaurante_id = ${tenantId}
             ),
             pedidos_hist AS (
               SELECT id, prato_id, quantidade, preco_unitario, restaurante_id, status,
-                cancelado_em, cancelado_apos_inicio, 1 AS prioridade_fonte
+                cancelado_em, cancelado_apos_inicio, prato_nome AS prato_nome, 1 AS prioridade_fonte
               FROM pedidos_historico
               WHERE restaurante_id = ${tenantId}
             ),
@@ -2429,29 +2429,28 @@ export function registerRelatoriosRoutes(app: App) {
             ),
             dedup_pedidos AS (
               SELECT DISTINCT ON (restaurante_id, id) id, prato_id, quantidade, preco_unitario, restaurante_id,
-                status, cancelado_em, cancelado_apos_inicio
+                status, cancelado_em, cancelado_apos_inicio, prato_nome
               FROM todos_pedidos
               ORDER BY restaurante_id, id, prioridade_fonte ASC
             ),
             cancelamentos_filtrados AS (
-              SELECT prato_id, quantidade, preco_unitario, cancelado_apos_inicio
+              SELECT prato_id, quantidade, preco_unitario, cancelado_apos_inicio, prato_nome
               FROM dedup_pedidos
               WHERE status = 'cancelado' AND cancelado_em >= ${inicio.toISOString()}::timestamptz AND
                 cancelado_em < ${fim.toISOString()}::timestamptz
             ),
-            com_nomes_vivos AS (
+            com_nomes AS (
               SELECT
-                COALESCE(NULLIF(BTRIM(p.nome), ''), 'Prato removido') AS nome,
+                COALESCE(NULLIF(BTRIM(cf.prato_nome),''), NULLIF(BTRIM(p.nome),''), 'Prato removido') AS nome,
                 cf.quantidade,
                 CAST(cf.quantidade AS DECIMAL(10,2)) * CAST(cf.preco_unitario AS DECIMAL(10,2)) AS valor_bruto,
                 CASE WHEN cf.cancelado_apos_inicio = true THEN CAST(cf.quantidade AS DECIMAL(10,2)) * CAST(cf.preco_unitario AS DECIMAL(10,2)) ELSE 0 END AS valor_perda
               FROM cancelamentos_filtrados cf
               LEFT JOIN pratos p ON cf.prato_id = p.id AND p.restaurante_id = ${tenantId}
-              WHERE cf.prato_id IS NOT NULL
             ),
             agregado AS (
               SELECT nome, SUM(quantidade)::integer AS quantidade, SUM(valor_bruto)::numeric AS valor, SUM(valor_perda)::numeric AS valor_perda
-              FROM com_nomes_vivos
+              FROM com_nomes
               GROUP BY nome
             )
             SELECT nome, quantidade, valor, valor_perda
@@ -2491,34 +2490,28 @@ export function registerRelatoriosRoutes(app: App) {
               WHERE status = 'cancelado' AND cancelado_em >= ${inicio.toISOString()}::timestamptz AND
                 cancelado_em < ${fim.toISOString()}::timestamptz
             ),
-            com_canal_vivas AS (
-              SELECT
-                CASE WHEN c.tipo::text = 'delivery' THEN 'delivery' ELSE 'mesa' END AS canal,
-                cf.quantidade,
+            com_canal AS (
+              SELECT CASE WHEN c.tipo::text = 'delivery' THEN 'delivery' ELSE 'mesa' END AS canal,
+                cf.quantidade AS quantidade,
                 CAST(cf.quantidade AS DECIMAL(10,2)) * CAST(cf.preco_unitario AS DECIMAL(10,2)) AS valor_bruto,
                 CASE WHEN cf.cancelado_apos_inicio = true THEN CAST(cf.quantidade AS DECIMAL(10,2)) * CAST(cf.preco_unitario AS DECIMAL(10,2)) ELSE 0 END AS valor_perda
               FROM cancelamentos_filtrados cf
               LEFT JOIN comandas c ON cf.comanda_id = c.id AND c.restaurante_id = ${tenantId}
             ),
-            com_canal_hist AS (
-              SELECT
-                'mesa' AS canal,
-                cf.quantidade,
-                CAST(cf.quantidade AS DECIMAL(10,2)) * CAST(cf.preco_unitario AS DECIMAL(10,2)) AS valor_bruto,
-                CASE WHEN cf.cancelado_apos_inicio = true THEN CAST(cf.quantidade AS DECIMAL(10,2)) * CAST(cf.preco_unitario AS DECIMAL(10,2)) ELSE 0 END AS valor_perda
-              FROM cancelamentos_filtrados cf
-              LEFT JOIN comandas_historico ch ON cf.comanda_id = ch.id AND ch.restaurante_id = ${tenantId}
-              WHERE NOT EXISTS (SELECT 1 FROM comandas c WHERE c.id = cf.comanda_id AND c.restaurante_id = ${tenantId})
-            ),
             agregado AS (
-              SELECT canal, SUM(quantidade)::integer AS quantidade, SUM(valor_bruto)::numeric AS valor, SUM(valor_perda)::numeric AS valor_perda
-              FROM (SELECT * FROM com_canal_vivas UNION ALL SELECT * FROM com_canal_hist) t
-              GROUP BY canal
+              SELECT cc.canal AS canal, SUM(cc.quantidade)::integer AS quantidade, SUM(cc.valor_bruto)::numeric AS valor, SUM(cc.valor_perda)::numeric AS valor_perda
+              FROM com_canal cc GROUP BY cc.canal
+            ),
+            canais AS (
+              SELECT 'mesa'::text AS canal, 0 AS ordem
+              UNION ALL SELECT 'delivery'::text AS canal, 1 AS ordem
             )
-            SELECT COALESCE(canal, 'mesa') AS canal, COALESCE(quantidade, 0) AS quantidade, COALESCE(valor, 0) AS valor, COALESCE(valor_perda, 0) AS valor_perda
-            FROM (SELECT 'mesa' AS canal UNION ALL SELECT 'delivery') canais
-            LEFT JOIN agregado a ON canais.canal = a.canal
-            ORDER BY canal
+            SELECT canais.canal AS canal,
+              COALESCE(a.quantidade,0) AS quantidade,
+              COALESCE(a.valor,0) AS valor,
+              COALESCE(a.valor_perda,0) AS valor_perda
+            FROM canais LEFT JOIN agregado a ON canais.canal=a.canal
+            ORDER BY canais.ordem
           `
         ) as any[];
 
