@@ -266,6 +266,36 @@ export default function RelatoriosScreen() {
               </View>
               <Ionicons name="chevron-forward" size={20} color={COLORS.textSecondary} />
             </AnimatedPressable>
+            <AnimatedPressable
+              accessibilityRole="button"
+              accessibilityLabel="Cozinha. Tempo de preparo por prato e por hora no período selecionado"
+              onPress={() => router.push({ pathname: '/relatorio-detalhe/cozinha-tempos', params: { periodo } } as any)}
+              style={{ flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: COLORS.surface, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: COLORS.border }}
+            >
+              <View style={{ padding: 10, borderRadius: 12, backgroundColor: COLORS.primaryMuted }}>
+                <Ionicons name="timer-outline" size={24} color={COLORS.primary} />
+              </View>
+              <View style={{ flex: 1, gap: 4 }}>
+                <Text style={{ fontFamily: 'Outfit_600SemiBold', fontSize: 16, color: COLORS.text }}>Cozinha</Text>
+                <Text style={{ fontFamily: 'Outfit_400Regular', fontSize: 13, color: COLORS.textSecondary }}>Tempo de preparo por prato e por hora</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={COLORS.textSecondary} />
+            </AnimatedPressable>
+            <AnimatedPressable
+              accessibilityRole="button"
+              accessibilityLabel="Delivery por bairro. Pedidos, taxa e tempo de entrega no período selecionado"
+              onPress={() => router.push({ pathname: '/relatorio-detalhe/delivery-bairros', params: { periodo } } as any)}
+              style={{ flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: COLORS.surface, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: COLORS.border }}
+            >
+              <View style={{ padding: 10, borderRadius: 12, backgroundColor: COLORS.primaryMuted }}>
+                <Ionicons name="bicycle-outline" size={24} color={COLORS.primary} />
+              </View>
+              <View style={{ flex: 1, gap: 4 }}>
+                <Text style={{ fontFamily: 'Outfit_600SemiBold', fontSize: 16, color: COLORS.text }}>Delivery por bairro</Text>
+                <Text style={{ fontFamily: 'Outfit_400Regular', fontSize: 13, color: COLORS.textSecondary }}>Pedidos, taxa e tempo de entrega</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={COLORS.textSecondary} />
+            </AnimatedPressable>
           </View>
         )}
 
