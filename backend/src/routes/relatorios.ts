@@ -3335,7 +3335,7 @@ LIMIT 5
           sql`
             ${baseComun}
             SELECT
-              MAX(ipm.prato_id_catalog)::text AS prato_id,
+              MAX(ipm.prato_id_catalog::text) AS prato_id,
               COALESCE(MAX(ipm.nome), MAX(NULLIF(ipm.prato_nome_historico, '')), 'Prato removido') AS nome,
               MAX(ipm.categoria) AS categoria,
               COUNT(*)::integer AS itens_medidos,
