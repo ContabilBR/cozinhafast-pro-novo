@@ -3101,7 +3101,6 @@ LIMIT 5
         tags: ["relatorios"],
         querystring: {
           type: "object",
-          required: ["periodo"],
           properties: {
             periodo: {
               type: "string",
@@ -3131,9 +3130,9 @@ LIMIT 5
                   "p90_pedido_min",
                 ],
                 properties: {
-                  itens_medidos: { type: "number" },
-                  itens_sem_medicao: { type: "number" },
-                  comandas_medidas: { type: "number" },
+                  itens_medidos: { type: "integer" },
+                  itens_sem_medicao: { type: "integer" },
+                  comandas_medidas: { type: "integer" },
                   tempo_medio_item_min: { type: "number" },
                   mediana_item_min: { type: ["number", "null"] },
                   p90_item_min: { type: ["number", "null"] },
@@ -3151,10 +3150,10 @@ LIMIT 5
                     prato_id: { type: ["string", "null"] },
                     nome: { type: "string" },
                     categoria: { type: ["string", "null"] },
-                    itens_medidos: { type: "number" },
+                    itens_medidos: { type: "integer" },
                     tempo_medio_min: { type: "number" },
                     p90_min: { type: ["number", "null"] },
-                    meta_min: { type: ["number", "null"] },
+                    meta_min: { type: ["integer", "null"] },
                     percentual_dentro_meta: { type: ["number", "null"] },
                   },
                 },
@@ -3165,8 +3164,8 @@ LIMIT 5
                   type: "object",
                   required: ["hora", "itens_medidos", "tempo_medio_min"],
                   properties: {
-                    hora: { type: "number" },
-                    itens_medidos: { type: "number" },
+                    hora: { type: "integer" },
+                    itens_medidos: { type: "integer" },
                     tempo_medio_min: { type: "number" },
                   },
                 },
@@ -3187,7 +3186,7 @@ LIMIT 5
 
       const tenantId = requireTenant(authUser);
       const { periodo, dataInicio, dataFim } = request.query as {
-        periodo: Periodo;
+        periodo?: Periodo;
         dataInicio?: string;
         dataFim?: string;
       };
@@ -3207,16 +3206,16 @@ LIMIT 5
           }
         }
 
-        // Base SQL fragment with 8 CTEs for deduplication and filtering
+        // Base SQL fragment with 9 CTEs for deduplication and filtering
         const baseComun = sql`
           WITH comandas_fontes AS (
-            SELECT id, restaurante_id, status::text, total, closed_at, 0 AS prioridade_fonte
-            FROM comandas
-            WHERE restaurante_id = ${tenantId}
+            SELECT c.id, c.restaurante_id, c.status::text AS status, c.total, c.closed_at, 0 AS prioridade_fonte
+            FROM comandas c
+            WHERE c.restaurante_id = ${tenantId}
             UNION ALL
-            SELECT id, restaurante_id, status::text, total, closed_at, 1 AS prioridade_fonte
-            FROM comandas_historico
-            WHERE restaurante_id = ${tenantId}
+            SELECT ch.id, ch.restaurante_id, ch.status::text AS status, ch.total, ch.closed_at, 1 AS prioridade_fonte
+            FROM comandas_historico ch
+            WHERE ch.restaurante_id = ${tenantId}
           ),
           comandas_unicas AS (
             SELECT DISTINCT ON (cf.restaurante_id, cf.id)
@@ -3232,15 +3231,15 @@ LIMIT 5
               AND cu.closed_at < ${fim.toISOString()}::timestamptz
           ),
           itens_fontes AS (
-            SELECT id, restaurante_id, comanda_id, prato_id, status::text, iniciado_em, pronto_em,
+            SELECT p.id, p.restaurante_id, p.comanda_id, p.prato_id, p.status::text AS status, p.iniciado_em, p.pronto_em,
               NULL::text AS prato_nome_historico, 0 AS prioridade_fonte
-            FROM pedidos
-            WHERE restaurante_id = ${tenantId}
+            FROM pedidos p
+            WHERE p.restaurante_id = ${tenantId}
             UNION ALL
-            SELECT id, restaurante_id, comanda_id, prato_id, status::text, iniciado_em, pronto_em,
-              prato_nome AS prato_nome_historico, 1 AS prioridade_fonte
-            FROM pedidos_historico
-            WHERE restaurante_id = ${tenantId}
+            SELECT ph.id, ph.restaurante_id, ph.comanda_id, ph.prato_id, ph.status::text AS status, ph.iniciado_em, ph.pronto_em,
+              ph.prato_nome AS prato_nome_historico, 1 AS prioridade_fonte
+            FROM pedidos_historico ph
+            WHERE ph.restaurante_id = ${tenantId}
           ),
           itens_unicos AS (
             SELECT DISTINCT ON (ifn.restaurante_id, ifn.id)
@@ -3266,12 +3265,22 @@ LIMIT 5
           pratos_resolvidos AS (
             SELECT
               COALESCE(im.prato_id::text, 'historico:' || NULLIF(im.prato_nome_historico, ''), 'Prato removido') AS chave,
-              im.id, im.comanda_id, im.duracao_min, im.hora,
-              p.id AS prato_id_catalog, p.nome, p.tempo_preparo_min,
+              im.id, im.comanda_id, im.duracao_min, im.hora, im.prato_nome_historico,
+              p.id AS prato_id_catalog, p.nome, NULLIF(p.tempo_preparo_min, 0) AS meta_min,
               cat.nome AS categoria
             FROM itens_medidos im
             LEFT JOIN pratos p ON p.id = im.prato_id AND p.restaurante_id = im.restaurante_id AND p.restaurante_id = ${tenantId}
             LEFT JOIN categorias cat ON cat.id = p.categoria_id AND cat.restaurante_id = im.restaurante_id AND cat.restaurante_id = ${tenantId}
+          ),
+          itens_prato_meta AS (
+            SELECT pr.chave, pr.prato_id_catalog, pr.nome, pr.prato_nome_historico, pr.categoria, pr.duracao_min, pr.meta_min,
+              CASE WHEN pr.meta_min IS NULL THEN NULL WHEN pr.duracao_min <= pr.meta_min THEN 1 ELSE 0 END AS dentro_meta
+            FROM pratos_resolvidos pr
+          ),
+          medidos_por_pedido AS (
+            SELECT im.comanda_id, MAX(im.duracao_min) AS duracao_pedido_min
+            FROM itens_medidos im
+            GROUP BY im.comanda_id
           )
         `;
 
@@ -3279,27 +3288,29 @@ LIMIT 5
         const itemTotaisResult = await (app.db as any).execute(
           sql`
             ${baseComun}
-            SELECT
-              COUNT(*) FILTER (WHERE ie.iniciado_em IS NOT NULL AND ie.pronto_em IS NOT NULL AND ie.pronto_em >= ie.iniciado_em)::integer AS itens_medidos,
-              COUNT(*) FILTER (WHERE ie.iniciado_em IS NULL OR ie.pronto_em IS NULL OR ie.pronto_em < ie.iniciado_em)::integer AS itens_sem_medicao,
-              COALESCE(AVG(CASE WHEN ie.iniciado_em IS NOT NULL AND ie.pronto_em IS NOT NULL AND ie.pronto_em >= ie.iniciado_em
-                THEN EXTRACT(EPOCH FROM (ie.pronto_em - ie.iniciado_em))::double precision / 60.0 ELSE NULL END), 0)::double precision AS tempo_medio_item_min,
-              PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (ie.pronto_em - ie.iniciado_em))::double precision / 60.0) AS mediana_item_min,
-              PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (ie.pronto_em - ie.iniciado_em))::double precision / 60.0) AS p90_item_min
-            FROM itens_elegiveis ie
+            SELECT COUNT(*)::integer AS itens_medidos,
+              (SELECT COUNT(*)::integer FROM itens_elegiveis ie WHERE ie.iniciado_em IS NULL OR ie.pronto_em IS NULL OR ie.pronto_em < ie.iniciado_em) AS itens_sem_medicao,
+              COALESCE(AVG(im.duracao_min), 0)::double precision AS tempo_medio_item_min,
+              PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY im.duracao_min) AS mediana_item_min,
+              PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY im.duracao_min) AS p90_item_min
+            FROM itens_medidos im
           `
         ) as any[];
+
+        // Validate Q1 result
+        if (!Array.isArray(itemTotaisResult)) {
+          app.logger.error({ tenantId, resultType: typeof itemTotaisResult }, "Query 1 (item totals) result is not an array");
+          return await reply.code(500).send({ error: "Falha na consulta de totais de itens: resultado inválido." });
+        }
+        if (itemTotaisResult.length === 0) {
+          app.logger.error({ tenantId }, "Query 1 (item totals) returned empty array");
+          return await reply.code(500).send({ error: "Falha na consulta de totais de itens: resultado vazio." });
+        }
 
         // Query 2: Order totals
         const orderTotaisResult = await (app.db as any).execute(
           sql`
             ${baseComun}
-            WITH medidos_por_pedido AS (
-              SELECT ie.comanda_id, MAX(EXTRACT(EPOCH FROM (ie.pronto_em - ie.iniciado_em))::double precision / 60.0) AS duracao_pedido_min
-              FROM itens_elegiveis ie
-              WHERE ie.iniciado_em IS NOT NULL AND ie.pronto_em IS NOT NULL AND ie.pronto_em >= ie.iniciado_em
-              GROUP BY ie.comanda_id
-            )
             SELECT
               COUNT(*)::integer AS comandas_medidas,
               COALESCE(AVG(mpp.duracao_pedido_min), 0)::double precision AS tempo_medio_pedido_min,
@@ -3309,28 +3320,41 @@ LIMIT 5
           `
         ) as any[];
 
+        // Validate Q2 result
+        if (!Array.isArray(orderTotaisResult)) {
+          app.logger.error({ tenantId, resultType: typeof orderTotaisResult }, "Query 2 (order totals) result is not an array");
+          return await reply.code(500).send({ error: "Falha na consulta de totais de pedidos: resultado inválido." });
+        }
+        if (orderTotaisResult.length === 0) {
+          app.logger.error({ tenantId }, "Query 2 (order totals) returned empty array");
+          return await reply.code(500).send({ error: "Falha na consulta de totais de pedidos: resultado vazio." });
+        }
+
         // Query 3: Per-dish breakdown
         const porPratoResult = await (app.db as any).execute(
           sql`
             ${baseComun}
             SELECT
-              MAX(pr.prato_id_catalog)::text AS prato_id,
-              MAX(pr.nome) AS nome,
-              MAX(pr.categoria) AS categoria,
+              MAX(ipm.prato_id_catalog)::text AS prato_id,
+              COALESCE(MAX(ipm.nome), MAX(NULLIF(ipm.prato_nome_historico, '')), 'Prato removido') AS nome,
+              MAX(ipm.categoria) AS categoria,
               COUNT(*)::integer AS itens_medidos,
-              AVG(pr.duracao_min)::double precision AS tempo_medio_min,
-              PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY pr.duracao_min) AS p90_min,
-              MAX(NULLIF(pr.tempo_preparo_min, 0))::integer AS meta_min,
-              CASE WHEN MAX(NULLIF(pr.tempo_preparo_min, 0)) IS NOT NULL
-                THEN 100.0 * COUNT(*) FILTER (WHERE pr.duracao_min <= MAX(NULLIF(pr.tempo_preparo_min, 0))) / COUNT(*)
-                ELSE NULL
-              END AS percentual_dentro_meta
-            FROM pratos_resolvidos pr
-            GROUP BY pr.chave
-            ORDER BY AVG(pr.duracao_min) DESC, MAX(pr.nome) ASC, pr.chave ASC
+              AVG(ipm.duracao_min)::double precision AS tempo_medio_min,
+              PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY ipm.duracao_min) AS p90_min,
+              MAX(ipm.meta_min)::integer AS meta_min,
+              CASE WHEN MAX(ipm.meta_min) IS NULL THEN NULL ELSE 100.0 * SUM(ipm.dentro_meta) / COUNT(*) END AS percentual_dentro_meta
+            FROM itens_prato_meta ipm
+            GROUP BY ipm.chave
+            ORDER BY AVG(ipm.duracao_min) DESC, COALESCE(MAX(ipm.nome), MAX(NULLIF(ipm.prato_nome_historico, '')), 'Prato removido') ASC, ipm.chave ASC
             LIMIT 30
           `
         ) as any[];
+
+        // Validate Q3 result
+        if (!Array.isArray(porPratoResult)) {
+          app.logger.error({ tenantId, resultType: typeof porPratoResult }, "Query 3 (per-dish) result is not an array");
+          return await reply.code(500).send({ error: "Falha na consulta de pratos: resultado inválido." });
+        }
 
         // Query 4: Per-hour breakdown
         const porHoraResult = await (app.db as any).execute(
@@ -3346,32 +3370,10 @@ LIMIT 5
           `
         ) as any[];
 
-        // Validate all results are arrays
-        if (!Array.isArray(itemTotaisResult)) {
-          app.logger.error({ tenantId, resultType: typeof itemTotaisResult }, "Query 1 (item totals) result is not an array");
-          return await reply.code(500).send({ error: "Falha na consulta de totais de itens: resultado inválido." });
-        }
-        if (!Array.isArray(orderTotaisResult)) {
-          app.logger.error({ tenantId, resultType: typeof orderTotaisResult }, "Query 2 (order totals) result is not an array");
-          return await reply.code(500).send({ error: "Falha na consulta de totais de pedidos: resultado inválido." });
-        }
-        if (!Array.isArray(porPratoResult)) {
-          app.logger.error({ tenantId, resultType: typeof porPratoResult }, "Query 3 (per-dish) result is not an array");
-          return await reply.code(500).send({ error: "Falha na consulta de pratos: resultado inválido." });
-        }
+        // Validate Q4 result
         if (!Array.isArray(porHoraResult)) {
           app.logger.error({ tenantId, resultType: typeof porHoraResult }, "Query 4 (per-hour) result is not an array");
           return await reply.code(500).send({ error: "Falha na consulta de horas: resultado inválido." });
-        }
-
-        // Aggregate queries must have exactly 1 row
-        if (itemTotaisResult.length === 0) {
-          app.logger.error({ tenantId }, "Query 1 (item totals) returned empty array");
-          return await reply.code(500).send({ error: "Falha na consulta de totais de itens: resultado vazio." });
-        }
-        if (orderTotaisResult.length === 0) {
-          app.logger.error({ tenantId }, "Query 2 (order totals) returned empty array");
-          return await reply.code(500).send({ error: "Falha na consulta de totais de pedidos: resultado vazio." });
         }
 
         // Process totals
@@ -3395,7 +3397,7 @@ LIMIT 5
         for (const row of porPratoResult) {
           porPrato.push({
             prato_id: row.prato_id || null,
-            nome: row.nome || "Prato desconhecido",
+            nome: row.nome || "Prato removido",
             categoria: row.categoria || null,
             itens_medidos: parseInt(String(row.itens_medidos || 0)) || 0,
             tempo_medio_min: Number(Number(parseFloat(String(row.tempo_medio_min || 0))).toFixed(2)),
