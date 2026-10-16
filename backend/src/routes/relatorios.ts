@@ -3119,28 +3119,43 @@ LIMIT 5
             properties: {
               totais: {
                 type: "object",
-                required: ["itens_medidos", "tempo_medio_min", "p50_min", "p90_min"],
+                required: [
+                  "itens_medidos",
+                  "itens_sem_medicao",
+                  "comandas_medidas",
+                  "tempo_medio_item_min",
+                  "mediana_item_min",
+                  "p90_item_min",
+                  "tempo_medio_pedido_min",
+                  "mediana_pedido_min",
+                  "p90_pedido_min",
+                ],
                 properties: {
                   itens_medidos: { type: "number" },
-                  tempo_medio_min: { type: "number" },
-                  p50_min: { type: "number" },
-                  p90_min: { type: "number" },
+                  itens_sem_medicao: { type: "number" },
+                  comandas_medidas: { type: "number" },
+                  tempo_medio_item_min: { type: "number" },
+                  mediana_item_min: { type: ["number", "null"] },
+                  p90_item_min: { type: ["number", "null"] },
+                  tempo_medio_pedido_min: { type: "number" },
+                  mediana_pedido_min: { type: ["number", "null"] },
+                  p90_pedido_min: { type: ["number", "null"] },
                 },
               },
               por_prato: {
                 type: "array",
                 items: {
                   type: "object",
-                  required: ["prato_id", "nome", "categoria", "itens", "tempo_medio_min", "p50_min", "p90_min", "percentual_meta"],
+                  required: ["prato_id", "nome", "categoria", "itens_medidos", "tempo_medio_min", "p90_min", "meta_min", "percentual_dentro_meta"],
                   properties: {
                     prato_id: { type: ["string", "null"] },
                     nome: { type: "string" },
                     categoria: { type: ["string", "null"] },
-                    itens: { type: "number" },
+                    itens_medidos: { type: "number" },
                     tempo_medio_min: { type: "number" },
-                    p50_min: { type: "number" },
-                    p90_min: { type: "number" },
-                    percentual_meta: { type: "number" },
+                    p90_min: { type: ["number", "null"] },
+                    meta_min: { type: ["number", "null"] },
+                    percentual_dentro_meta: { type: ["number", "null"] },
                   },
                 },
               },
@@ -3148,13 +3163,11 @@ LIMIT 5
                 type: "array",
                 items: {
                   type: "object",
-                  required: ["hora", "itens", "tempo_medio_min", "p50_min", "p90_min"],
+                  required: ["hora", "itens_medidos", "tempo_medio_min"],
                   properties: {
                     hora: { type: "number" },
-                    itens: { type: "number" },
+                    itens_medidos: { type: "number" },
                     tempo_medio_min: { type: "number" },
-                    p50_min: { type: "number" },
-                    p90_min: { type: "number" },
                   },
                 },
               },
@@ -3162,6 +3175,7 @@ LIMIT 5
           },
           400: { type: "object", properties: { error: { type: "string" } } },
           401: { type: "object", properties: { error: { type: "string" } } },
+          403: { type: "object", properties: { error: { type: "string" } } },
           500: { type: "object", properties: { error: { type: "string" } } },
         },
       },
@@ -3169,6 +3183,7 @@ LIMIT 5
     async (request: FastifyRequest, reply: FastifyReply) => {
       const authUser = await customRequireAuth(app, request, reply);
       if (!authUser) return;
+      if (!(await requireRole(authUser, ["administrador", "gerente"], reply))) return;
 
       const tenantId = requireTenant(authUser);
       const { periodo, dataInicio, dataFim } = request.query as {
@@ -3192,178 +3207,220 @@ LIMIT 5
           }
         }
 
-        // Base SQL fragment with 7 CTEs for deduplication and filtering
+        // Base SQL fragment with 8 CTEs for deduplication and filtering
         const baseComun = sql`
           WITH comandas_fontes AS (
-            SELECT id, restaurante_id, 0 AS prioridade_fonte FROM comandas WHERE restaurante_id = ${tenantId}
+            SELECT id, restaurante_id, status::text, total, closed_at, 0 AS prioridade_fonte
+            FROM comandas
+            WHERE restaurante_id = ${tenantId}
             UNION ALL
-            SELECT id, restaurante_id, 1 AS prioridade_fonte FROM comandas_historico WHERE restaurante_id = ${tenantId}
+            SELECT id, restaurante_id, status::text, total, closed_at, 1 AS prioridade_fonte
+            FROM comandas_historico
+            WHERE restaurante_id = ${tenantId}
           ),
           comandas_unicas AS (
-            SELECT DISTINCT ON (restaurante_id, id) id, restaurante_id, prioridade_fonte
-            FROM comandas_fontes
-            ORDER BY restaurante_id, id, prioridade_fonte ASC
+            SELECT DISTINCT ON (cf.restaurante_id, cf.id)
+              cf.id, cf.restaurante_id, cf.status, cf.total, cf.closed_at
+            FROM comandas_fontes cf
+            ORDER BY cf.restaurante_id, cf.id, cf.prioridade_fonte ASC
           ),
           comandas_elegiveis AS (
-            SELECT cu.id
+            SELECT cu.id, cu.restaurante_id
             FROM comandas_unicas cu
+            WHERE cu.status = 'fechada' AND cu.total > 0
+              AND cu.closed_at >= ${inicio.toISOString()}::timestamptz
+              AND cu.closed_at < ${fim.toISOString()}::timestamptz
           ),
           itens_fontes AS (
-            SELECT id, comanda_id, prato_id, quantidade, restaurante_id, iniciado_em, pronto_em, 0 AS prioridade_fonte
+            SELECT id, restaurante_id, comanda_id, prato_id, status::text, iniciado_em, pronto_em,
+              NULL::text AS prato_nome_historico, 0 AS prioridade_fonte
             FROM pedidos
             WHERE restaurante_id = ${tenantId}
             UNION ALL
-            SELECT id, comanda_id, prato_id, quantidade, restaurante_id, iniciado_em, pronto_em, 1 AS prioridade_fonte
+            SELECT id, restaurante_id, comanda_id, prato_id, status::text, iniciado_em, pronto_em,
+              prato_nome AS prato_nome_historico, 1 AS prioridade_fonte
             FROM pedidos_historico
             WHERE restaurante_id = ${tenantId}
           ),
           itens_unicos AS (
-            SELECT DISTINCT ON (restaurante_id, id) id, comanda_id, prato_id, quantidade, restaurante_id, iniciado_em, pronto_em, prioridade_fonte
-            FROM itens_fontes
-            ORDER BY restaurante_id, id, prioridade_fonte ASC
+            SELECT DISTINCT ON (ifn.restaurante_id, ifn.id)
+              ifn.id, ifn.restaurante_id, ifn.comanda_id, ifn.prato_id, ifn.status,
+              ifn.iniciado_em, ifn.pronto_em, ifn.prato_nome_historico
+            FROM itens_fontes ifn
+            ORDER BY ifn.restaurante_id, ifn.id, ifn.prioridade_fonte ASC
           ),
           itens_elegiveis AS (
-            SELECT iu.id, iu.comanda_id, iu.prato_id, iu.quantidade, iu.restaurante_id, iu.iniciado_em, iu.pronto_em
+            SELECT iu.id, iu.restaurante_id, iu.comanda_id, iu.prato_id, iu.status, iu.iniciado_em, iu.pronto_em, iu.prato_nome_historico
             FROM itens_unicos iu
-            INNER JOIN comandas_elegiveis ce ON iu.comanda_id = ce.id
+            INNER JOIN comandas_elegiveis ce ON iu.comanda_id = ce.id AND iu.restaurante_id = ce.restaurante_id
+            WHERE iu.status <> 'cancelado'
           ),
           itens_medidos AS (
-            SELECT
-              ie.id, ie.prato_id, ie.quantidade, ie.restaurante_id,
-              EXTRACT(EPOCH FROM (ie.pronto_em - ie.iniciado_em)) / 60.0 AS tempo_preparo_min,
-              EXTRACT(HOUR FROM ie.iniciado_em AT TIME ZONE 'America/Sao_Paulo') AS hora_iniciado
+            SELECT ie.id, ie.restaurante_id, ie.comanda_id, ie.prato_id,
+              EXTRACT(EPOCH FROM (ie.pronto_em - ie.iniciado_em))::double precision / 60.0 AS duracao_min,
+              ie.iniciado_em, ie.pronto_em, ie.prato_nome_historico,
+              EXTRACT(HOUR FROM ie.iniciado_em AT TIME ZONE 'America/Sao_Paulo')::integer AS hora
             FROM itens_elegiveis ie
-            WHERE ie.iniciado_em IS NOT NULL AND ie.pronto_em IS NOT NULL
-              AND ie.pronto_em >= ie.iniciado_em
-              AND ie.iniciado_em >= ${inicio.toISOString()}::timestamptz
-              AND ie.iniciado_em < ${fim.toISOString()}::timestamptz
+            WHERE ie.iniciado_em IS NOT NULL AND ie.pronto_em IS NOT NULL AND ie.pronto_em >= ie.iniciado_em
+          ),
+          pratos_resolvidos AS (
+            SELECT
+              COALESCE(im.prato_id::text, 'historico:' || NULLIF(im.prato_nome_historico, ''), 'Prato removido') AS chave,
+              im.id, im.comanda_id, im.duracao_min, im.hora,
+              p.id AS prato_id_catalog, p.nome, p.tempo_preparo_min,
+              cat.nome AS categoria
+            FROM itens_medidos im
+            LEFT JOIN pratos p ON p.id = im.prato_id AND p.restaurante_id = im.restaurante_id AND p.restaurante_id = ${tenantId}
+            LEFT JOIN categorias cat ON cat.id = p.categoria_id AND cat.restaurante_id = im.restaurante_id AND cat.restaurante_id = ${tenantId}
           )
         `;
 
-        // Query 1: Totals across all items
-        const totaisResult = await (app.db as any).execute(
+        // Query 1: Item totals
+        const itemTotaisResult = await (app.db as any).execute(
           sql`
             ${baseComun}
             SELECT
-              COUNT(*)::integer AS itens_medidos,
-              COALESCE(AVG(tempo_preparo_min), 0)::numeric AS tempo_medio_min,
-              COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY tempo_preparo_min), 0)::numeric AS p50_min,
-              COALESCE(PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY tempo_preparo_min), 0)::numeric AS p90_min
-            FROM itens_medidos
+              COUNT(*) FILTER (WHERE ie.iniciado_em IS NOT NULL AND ie.pronto_em IS NOT NULL AND ie.pronto_em >= ie.iniciado_em)::integer AS itens_medidos,
+              COUNT(*) FILTER (WHERE ie.iniciado_em IS NULL OR ie.pronto_em IS NULL OR ie.pronto_em < ie.iniciado_em)::integer AS itens_sem_medicao,
+              COALESCE(AVG(CASE WHEN ie.iniciado_em IS NOT NULL AND ie.pronto_em IS NOT NULL AND ie.pronto_em >= ie.iniciado_em
+                THEN EXTRACT(EPOCH FROM (ie.pronto_em - ie.iniciado_em))::double precision / 60.0 ELSE NULL END), 0)::double precision AS tempo_medio_item_min,
+              PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (ie.pronto_em - ie.iniciado_em))::double precision / 60.0) AS mediana_item_min,
+              PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (ie.pronto_em - ie.iniciado_em))::double precision / 60.0) AS p90_item_min
+            FROM itens_elegiveis ie
           `
         ) as any[];
 
-        // Query 2: Per-dish breakdown (limited to 30 dishes)
+        // Query 2: Order totals
+        const orderTotaisResult = await (app.db as any).execute(
+          sql`
+            ${baseComun}
+            WITH medidos_por_pedido AS (
+              SELECT ie.comanda_id, MAX(EXTRACT(EPOCH FROM (ie.pronto_em - ie.iniciado_em))::double precision / 60.0) AS duracao_pedido_min
+              FROM itens_elegiveis ie
+              WHERE ie.iniciado_em IS NOT NULL AND ie.pronto_em IS NOT NULL AND ie.pronto_em >= ie.iniciado_em
+              GROUP BY ie.comanda_id
+            )
+            SELECT
+              COUNT(*)::integer AS comandas_medidas,
+              COALESCE(AVG(mpp.duracao_pedido_min), 0)::double precision AS tempo_medio_pedido_min,
+              PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY mpp.duracao_pedido_min) AS mediana_pedido_min,
+              PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY mpp.duracao_pedido_min) AS p90_pedido_min
+            FROM medidos_por_pedido mpp
+          `
+        ) as any[];
+
+        // Query 3: Per-dish breakdown
         const porPratoResult = await (app.db as any).execute(
           sql`
             ${baseComun}
             SELECT
-              p.id AS prato_id,
-              COALESCE(p.nome, 'Prato desconhecido') AS nome,
-              COALESCE(c.nome, NULL) AS categoria,
-              COUNT(im.id)::integer AS itens,
-              COALESCE(AVG(im.tempo_preparo_min), 0)::numeric AS tempo_medio_min,
-              COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY im.tempo_preparo_min), 0)::numeric AS p50_min,
-              COALESCE(PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY im.tempo_preparo_min), 0)::numeric AS p90_min,
-              COALESCE(p.tempo_preparo_min, 0)::integer AS meta_min
-            FROM itens_medidos im
-            LEFT JOIN pratos p ON im.prato_id = p.id
-            LEFT JOIN categorias c ON p.categoria_id = c.id
-            GROUP BY p.id, p.nome, c.nome, p.tempo_preparo_min
-            ORDER BY itens DESC, tempo_medio_min DESC
+              MAX(pr.prato_id_catalog)::text AS prato_id,
+              MAX(pr.nome) AS nome,
+              MAX(pr.categoria) AS categoria,
+              COUNT(*)::integer AS itens_medidos,
+              AVG(pr.duracao_min)::double precision AS tempo_medio_min,
+              PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY pr.duracao_min) AS p90_min,
+              MAX(NULLIF(pr.tempo_preparo_min, 0))::integer AS meta_min,
+              CASE WHEN MAX(NULLIF(pr.tempo_preparo_min, 0)) IS NOT NULL
+                THEN 100.0 * COUNT(*) FILTER (WHERE pr.duracao_min <= MAX(NULLIF(pr.tempo_preparo_min, 0))) / COUNT(*)
+                ELSE NULL
+              END AS percentual_dentro_meta
+            FROM pratos_resolvidos pr
+            GROUP BY pr.chave
+            ORDER BY AVG(pr.duracao_min) DESC, MAX(pr.nome) ASC, pr.chave ASC
             LIMIT 30
           `
         ) as any[];
 
-        // Query 3: Hourly breakdown (all 24 hours)
+        // Query 4: Per-hour breakdown
         const porHoraResult = await (app.db as any).execute(
           sql`
             ${baseComun}
             SELECT
-              hora_iniciado AS hora,
-              COUNT(*)::integer AS itens,
-              COALESCE(AVG(tempo_preparo_min), 0)::numeric AS tempo_medio_min,
-              COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY tempo_preparo_min), 0)::numeric AS p50_min,
-              COALESCE(PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY tempo_preparo_min), 0)::numeric AS p90_min
-            FROM itens_medidos
-            GROUP BY hora_iniciado
-            ORDER BY hora_iniciado ASC
+              im.hora::integer AS hora,
+              COUNT(*)::integer AS itens_medidos,
+              AVG(im.duracao_min)::double precision AS tempo_medio_min
+            FROM itens_medidos im
+            GROUP BY im.hora
+            ORDER BY im.hora ASC
           `
         ) as any[];
 
+        // Validate all results are arrays
+        if (!Array.isArray(itemTotaisResult)) {
+          app.logger.error({ tenantId, resultType: typeof itemTotaisResult }, "Query 1 (item totals) result is not an array");
+          return await reply.code(500).send({ error: "Falha na consulta de totais de itens: resultado inválido." });
+        }
+        if (!Array.isArray(orderTotaisResult)) {
+          app.logger.error({ tenantId, resultType: typeof orderTotaisResult }, "Query 2 (order totals) result is not an array");
+          return await reply.code(500).send({ error: "Falha na consulta de totais de pedidos: resultado inválido." });
+        }
+        if (!Array.isArray(porPratoResult)) {
+          app.logger.error({ tenantId, resultType: typeof porPratoResult }, "Query 3 (per-dish) result is not an array");
+          return await reply.code(500).send({ error: "Falha na consulta de pratos: resultado inválido." });
+        }
+        if (!Array.isArray(porHoraResult)) {
+          app.logger.error({ tenantId, resultType: typeof porHoraResult }, "Query 4 (per-hour) result is not an array");
+          return await reply.code(500).send({ error: "Falha na consulta de horas: resultado inválido." });
+        }
+
+        // Aggregate queries must have exactly 1 row
+        if (itemTotaisResult.length === 0) {
+          app.logger.error({ tenantId }, "Query 1 (item totals) returned empty array");
+          return await reply.code(500).send({ error: "Falha na consulta de totais de itens: resultado vazio." });
+        }
+        if (orderTotaisResult.length === 0) {
+          app.logger.error({ tenantId }, "Query 2 (order totals) returned empty array");
+          return await reply.code(500).send({ error: "Falha na consulta de totais de pedidos: resultado vazio." });
+        }
+
         // Process totals
-        const totalRow = totaisResult[0] || {
-          itens_medidos: 0,
-          tempo_medio_min: 0,
-          p50_min: 0,
-          p90_min: 0,
-        };
+        const itemRow = itemTotaisResult[0];
+        const orderRow = orderTotaisResult[0];
 
         const totais = {
-          itens_medidos: parseInt(String(totalRow.itens_medidos || 0)) || 0,
-          tempo_medio_min: Math.round(parseFloat(String(totalRow.tempo_medio_min || 0)) * 100) / 100,
-          p50_min: Math.round(parseFloat(String(totalRow.p50_min || 0)) * 100) / 100,
-          p90_min: Math.round(parseFloat(String(totalRow.p90_min || 0)) * 100) / 100,
+          itens_medidos: parseInt(String(itemRow.itens_medidos || 0)) || 0,
+          itens_sem_medicao: parseInt(String(itemRow.itens_sem_medicao || 0)) || 0,
+          comandas_medidas: parseInt(String(orderRow.comandas_medidas || 0)) || 0,
+          tempo_medio_item_min: Number(Number(parseFloat(String(itemRow.tempo_medio_item_min || 0))).toFixed(2)),
+          mediana_item_min: itemRow.mediana_item_min !== null ? Number(Number(parseFloat(String(itemRow.mediana_item_min))).toFixed(2)) : null,
+          p90_item_min: itemRow.p90_item_min !== null ? Number(Number(parseFloat(String(itemRow.p90_item_min))).toFixed(2)) : null,
+          tempo_medio_pedido_min: Number(Number(parseFloat(String(orderRow.tempo_medio_pedido_min || 0))).toFixed(2)),
+          mediana_pedido_min: orderRow.mediana_pedido_min !== null ? Number(Number(parseFloat(String(orderRow.mediana_pedido_min))).toFixed(2)) : null,
+          p90_pedido_min: orderRow.p90_pedido_min !== null ? Number(Number(parseFloat(String(orderRow.p90_pedido_min))).toFixed(2)) : null,
         };
 
         // Process per-dish data
         const porPrato = [];
-        if (Array.isArray(porPratoResult)) {
-          for (const row of porPratoResult) {
-            const tempoMedio = parseFloat(String(row.tempo_medio_min || 0));
-            const p90 = parseFloat(String(row.p90_min || 0));
-            const metaMin = parseInt(String(row.meta_min || 0)) || 0;
-            const percentualMeta = metaMin > 0 ? Math.round((1 - Math.min(p90 / metaMin, 1)) * 10000) / 100 : 0;
-
-            porPrato.push({
-              prato_id: row.prato_id || null,
-              nome: row.nome || "Prato desconhecido",
-              categoria: row.categoria || null,
-              itens: parseInt(String(row.itens || 0)) || 0,
-              tempo_medio_min: Math.round(tempoMedio * 100) / 100,
-              p50_min: Math.round(parseFloat(String(row.p50_min || 0)) * 100) / 100,
-              p90_min: Math.round(parseFloat(String(row.p90_min || 0)) * 100) / 100,
-              percentual_meta: percentualMeta,
-            });
-          }
+        for (const row of porPratoResult) {
+          porPrato.push({
+            prato_id: row.prato_id || null,
+            nome: row.nome || "Prato desconhecido",
+            categoria: row.categoria || null,
+            itens_medidos: parseInt(String(row.itens_medidos || 0)) || 0,
+            tempo_medio_min: Number(Number(parseFloat(String(row.tempo_medio_min || 0))).toFixed(2)),
+            p90_min: row.p90_min !== null ? Number(Number(parseFloat(String(row.p90_min))).toFixed(2)) : null,
+            meta_min: row.meta_min !== null ? parseInt(String(row.meta_min)) : null,
+            percentual_dentro_meta: row.percentual_dentro_meta !== null ? Number(Number(parseFloat(String(row.percentual_dentro_meta))).toFixed(2)) : null,
+          });
         }
 
-        // Process hourly data (fill all 24 hours)
-        const horaMap = new Map<number, { itens: number; tempo_medio_min: number; p50_min: number; p90_min: number }>();
-        for (let h = 0; h < 24; h++) {
-          horaMap.set(h, { itens: 0, tempo_medio_min: 0, p50_min: 0, p90_min: 0 });
+        // Process per-hour data
+        const porHora = [];
+        for (const row of porHoraResult) {
+          porHora.push({
+            hora: parseInt(String(row.hora || 0)) || 0,
+            itens_medidos: parseInt(String(row.itens_medidos || 0)) || 0,
+            tempo_medio_min: Number(Number(parseFloat(String(row.tempo_medio_min || 0))).toFixed(2)),
+          });
         }
-
-        if (Array.isArray(porHoraResult)) {
-          for (const row of porHoraResult) {
-            const hora = parseInt(String(row.hora || 0)) || 0;
-            if (hora >= 0 && hora < 24) {
-              horaMap.set(hora, {
-                itens: parseInt(String(row.itens || 0)) || 0,
-                tempo_medio_min: Math.round(parseFloat(String(row.tempo_medio_min || 0)) * 100) / 100,
-                p50_min: Math.round(parseFloat(String(row.p50_min || 0)) * 100) / 100,
-                p90_min: Math.round(parseFloat(String(row.p90_min || 0)) * 100) / 100,
-              });
-            }
-          }
-        }
-
-        const porHora = Array.from({ length: 24 }, (_, i) => {
-          const metrics = horaMap.get(i) || { itens: 0, tempo_medio_min: 0, p50_min: 0, p90_min: 0 };
-          return {
-            hora: i,
-            itens: metrics.itens,
-            tempo_medio_min: metrics.tempo_medio_min,
-            p50_min: metrics.p50_min,
-            p90_min: metrics.p90_min,
-          };
-        });
 
         app.logger.info(
           {
             tenantId,
             itens_medidos: totais.itens_medidos,
-            tempo_medio_min: totais.tempo_medio_min,
+            itens_sem_medicao: totais.itens_sem_medicao,
+            comandas_medidas: totais.comandas_medidas,
           },
           "Cozinha-tempos report retrieved successfully"
         );
