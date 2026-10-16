@@ -1873,26 +1873,33 @@ export function registerRelatoriosRoutes(app: App) {
               SELECT * FROM deduplicadas
               WHERE status = 'fechada' AND total > 0 AND closed_at >= ${inicio.toISOString()}::timestamptz AND closed_at < ${fim.toISOString()}::timestamptz AND tipo != 'delivery'
             ),
-            garcom_nomes AS (
-              SELECT DISTINCT ON (bv.garcom_id, ${tenantId})
-                bv.garcom_id,
-                COALESCE(NULLIF(BTRIM(u.nome), ''), NULLIF(BTRIM(p.name), ''), 'Sem garçom identificado') AS nome_resolvido
+            perfis_unicos AS (
+              SELECT DISTINCT ON (p.user_id) p.user_id AS user_id, NULLIF(BTRIM(p.name), '') AS nome
+              FROM profiles p
+              WHERE p.restaurante_id = ${tenantId}
+              ORDER BY p.user_id, (NULLIF(BTRIM(p.name), '') IS NULL) ASC, p.created_at DESC, p.id DESC
+            ),
+            garcons_resolvidos AS (
+              SELECT bv.garcom_id AS garcom_original, bv.subtotal AS subtotal, bv.gorjeta AS gorjeta,
+              COALESCE(NULLIF(BTRIM(u.nome), ''), pu.nome) AS nome_resolvido
               FROM base_vendas bv
-              LEFT JOIN usuarios u ON bv.garcom_id = u.id AND u.restaurante_id = ${tenantId}
-              LEFT JOIN profiles p ON bv.garcom_id = p.user_id AND p.restaurante_id = ${tenantId}
-              ORDER BY bv.garcom_id, ${tenantId}, p.id DESC NULLS LAST
+              LEFT JOIN usuarios u ON u.id = bv.garcom_id AND u.restaurante_id = ${tenantId}
+              LEFT JOIN perfis_unicos pu ON pu.user_id = bv.garcom_id
+            ),
+            garcons_finais AS (
+              SELECT CASE WHEN NULLIF(BTRIM(garcom_original), '') IS NOT NULL AND nome_resolvido IS NOT NULL THEN garcom_original ELSE NULL END AS garcom_id,
+              CASE WHEN NULLIF(BTRIM(garcom_original), '') IS NOT NULL AND nome_resolvido IS NOT NULL THEN nome_resolvido ELSE 'Sem garçom identificado' END AS nome,
+              subtotal, gorjeta
+              FROM garcons_resolvidos
             )
-            SELECT
-              CASE WHEN BTRIM(COALESCE(gn.garcom_id, '')) = '' THEN NULL ELSE gn.garcom_id END AS garcom_id,
-              COALESCE(gn.nome_resolvido, 'Sem garçom identificado') AS nome,
-              COUNT(*)::integer AS comandas,
-              SUM(bv.subtotal) AS faturamento_itens,
-              SUM(bv.gorjeta) AS gorjeta_total,
-              COUNT(CASE WHEN bv.gorjeta > 0 THEN 1 END)::integer AS comandas_com_gorjeta
-            FROM base_vendas bv
-            LEFT JOIN garcom_nomes gn ON bv.garcom_id = gn.garcom_id
-            GROUP BY CASE WHEN BTRIM(COALESCE(bv.garcom_id, '')) = '' THEN NULL ELSE bv.garcom_id END, COALESCE(gn.nome_resolvido, 'Sem garçom identificado')
-            ORDER BY faturamento_itens DESC NULLS LAST, nome, garcom_id
+            SELECT gf.garcom_id AS garcom_id, gf.nome AS nome,
+            COUNT(*)::integer AS comandas,
+            SUM(gf.subtotal) AS faturamento_itens,
+            SUM(gf.gorjeta) AS gorjeta_total,
+            COUNT(CASE WHEN gf.gorjeta > 0 THEN 1 END)::integer AS comandas_com_gorjeta
+            FROM garcons_finais gf
+            GROUP BY gf.garcom_id, gf.nome
+            ORDER BY faturamento_itens DESC NULLS LAST, gf.nome ASC, gf.garcom_id ASC NULLS LAST
           `
         ) as any[];
 
@@ -1943,7 +1950,7 @@ export function registerRelatoriosRoutes(app: App) {
         for (let d = new Date(Date.UTC(inicioDia.ano, inicioDia.mes0, inicioDia.dia));
              d <= new Date(Date.UTC(fimDia.ano, fimDia.mes0, fimDia.dia));
              d.setUTCDate(d.getUTCDate() + 1)) {
-          const dayOfWeek = new Date(d.getTime() + FUSO_HORAS * MS_HORA).getUTCDay();
+          const dayOfWeek = d.getUTCDay();
           const current = diaMap.get(dayOfWeek) || { comandas: 0, faturamento_itens: 0, ocorrencias: 0 };
           diaMap.set(dayOfWeek, { ...current, ocorrencias: current.ocorrencias + 1 });
         }
