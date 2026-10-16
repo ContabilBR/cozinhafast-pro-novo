@@ -751,52 +751,56 @@ export function registerRelatoriosRoutes(app: App) {
         try {
           const topDishesResult = await (app.db as any).execute(
             sql`
-              WITH pedidos_vivos AS (
-                SELECT id, prato_id, quantidade, restaurante_id, status::text AS status,
-                  NULL::text AS prato_nome, 0 AS prioridade_fonte
-                FROM pedidos
-                WHERE restaurante_id = ${tenantId}
-              ),
-              pedidos_hist AS (
-                SELECT id, prato_id, quantidade, restaurante_id, status,
-                  prato_nome AS prato_nome, 1 AS prioridade_fonte
-                FROM pedidos_historico
-                WHERE restaurante_id = ${tenantId}
-              ),
-              todos_pedidos AS (
-                SELECT * FROM pedidos_vivos UNION ALL SELECT * FROM pedidos_hist
-              ),
-              dedup_pedidos AS (
-                SELECT DISTINCT ON (restaurante_id, id)
-                  id, prato_id, quantidade, restaurante_id, status, prato_nome
-                FROM todos_pedidos
-                ORDER BY restaurante_id, id, prioridade_fonte ASC
-              ),
-              pedidos_elegveis AS (
-                SELECT prato_id, quantidade, prato_nome
-                FROM dedup_pedidos
-                WHERE status != 'cancelado'
-              ),
-              com_nomes AS (
-                SELECT
-                  pe.prato_id,
-                  p.nome AS prato_nome_atual,
-                  pe.prato_nome AS prato_nome_historico,
-                  pe.quantidade
-                FROM pedidos_elegveis pe
-                LEFT JOIN pratos p ON pe.prato_id = p.id AND p.restaurante_id = ${tenantId}
-              ),
-              identidades AS (
-                SELECT
-                  COALESCE(NULLIF(BTRIM(prato_nome_atual),''), NULLIF(BTRIM(prato_nome_historico),''), 'Prato removido') AS nome_resolvido,
-                  SUM(quantidade)::integer AS quantidade_total
-                FROM com_nomes
-                GROUP BY CASE WHEN prato_id IS NULL THEN prato_nome_historico ELSE NULL END, prato_nome_atual
-              )
-              SELECT nome_resolvido AS dish_name, quantidade_total AS quantity_sold
-              FROM identidades
-              ORDER BY quantidade_total DESC, nome_resolvido ASC
-              LIMIT 5
+WITH itens_fontes AS (
+ SELECT p.id AS id, p.restaurante_id AS restaurante_id, p.comanda_id AS comanda_id, p.prato_id AS prato_id, NULL::text AS prato_nome_gravado, p.quantidade AS quantidade, p.status::text AS status, 0 AS prioridade_fonte
+ FROM pedidos p WHERE p.restaurante_id = ${tenantId}
+ UNION ALL
+ SELECT ph.id AS id, ph.restaurante_id AS restaurante_id, ph.comanda_id AS comanda_id, ph.prato_id AS prato_id, ph.prato_nome AS prato_nome_gravado, ph.quantidade AS quantidade, ph.status::text AS status, 1 AS prioridade_fonte
+ FROM pedidos_historico ph WHERE ph.restaurante_id = ${tenantId}
+),
+itens_unicos AS (
+ SELECT DISTINCT ON (i.restaurante_id,i.id)
+ i.id AS id,i.restaurante_id AS restaurante_id,i.comanda_id AS comanda_id,i.prato_id AS prato_id,i.prato_nome_gravado AS prato_nome_gravado,i.quantidade AS quantidade,i.status AS status
+ FROM itens_fontes i ORDER BY i.restaurante_id,i.id,i.prioridade_fonte ASC
+),
+comandas_fontes AS (
+ SELECT c.id AS id,c.restaurante_id AS restaurante_id,c.status::text AS status,c.total AS total,c.closed_at AS closed_at,0 AS prioridade_fonte
+ FROM comandas c WHERE c.restaurante_id = ${tenantId}
+ UNION ALL
+ SELECT ch.id AS id,ch.restaurante_id AS restaurante_id,ch.status::text AS status,ch.total AS total,ch.closed_at AS closed_at,1 AS prioridade_fonte
+ FROM comandas_historico ch WHERE ch.restaurante_id = ${tenantId}
+),
+comandas_unicas AS (
+ SELECT DISTINCT ON (c.restaurante_id,c.id) c.id AS id,c.restaurante_id AS restaurante_id,c.status AS status,c.total AS total,c.closed_at AS closed_at
+ FROM comandas_fontes c ORDER BY c.restaurante_id,c.id,c.prioridade_fonte ASC
+),
+comandas_elegiveis AS (
+ SELECT c.id AS id,c.restaurante_id AS restaurante_id FROM comandas_unicas c
+ WHERE c.status='fechada' AND c.total>0
+ AND c.closed_at>=${inicio.toISOString()}::timestamptz AND c.closed_at<${fim.toISOString()}::timestamptz
+),
+itens_vendidos AS (
+ SELECT i.prato_id AS prato_id,i.prato_nome_gravado AS prato_nome_gravado,i.quantidade AS quantidade,i.restaurante_id AS restaurante_id
+ FROM itens_unicos i
+ INNER JOIN comandas_elegiveis c ON c.id=i.comanda_id AND c.restaurante_id=i.restaurante_id
+ WHERE i.status<>'cancelado'
+),
+pratos_resolvidos AS (
+ SELECT
+ CASE WHEN i.prato_id IS NOT NULL THEN 'id:' || i.prato_id::text ELSE 'nome:' || COALESCE(NULLIF(BTRIM(i.prato_nome_gravado),''),'Prato removido') END AS chave_prato,
+ COALESCE(NULLIF(BTRIM(p.nome),''),NULLIF(BTRIM(i.prato_nome_gravado),''),'Prato removido') AS nome_exibido,
+ i.quantidade AS quantidade
+ FROM itens_vendidos i
+ LEFT JOIN pratos p ON p.id=i.prato_id AND p.restaurante_id=i.restaurante_id AND p.restaurante_id=${tenantId}
+),
+pratos_agrupados AS (
+ SELECT p.chave_prato AS chave_prato,MAX(p.nome_exibido) AS dish_name,SUM(p.quantidade) AS quantity_sold
+ FROM pratos_resolvidos p GROUP BY p.chave_prato
+)
+SELECT p.dish_name AS dish_name,p.quantity_sold AS quantity_sold
+FROM pratos_agrupados p
+ORDER BY p.quantity_sold DESC,p.dish_name ASC,p.chave_prato ASC
+LIMIT 5
             `
           ) as any[];
 
