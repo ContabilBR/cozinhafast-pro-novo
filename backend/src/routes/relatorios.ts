@@ -1610,7 +1610,7 @@ export function registerRelatoriosRoutes(app: App) {
                 items: {
                   type: "object",
                   properties: {
-                    garcom_id: { type: ["string", "null"] },
+                    garcom_id: { type: "string", nullable: true },
                     nome: { type: "string" },
                     comandas: { type: "integer" },
                     faturamento_itens: { type: "number" },
@@ -1658,27 +1658,31 @@ export function registerRelatoriosRoutes(app: App) {
         const porHoraResult = await (app.db as any).execute(
           sql`
             WITH vendas_atuais AS (
-              SELECT id, restaurante_id, tipo::text, status::text, closed_at, subtotal, gorjeta, total, garcom_id
+              SELECT id, restaurante_id, tipo::text AS tipo, status::text AS status, closed_at, subtotal, total, gorjeta, garcom_id, 0 AS prioridade_fonte
               FROM comandas
-              WHERE restaurante_id = ${tenantId} AND closed_at >= ${inicio.toISOString()}::timestamptz AND closed_at < ${fim.toISOString()}::timestamptz
+              WHERE restaurante_id = ${tenantId}
             ),
             vendas_historico AS (
-              SELECT id, restaurante_id, 'mesa'::text, status::text, closed_at, subtotal, gorjeta, total, garcom_id
+              SELECT id, restaurante_id, 'mesa'::text AS tipo, status::text AS status, closed_at, subtotal, total, gorjeta, garcom_id, 1 AS prioridade_fonte
               FROM comandas_historico
-              WHERE restaurante_id = ${tenantId} AND closed_at >= ${inicio.toISOString()}::timestamptz AND closed_at < ${fim.toISOString()}::timestamptz
+              WHERE restaurante_id = ${tenantId}
+            ),
+            todas_vendas AS (
+              SELECT * FROM vendas_atuais UNION ALL SELECT * FROM vendas_historico
             ),
             deduplicadas AS (
-              SELECT DISTINCT ON (restaurante_id, id) id, restaurante_id, status, closed_at, CAST(subtotal AS DECIMAL(10,2)) AS subtotal
-              FROM (SELECT * FROM vendas_atuais UNION ALL SELECT * FROM vendas_historico) v
-              ORDER BY restaurante_id, id, tipo DESC
+              SELECT DISTINCT ON (restaurante_id, id) id, restaurante_id, tipo, status, closed_at, subtotal, total
+              FROM todas_vendas
+              ORDER BY restaurante_id, id, prioridade_fonte ASC
             ),
             base_vendas AS (
-              SELECT * FROM deduplicadas WHERE status = 'fechada' AND subtotal > 0
+              SELECT * FROM deduplicadas
+              WHERE status = 'fechada' AND total > 0 AND closed_at >= ${inicio.toISOString()}::timestamptz AND closed_at < ${fim.toISOString()}::timestamptz
             )
             SELECT
               EXTRACT(HOUR FROM (closed_at AT TIME ZONE 'America/Sao_Paulo'))::integer AS hora,
               COUNT(*)::integer AS comandas,
-              CAST(SUM(subtotal) AS DECIMAL(10,2)) AS faturamento_itens
+              SUM(subtotal) AS faturamento_itens
             FROM base_vendas
             GROUP BY EXTRACT(HOUR FROM (closed_at AT TIME ZONE 'America/Sao_Paulo'))
           `
@@ -1688,74 +1692,145 @@ export function registerRelatoriosRoutes(app: App) {
         const porDiaSemanaResult = await (app.db as any).execute(
           sql`
             WITH vendas_atuais AS (
-              SELECT id, restaurante_id, tipo::text, status::text, closed_at, subtotal, gorjeta, total, garcom_id
+              SELECT id, restaurante_id, tipo::text AS tipo, status::text AS status, closed_at, subtotal, total, gorjeta, garcom_id, 0 AS prioridade_fonte
               FROM comandas
-              WHERE restaurante_id = ${tenantId} AND closed_at >= ${inicio.toISOString()}::timestamptz AND closed_at < ${fim.toISOString()}::timestamptz
+              WHERE restaurante_id = ${tenantId}
             ),
             vendas_historico AS (
-              SELECT id, restaurante_id, 'mesa'::text, status::text, closed_at, subtotal, gorjeta, total, garcom_id
+              SELECT id, restaurante_id, 'mesa'::text AS tipo, status::text AS status, closed_at, subtotal, total, gorjeta, garcom_id, 1 AS prioridade_fonte
               FROM comandas_historico
-              WHERE restaurante_id = ${tenantId} AND closed_at >= ${inicio.toISOString()}::timestamptz AND closed_at < ${fim.toISOString()}::timestamptz
+              WHERE restaurante_id = ${tenantId}
+            ),
+            todas_vendas AS (
+              SELECT * FROM vendas_atuais UNION ALL SELECT * FROM vendas_historico
             ),
             deduplicadas AS (
-              SELECT DISTINCT ON (restaurante_id, id) id, restaurante_id, status, closed_at, CAST(subtotal AS DECIMAL(10,2)) AS subtotal
-              FROM (SELECT * FROM vendas_atuais UNION ALL SELECT * FROM vendas_historico) v
-              ORDER BY restaurante_id, id, tipo DESC
+              SELECT DISTINCT ON (restaurante_id, id) id, restaurante_id, tipo, status, closed_at, subtotal, total
+              FROM todas_vendas
+              ORDER BY restaurante_id, id, prioridade_fonte ASC
             ),
             base_vendas AS (
-              SELECT * FROM deduplicadas WHERE status = 'fechada' AND subtotal > 0
+              SELECT * FROM deduplicadas
+              WHERE status = 'fechada' AND total > 0 AND closed_at >= ${inicio.toISOString()}::timestamptz AND closed_at < ${fim.toISOString()}::timestamptz
             )
             SELECT
               EXTRACT(DOW FROM (closed_at AT TIME ZONE 'America/Sao_Paulo'))::integer AS dia_semana,
               COUNT(*)::integer AS comandas,
-              CAST(SUM(subtotal) AS DECIMAL(10,2)) AS faturamento_itens
+              SUM(subtotal) AS faturamento_itens
             FROM base_vendas
             GROUP BY EXTRACT(DOW FROM (closed_at AT TIME ZONE 'America/Sao_Paulo'))
           `
         ) as any[];
 
-        // Fetch payment methods with reconciliation
-        const pagamentosResult = await (app.db as any).execute(
+        // Fetch payment methods and reconciliation (two independent aggregations)
+        const formasResult = await (app.db as any).execute(
           sql`
-            WITH base_vendas_ids AS (
-              WITH vendas_atuais AS (
-                SELECT id, restaurante_id, tipo::text, status::text, closed_at, subtotal, gorjeta, total
-                FROM comandas
-                WHERE restaurante_id = ${tenantId} AND closed_at >= ${inicio.toISOString()}::timestamptz AND closed_at < ${fim.toISOString()}::timestamptz
-              ),
-              vendas_historico AS (
-                SELECT id, restaurante_id, 'mesa'::text, status::text, closed_at, subtotal, gorjeta, total
-                FROM comandas_historico
-                WHERE restaurante_id = ${tenantId} AND closed_at >= ${inicio.toISOString()}::timestamptz AND closed_at < ${fim.toISOString()}::timestamptz
-              ),
-              deduplicadas AS (
-                SELECT DISTINCT ON (restaurante_id, id) id, restaurante_id, status, closed_at, CAST(subtotal AS DECIMAL(10,2)) AS subtotal, CAST(total AS DECIMAL(10,2)) AS total
-                FROM (SELECT * FROM vendas_atuais UNION ALL SELECT * FROM vendas_historico) v
-                ORDER BY restaurante_id, id, tipo DESC
-              )
-              SELECT id, total FROM deduplicadas WHERE status = 'fechada' AND subtotal > 0
+            WITH vendas_atuais AS (
+              SELECT id, restaurante_id, tipo::text AS tipo, status::text AS status, closed_at, subtotal, total, 0 AS prioridade_fonte
+              FROM comandas WHERE restaurante_id = ${tenantId}
+            ),
+            vendas_historico AS (
+              SELECT id, restaurante_id, 'mesa'::text AS tipo, status::text AS status, closed_at, subtotal, total, 1 AS prioridade_fonte
+              FROM comandas_historico WHERE restaurante_id = ${tenantId}
+            ),
+            todas_vendas AS (
+              SELECT * FROM vendas_atuais UNION ALL SELECT * FROM vendas_historico
+            ),
+            deduplicadas AS (
+              SELECT DISTINCT ON (restaurante_id, id) id, restaurante_id, status, closed_at, subtotal, total
+              FROM todas_vendas
+              ORDER BY restaurante_id, id, prioridade_fonte ASC
+            ),
+            base_vendas_ids AS (
+              SELECT id, total FROM deduplicadas
+              WHERE status = 'fechada' AND total > 0 AND closed_at >= ${inicio.toISOString()}::timestamptz AND closed_at < ${fim.toISOString()}::timestamptz
             ),
             pagamentos_atuais AS (
-              SELECT id, comanda_id, forma_pagamento::text, status::text, CAST(valor AS DECIMAL(10,2)) AS valor, CAST(COALESCE(troco, 0) AS DECIMAL(10,2)) AS troco
+              SELECT id, comanda_id AS comanda, forma_pagamento::text AS forma, status::text AS status, valor, COALESCE(troco, 0) AS troco, 0 AS prioridade_fonte
               FROM pagamentos WHERE restaurante_id = ${tenantId}
             ),
-            pagamentos_historico AS (
-              SELECT id, comanda_id, forma_pagamento::text, 'confirmado'::text, CAST(valor AS DECIMAL(10,2)), CAST(COALESCE(troco, 0) AS DECIMAL(10,2))
+            pagamentos_hist AS (
+              SELECT id, comanda_id AS comanda, forma_pagamento::text AS forma, 'confirmado'::text AS status, valor, COALESCE(troco, 0) AS troco, 1 AS prioridade_fonte
               FROM pagamentos_historico WHERE restaurante_id = ${tenantId}
             ),
+            pagamentos_uniao AS (
+              SELECT * FROM pagamentos_atuais UNION ALL SELECT * FROM pagamentos_hist
+            ),
             pagamentos_dedup AS (
-              SELECT DISTINCT ON (restaurante_id, id) id, comanda_id, forma_pagamento, status, valor, troco
-              FROM (SELECT id, '${tenantId}'::text, comanda_id, forma_pagamento, status, valor, troco FROM pagamentos_atuais UNION ALL SELECT id, '${tenantId}'::text, comanda_id, forma_pagamento, status, valor, troco FROM pagamentos_historico) p
-              ORDER BY restaurante_id, id, status DESC
+              SELECT DISTINCT ON (id) id, comanda, forma, status, valor, troco
+              FROM pagamentos_uniao
+              ORDER BY id, prioridade_fonte ASC
             ),
             pagamentos_confirmados AS (
-              SELECT comanda_id, forma_pagamento, valor, troco FROM pagamentos_dedup
-              WHERE status = 'confirmado' AND comanda_id IN (SELECT id FROM base_vendas_ids)
+              SELECT comanda, forma, valor, troco FROM pagamentos_dedup
+              WHERE status = 'confirmado' AND comanda IN (SELECT id FROM base_vendas_ids)
             ),
             formas_agg AS (
-              SELECT forma_pagamento, CAST(SUM(valor) AS DECIMAL(10,2)) AS valor_recebido, COUNT(*)::integer AS quantidade, CAST(SUM(CASE WHEN forma_pagamento = 'dinheiro' THEN troco ELSE 0 END) AS DECIMAL(10,2)) AS troco_total
+              SELECT
+                forma,
+                SUM(valor) AS valor_recebido,
+                COUNT(*) AS quantidade,
+                SUM(CASE WHEN forma = 'dinheiro' THEN troco ELSE 0 END) AS troco_total
               FROM pagamentos_confirmados
-              GROUP BY forma_pagamento
+              GROUP BY forma
+            )
+            SELECT
+              COALESCE((SELECT valor_recebido FROM formas_agg WHERE forma = 'pix'), 0) AS pix_valor,
+              COALESCE((SELECT quantidade FROM formas_agg WHERE forma = 'pix'), 0) AS pix_qtd,
+              COALESCE((SELECT valor_recebido FROM formas_agg WHERE forma = 'dinheiro'), 0) AS dinheiro_valor,
+              COALESCE((SELECT quantidade FROM formas_agg WHERE forma = 'dinheiro'), 0) AS dinheiro_qtd,
+              COALESCE((SELECT troco_total FROM formas_agg WHERE forma = 'dinheiro'), 0) AS dinheiro_troco,
+              COALESCE((SELECT valor_recebido FROM formas_agg WHERE forma = 'cartao_credito'), 0) AS credito_valor,
+              COALESCE((SELECT quantidade FROM formas_agg WHERE forma = 'cartao_credito'), 0) AS credito_qtd,
+              COALESCE((SELECT valor_recebido FROM formas_agg WHERE forma = 'cartao_debito'), 0) AS debito_valor,
+              COALESCE((SELECT quantidade FROM formas_agg WHERE forma = 'cartao_debito'), 0) AS debito_qtd,
+              COALESCE(SUM(valor_recebido), 0) AS total_recebido
+            FROM formas_agg
+          `
+        ) as any[];
+
+        // Fetch reconciliation independently
+        const reconcResult = await (app.db as any).execute(
+          sql`
+            WITH vendas_atuais AS (
+              SELECT id, restaurante_id, tipo::text AS tipo, status::text AS status, closed_at, subtotal, total, 0 AS prioridade_fonte
+              FROM comandas WHERE restaurante_id = ${tenantId}
+            ),
+            vendas_historico AS (
+              SELECT id, restaurante_id, 'mesa'::text AS tipo, status::text AS status, closed_at, subtotal, total, 1 AS prioridade_fonte
+              FROM comandas_historico WHERE restaurante_id = ${tenantId}
+            ),
+            todas_vendas AS (
+              SELECT * FROM vendas_atuais UNION ALL SELECT * FROM vendas_historico
+            ),
+            deduplicadas AS (
+              SELECT DISTINCT ON (restaurante_id, id) id, restaurante_id, status, closed_at, subtotal, total
+              FROM todas_vendas
+              ORDER BY restaurante_id, id, prioridade_fonte ASC
+            ),
+            base_vendas_ids AS (
+              SELECT id, total FROM deduplicadas
+              WHERE status = 'fechada' AND total > 0 AND closed_at >= ${inicio.toISOString()}::timestamptz AND closed_at < ${fim.toISOString()}::timestamptz
+            ),
+            pagamentos_atuais AS (
+              SELECT id, comanda_id AS comanda, status::text AS status, valor, 0 AS prioridade_fonte
+              FROM pagamentos WHERE restaurante_id = ${tenantId}
+            ),
+            pagamentos_hist AS (
+              SELECT id, comanda_id AS comanda, 'confirmado'::text AS status, valor, 1 AS prioridade_fonte
+              FROM pagamentos_historico WHERE restaurante_id = ${tenantId}
+            ),
+            pagamentos_uniao AS (
+              SELECT * FROM pagamentos_atuais UNION ALL SELECT * FROM pagamentos_hist
+            ),
+            pagamentos_dedup AS (
+              SELECT DISTINCT ON (id) id, comanda, status, valor
+              FROM pagamentos_uniao
+              ORDER BY id, prioridade_fonte ASC
+            ),
+            pagamentos_confirmados AS (
+              SELECT comanda, valor FROM pagamentos_dedup
+              WHERE status = 'confirmado' AND comanda IN (SELECT id FROM base_vendas_ids)
             ),
             reconciliacao_por_comanda AS (
               SELECT
@@ -1763,26 +1838,15 @@ export function registerRelatoriosRoutes(app: App) {
                 bvi.total,
                 COALESCE(SUM(pc.valor), 0) AS pago
               FROM base_vendas_ids bvi
-              LEFT JOIN pagamentos_confirmados pc ON bvi.id = pc.comanda_id
+              LEFT JOIN pagamentos_confirmados pc ON bvi.id = pc.comanda
               GROUP BY bvi.id, bvi.total
             )
             SELECT
-              'resultado'::text AS tipo,
-              CAST(SUM(CASE WHEN pago < total - 0.01 THEN 1 ELSE 0 END) AS INTEGER) AS comandas_faltante,
-              CAST(SUM(CASE WHEN pago < total - 0.01 THEN (total - pago) ELSE 0 END) AS DECIMAL(10,2)) AS valor_faltante,
-              CAST(SUM(CASE WHEN pago > total + 0.01 THEN 1 ELSE 0 END) AS INTEGER) AS comandas_excedente,
-              CAST(SUM(CASE WHEN pago > total + 0.01 THEN (pago - total) ELSE 0 END) AS DECIMAL(10,2)) AS valor_excedente,
-              CAST(SUM(CASE WHEN forma_pagamento = 'pix' THEN valor_recebido ELSE 0 END) AS DECIMAL(10,2)) AS pix_valor,
-              CAST(SUM(CASE WHEN forma_pagamento = 'pix' THEN quantidade ELSE 0 END) AS INTEGER) AS pix_qtd,
-              CAST(SUM(CASE WHEN forma_pagamento = 'dinheiro' THEN valor_recebido ELSE 0 END) AS DECIMAL(10,2)) AS dinheiro_valor,
-              CAST(SUM(CASE WHEN forma_pagamento = 'dinheiro' THEN quantidade ELSE 0 END) AS INTEGER) AS dinheiro_qtd,
-              CAST(SUM(CASE WHEN forma_pagamento = 'dinheiro' THEN troco_total ELSE 0 END) AS DECIMAL(10,2)) AS dinheiro_troco,
-              CAST(SUM(CASE WHEN forma_pagamento = 'cartao_credito' THEN valor_recebido ELSE 0 END) AS DECIMAL(10,2)) AS credito_valor,
-              CAST(SUM(CASE WHEN forma_pagamento = 'cartao_credito' THEN quantidade ELSE 0 END) AS INTEGER) AS credito_qtd,
-              CAST(SUM(CASE WHEN forma_pagamento = 'cartao_debito' THEN valor_recebido ELSE 0 END) AS DECIMAL(10,2)) AS debito_valor,
-              CAST(SUM(CASE WHEN forma_pagamento = 'cartao_debito' THEN quantidade ELSE 0 END) AS INTEGER) AS debito_qtd,
-              CAST(SUM(valor_recebido) AS DECIMAL(10,2)) AS total_recebido
-            FROM reconciliacao_por_comanda, formas_agg
+              SUM(CASE WHEN pago < total - 0.01 THEN 1 ELSE 0 END)::integer AS comandas_faltante,
+              SUM(CASE WHEN pago < total - 0.01 THEN (total - pago) ELSE 0 END) AS valor_faltante,
+              SUM(CASE WHEN pago > total + 0.01 THEN 1 ELSE 0 END)::integer AS comandas_excedente,
+              SUM(CASE WHEN pago > total + 0.01 THEN (pago - total) ELSE 0 END) AS valor_excedente
+            FROM reconciliacao_por_comanda
           `
         ) as any[];
 
@@ -1790,41 +1854,53 @@ export function registerRelatoriosRoutes(app: App) {
         const porGarcomResult = await (app.db as any).execute(
           sql`
             WITH vendas_atuais AS (
-              SELECT id, restaurante_id, tipo::text, status::text, closed_at, subtotal, gorjeta, total, garcom_id
-              FROM comandas
-              WHERE restaurante_id = ${tenantId} AND closed_at >= ${inicio.toISOString()}::timestamptz AND closed_at < ${fim.toISOString()}::timestamptz
+              SELECT id, restaurante_id, tipo::text AS tipo, status::text AS status, closed_at, subtotal, total, gorjeta, garcom_id, 0 AS prioridade_fonte
+              FROM comandas WHERE restaurante_id = ${tenantId}
             ),
             vendas_historico AS (
-              SELECT id, restaurante_id, 'mesa'::text, status::text, closed_at, subtotal, gorjeta, total, garcom_id
-              FROM comandas_historico
-              WHERE restaurante_id = ${tenantId} AND closed_at >= ${inicio.toISOString()}::timestamptz AND closed_at < ${fim.toISOString()}::timestamptz
+              SELECT id, restaurante_id, 'mesa'::text AS tipo, status::text AS status, closed_at, subtotal, total, gorjeta, garcom_id, 1 AS prioridade_fonte
+              FROM comandas_historico WHERE restaurante_id = ${tenantId}
+            ),
+            todas_vendas AS (
+              SELECT * FROM vendas_atuais UNION ALL SELECT * FROM vendas_historico
             ),
             deduplicadas AS (
-              SELECT DISTINCT ON (restaurante_id, id) id, restaurante_id, tipo, status, closed_at, CAST(subtotal AS DECIMAL(10,2)) AS subtotal, CAST(gorjeta AS DECIMAL(10,2)) AS gorjeta, garcom_id
-              FROM (SELECT * FROM vendas_atuais UNION ALL SELECT * FROM vendas_historico) v
-              ORDER BY restaurante_id, id, tipo DESC
+              SELECT DISTINCT ON (restaurante_id, id) id, restaurante_id, tipo, status, closed_at, subtotal, total, gorjeta, garcom_id
+              FROM todas_vendas
+              ORDER BY restaurante_id, id, prioridade_fonte ASC
             ),
             base_vendas AS (
-              SELECT * FROM deduplicadas WHERE status = 'fechada' AND subtotal > 0 AND tipo != 'delivery'
+              SELECT * FROM deduplicadas
+              WHERE status = 'fechada' AND total > 0 AND closed_at >= ${inicio.toISOString()}::timestamptz AND closed_at < ${fim.toISOString()}::timestamptz AND tipo != 'delivery'
+            ),
+            garcom_nomes AS (
+              SELECT DISTINCT ON (bv.garcom_id, ${tenantId})
+                bv.garcom_id,
+                COALESCE(NULLIF(BTRIM(u.nome), ''), NULLIF(BTRIM(p.name), ''), 'Sem garçom identificado') AS nome_resolvido
+              FROM base_vendas bv
+              LEFT JOIN usuarios u ON bv.garcom_id = u.id AND u.restaurante_id = ${tenantId}
+              LEFT JOIN profiles p ON bv.garcom_id = p.user_id AND p.restaurante_id = ${tenantId}
+              ORDER BY bv.garcom_id, ${tenantId}, p.id DESC NULLS LAST
             )
             SELECT
-              bv.garcom_id,
-              COALESCE(u.nome, CASE WHEN (bv.garcom_id IS NULL OR TRIM(bv.garcom_id) = '') THEN 'Sem garçom identificado' ELSE 'Sem garçom identificado' END) AS nome,
+              CASE WHEN BTRIM(COALESCE(gn.garcom_id, '')) = '' THEN NULL ELSE gn.garcom_id END AS garcom_id,
+              COALESCE(gn.nome_resolvido, 'Sem garçom identificado') AS nome,
               COUNT(*)::integer AS comandas,
-              CAST(SUM(bv.subtotal) AS DECIMAL(10,2)) AS faturamento_itens,
-              CAST(SUM(bv.gorjeta) AS DECIMAL(10,2)) AS gorjeta_total,
+              SUM(bv.subtotal) AS faturamento_itens,
+              SUM(bv.gorjeta) AS gorjeta_total,
               COUNT(CASE WHEN bv.gorjeta > 0 THEN 1 END)::integer AS comandas_com_gorjeta
             FROM base_vendas bv
-            LEFT JOIN usuarios u ON bv.garcom_id = u.id AND u.restaurante_id = ${tenantId} AND TRIM(u.nome) != ''
-            GROUP BY bv.garcom_id, u.nome
-            ORDER BY faturamento_itens DESC, COALESCE(u.nome, 'Sem garçom identificado'), bv.garcom_id
+            LEFT JOIN garcom_nomes gn ON bv.garcom_id = gn.garcom_id
+            GROUP BY CASE WHEN BTRIM(COALESCE(bv.garcom_id, '')) = '' THEN NULL ELSE bv.garcom_id END, COALESCE(gn.nome_resolvido, 'Sem garçom identificado')
+            ORDER BY faturamento_itens DESC NULLS LAST, nome, garcom_id
           `
         ) as any[];
 
         const detalheResult = {
           porHoraResult,
           porDiaSemanaResult,
-          pagamentosResult,
+          formasResult,
+          reconcResult,
           porGarcomResult
         };
 
@@ -1904,29 +1980,29 @@ export function registerRelatoriosRoutes(app: App) {
         }
 
         let totalRecebido = 0;
-        if (Array.isArray(detalheResult.pagamentosResult) && detalheResult.pagamentosResult.length > 0) {
-          const row = detalheResult.pagamentosResult[0];
+        if (Array.isArray(detalheResult.formasResult) && detalheResult.formasResult.length > 0) {
+          const row = detalheResult.formasResult[0];
           formasMap.set("pix", {
-            valor_recebido: Math.round(parseFloat(String(row.pix_valor || 0)) * 100) / 100,
+            valor_recebido: parseFloat(String(row.pix_valor || 0)),
             quantidade_pagamentos: parseInt(String(row.pix_qtd || 0)) || 0,
             troco: 0,
           });
           formasMap.set("dinheiro", {
-            valor_recebido: Math.round(parseFloat(String(row.dinheiro_valor || 0)) * 100) / 100,
+            valor_recebido: parseFloat(String(row.dinheiro_valor || 0)),
             quantidade_pagamentos: parseInt(String(row.dinheiro_qtd || 0)) || 0,
-            troco: Math.round(parseFloat(String(row.dinheiro_troco || 0)) * 100) / 100,
+            troco: parseFloat(String(row.dinheiro_troco || 0)),
           });
           formasMap.set("cartao_credito", {
-            valor_recebido: Math.round(parseFloat(String(row.credito_valor || 0)) * 100) / 100,
+            valor_recebido: parseFloat(String(row.credito_valor || 0)),
             quantidade_pagamentos: parseInt(String(row.credito_qtd || 0)) || 0,
             troco: 0,
           });
           formasMap.set("cartao_debito", {
-            valor_recebido: Math.round(parseFloat(String(row.debito_valor || 0)) * 100) / 100,
+            valor_recebido: parseFloat(String(row.debito_valor || 0)),
             quantidade_pagamentos: parseInt(String(row.debito_qtd || 0)) || 0,
             troco: 0,
           });
-          totalRecebido = Math.round(parseFloat(String(row.total_recebido || 0)) * 100) / 100;
+          totalRecebido = parseFloat(String(row.total_recebido || 0));
         }
 
         const formasPagamento = formas.map((forma) => {
@@ -1934,10 +2010,10 @@ export function registerRelatoriosRoutes(app: App) {
           const percentual = totalRecebido > 0 ? Math.round((metrics.valor_recebido / totalRecebido) * 10000) / 100 : 0;
           return {
             forma,
-            valor_recebido: metrics.valor_recebido,
+            valor_recebido: Math.round(metrics.valor_recebido * 100) / 100,
             quantidade_pagamentos: metrics.quantidade_pagamentos,
-            percentual,
-            troco: metrics.troco,
+            percentual: Math.round(percentual * 100) / 100,
+            troco: Math.round(metrics.troco * 100) / 100,
           };
         });
 
@@ -1949,8 +2025,8 @@ export function registerRelatoriosRoutes(app: App) {
           valor_excedente: 0,
         };
 
-        if (Array.isArray(detalheResult.pagamentosResult) && detalheResult.pagamentosResult.length > 0) {
-          const row = detalheResult.pagamentosResult[0];
+        if (Array.isArray(detalheResult.reconcResult) && detalheResult.reconcResult.length > 0) {
+          const row = detalheResult.reconcResult[0];
           naoReconciliado = {
             comandas_pago_menor: parseInt(String(row.comandas_faltante || 0)) || 0,
             valor_faltante: Math.round(parseFloat(String(row.valor_faltante || 0)) * 100) / 100,
