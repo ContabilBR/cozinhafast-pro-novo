@@ -29,6 +29,11 @@
  *  - o total ignora pedidos cancelados (ver services/total-comanda.ts): item cancelado não é venda;
  *  - o recibo (itens) não lista itens cancelados, mas o histórico de pedidos guarda TODOS,
  *    inclusive os cancelados, com motivo, quem cancelou e se foi após o início (perda).
+ *
+ * ETAPA D (pagamento obrigatório):
+ *  - comanda com total a receber (> 0) só fecha com pagamentos confirmados cobrindo o total;
+ *    sem nenhum pagamento o desfecho é "pago_a_menos" com totalPago = 0;
+ *  - total zero (encerramento sem consumo, todos os itens cancelados) fecha sem pagamento.
  */
 import { and, eq } from "drizzle-orm";
 import * as schema from "../db/schema/schema.js";
@@ -198,7 +203,11 @@ export async function fecharComanda(
         return { tipo: "pagamentos_pendentes" };
       }
 
-      if (pagamentosComanda.length > 0 && totalPagoConfirmado < totalFinal - 0.01) {
+      // Comanda com valor a receber só fecha com pagamentos confirmados cobrindo o total.
+      // Antes a conferência só rodava quando já existia algum pagamento, e uma comanda com itens
+      // fechava com R$ 0 recebido e entrava como venda. O encerramento sem consumo (total zero)
+      // continua fechando sem pagamento.
+      if (totalFinal > 0.01 && totalPagoConfirmado < totalFinal - 0.01) {
         return { tipo: "pago_a_menos", totalPago: totalPagoConfirmado, totalDevido: totalFinal };
       }
 
