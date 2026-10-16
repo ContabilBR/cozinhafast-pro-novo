@@ -104,7 +104,7 @@ export default function RelatoriosScreen() {
     console.log("[Relatorios] Exportando Excel");
     setExportandoExcel(true);
     try {
-      await exportarRelatorioExcel(summary, summary.periodo_label || "Hoje", mesas);
+      await exportarRelatorioExcel(summary, summary.periodo_label || "Hoje", mesas, { periodo, role: user?.role });
     } catch (e: any) {
       console.error("[Relatorios] Erro ao exportar Excel:", e instanceof Error ? e.message : String(e));
       Alert.alert("Erro ao exportar", e?.message || "Não foi possível gerar o arquivo Excel. Tente novamente.");
