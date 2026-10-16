@@ -7,6 +7,35 @@ import { realtimeHub } from "../realtime/hub.js";
 import { cancelarPedido, MOTIVOS_CANCELAMENTO, ROLES_ATENDIMENTO } from "../services/cancelamento-pedido.js";
 import { liberarMesaSeVazia } from "../services/liberar-mesa.js";
 import { lancarItens } from "../services/lancamento-pedidos.js";
+import { subtotalDaComanda, totalDelivery } from "../services/total-comanda.js";
+import { avaliarTransicao, validarEdicao } from "../services/transicao-pedidos.js";
+
+// Recalcula e grava o subtotal e o total da comanda depois de mexer num item (item cancelado fica
+// de fora). Mesma regra do cancelamento de item: delivery = subtotal + taxa de entrega (e o pagamento
+// pendente acompanha o novo total); mesa = subtotal + gorjeta. `executor` é o banco ou uma transação.
+async function regravarTotaisDaComanda(
+  executor: any,
+  comanda: { id: string; tipo: string | null; gorjeta: string | null }
+): Promise<void> {
+  const subtotal = await subtotalDaComanda(executor, comanda.id);
+  let total: number;
+  if (comanda.tipo === "delivery") {
+    total = await totalDelivery(executor, comanda.id);
+  } else {
+    total = subtotal + parseFloat(String(comanda.gorjeta || "0"));
+  }
+  await executor
+    .update(schema.comandas)
+    .set({ subtotal: subtotal.toString(), total: total.toFixed(2) })
+    .where(eq(schema.comandas.id, comanda.id));
+
+  if (comanda.tipo === "delivery") {
+    await executor
+      .update(schema.pagamentos)
+      .set({ valor: total.toFixed(2) })
+      .where(and(eq(schema.pagamentos.comandaId, comanda.id), eq(schema.pagamentos.status, "pendente" as any)));
+  }
+}
 
 interface CreatePedidoBody {
   comanda_id?: string;
@@ -419,9 +448,14 @@ export function registerOrderItemRoutes(app: App) {
         let comandaTipo: string | null = null;
 
         const [comandaCheck] = await app.db
-          .select({ tipo: schema.comandas.tipo, id: schema.comandas.id })
+          .select({ tipo: schema.comandas.tipo, id: schema.comandas.id, status: schema.comandas.status })
           .from(schema.comandas)
           .where(eq(schema.comandas.id, existing[0].comandaId));
+
+        // Só comanda aberta tem item andando na cozinha (comanda cancelada mantém os itens para histórico)
+        if (comandaCheck && comandaCheck.status !== "aberta") {
+          return await reply.code(409).send({ error: "Esta comanda não está aberta." });
+        }
 
         if (comandaCheck?.tipo === "delivery") {
           comandaTipo = "delivery";
@@ -442,13 +476,43 @@ export function registerOrderItemRoutes(app: App) {
 
         const novoStatus = request.body.status;
 
+        // Máquina de estados e papéis (services/transicao-pedidos.ts): avanço uma etapa por vez,
+        // retrocesso só da gestão (a cozinha só desfaz "pronto" nos primeiros 2 minutos)
+        const avaliacao = avaliarTransicao({
+          papel: session.role,
+          statusAtual: existing[0].status,
+          novoStatus,
+          prontoEm: existing[0].prontoEm,
+        });
+        if (avaliacao.tipo === "recusada") {
+          return await reply.code(avaliacao.http).send({ error: avaliacao.erro });
+        }
+        if (avaliacao.semMudanca) {
+          // Toque duplo ou reenvio: devolve o item como está, sem mexer nos tempos nem avisar o tempo real
+          return await reply.code(200).send({
+            id: existing[0].id,
+            comandaId: existing[0].comandaId,
+            pratoId: existing[0].pratoId,
+            quantidade: existing[0].quantidade,
+            precoUnitario: existing[0].precoUnitario,
+            observacao: existing[0].observacao,
+            status: existing[0].status,
+            createdAt: existing[0].createdAt.toISOString(),
+          });
+        }
+
         // Bug 6a: Transação única para atualizar item + avanço automático da entrega
         const updated = await (app.db as any).transaction(async (tx: any) => {
           // Prep time tracking: set timestamps based on status transitions
           const updateSet: any = { status: novoStatus as any };
 
-          if (novoStatus === "em_preparo" && !existing[0].iniciadoEm) {
-            updateSet.iniciadoEm = new Date();
+          if (novoStatus === "em_preparo") {
+            // Início do preparo (o tempo do item conta a partir daqui) ou volta de "pronto/entregue":
+            // o início original é mantido e o "pronto" anterior deixa de valer
+            if (!existing[0].iniciadoEm) {
+              updateSet.iniciadoEm = new Date();
+            }
+            updateSet.prontoEm = null;
           } else if (novoStatus === "pronto") {
             updateSet.prontoEm = new Date();
           } else if (novoStatus === "pendente") {
@@ -456,11 +520,20 @@ export function registerOrderItemRoutes(app: App) {
             updateSet.prontoEm = null;
           }
 
+          // O status atual entra na condição: se outra chamada mexeu no item no meio tempo, não sobrescreve
           const [updatedItem] = await tx
             .update(schema.pedidos)
             .set(updateSet)
-            .where(eq(schema.pedidos.id, request.params.id))
+            .where(and(
+              eq(schema.pedidos.id, request.params.id),
+              eq(schema.pedidos.restauranteId, restauranteIdAtual),
+              eq(schema.pedidos.status, existing[0].status as any)
+            ))
             .returning();
+
+          if (!updatedItem) {
+            return null;
+          }
 
           // Avanço automático: pendente → preparando quando item entra em preparo ou fica pronto
           if (
@@ -479,6 +552,10 @@ export function registerOrderItemRoutes(app: App) {
 
           return updatedItem;
         });
+
+        if (!updated) {
+          return await reply.code(409).send({ error: "O item mudou de status enquanto você agia. Atualize a tela e tente de novo." });
+        }
 
         app.logger.info({ pedidoId: updated.id }, "Pedido status updated successfully");
 
@@ -781,6 +858,9 @@ export function registerOrderItemRoutes(app: App) {
           return await reply.code(404).send({ error: "Nenhum restaurante associado" });
         }
 
+        // Papel: garçom, gerente e administrador editam item; a cozinha não
+        if (!(await requireRole(session, ROLES_ATENDIMENTO, reply))) return;
+
         // Cancelar tem rota própria (motivo obrigatório, permissões e registro de quem cancelou)
         if (request.body.status === "cancelado") {
           return await reply.code(400).send({ error: "Para cancelar um item use PUT /api/pedidos/:id/cancelar (motivo obrigatório)." });
@@ -795,63 +875,80 @@ export function registerOrderItemRoutes(app: App) {
           return await reply.code(404).send({ error: "Pedido not found" });
         }
 
-        if (existing[0].status === "cancelado") {
+        const pedido = existing[0];
+
+        if (pedido.status === "cancelado") {
           return await reply.code(409).send({ error: "Item cancelado não pode ser alterado." });
         }
 
-        // Bug 6b: bloquear mudança de status em itens de delivery pela rota genérica
-        if (request.body.status !== undefined) {
-          const [cmdCheck] = await app.db
-            .select({ tipo: schema.comandas.tipo })
+        // O status tem rota própria (máquina de estados e papéis). Esta rota só aceita o status
+        // quando ele repete o atual (clientes antigos mandam o campo junto com a quantidade).
+        if (request.body.status !== undefined && request.body.status !== pedido.status) {
+          return await reply.code(400).send({ error: "Para mudar o status do item use PUT /api/pedidos/:id/status." });
+        }
+
+        const edicao = validarEdicao({ quantidade: request.body.quantidade, observacao: request.body.observacao });
+        if (edicao.tipo === "invalida") {
+          return await reply.code(400).send({ error: edicao.erro });
+        }
+
+        // Regra de edição: só item que a cozinha ainda não iniciou. Depois disso o item só sai por cancelamento, com motivo.
+        if (pedido.status !== "pendente") {
+          return await reply.code(409).send({
+            error: "Este item já foi iniciado pela cozinha e não pode mais ser alterado. Para retirá-lo, cancele o item informando o motivo.",
+          });
+        }
+
+        const updates: any = { ...edicao.campos };
+
+        // Tudo numa transação: trava primeiro a linha da comanda do restaurante e depois o item
+        // (mesma ordem do fechamento e do cancelamento), para não haver deadlock nem total fora de sincronia.
+        const resultadoEdicao = await (app.db as any).transaction(async (tx: any) => {
+          const comandas = await tx
+            .select({
+              id: schema.comandas.id,
+              tipo: schema.comandas.tipo,
+              status: schema.comandas.status,
+              gorjeta: schema.comandas.gorjeta,
+            })
             .from(schema.comandas)
-            .where(eq(schema.comandas.id, existing[0].comandaId));
-          if (cmdCheck?.tipo === "delivery") {
-            return await reply.code(409).send({ error: "Para alterar o status de um item de delivery use PUT /api/pedidos/:id/status." });
-          }
+            .where(and(eq(schema.comandas.id, pedido.comandaId), eq(schema.comandas.restauranteId, restauranteIdAtual)))
+            .for("update");
+
+          if (!comandas.length) return { tipo: "comanda_nao_encontrada" as const };
+          const comandaTravada = comandas[0];
+          if (comandaTravada.status !== "aberta") return { tipo: "comanda_nao_aberta" as const };
+
+          // O status "pendente" entra na condição: se a cozinha iniciou o item nesse meio tempo, a edição não passa
+          const atualizados = await tx
+            .update(schema.pedidos)
+            .set(updates)
+            .where(and(
+              eq(schema.pedidos.id, request.params.id),
+              eq(schema.pedidos.restauranteId, restauranteIdAtual),
+              eq(schema.pedidos.status, "pendente" as any)
+            ))
+            .returning();
+
+          if (!atualizados.length) return { tipo: "item_mudou" as const };
+
+          await regravarTotaisDaComanda(tx, comandaTravada);
+          return { tipo: "ok" as const, pedido: atualizados[0] };
+        });
+
+        if (resultadoEdicao.tipo === "comanda_nao_encontrada") {
+          return await reply.code(404).send({ error: "Comanda não encontrada." });
+        }
+        if (resultadoEdicao.tipo === "comanda_nao_aberta") {
+          return await reply.code(409).send({ error: "Esta comanda não está aberta." });
+        }
+        if (resultadoEdicao.tipo === "item_mudou") {
+          return await reply.code(409).send({
+            error: "A cozinha iniciou este item enquanto você editava. Para retirá-lo, cancele o item informando o motivo.",
+          });
         }
 
-        const pedido = existing[0];
-        const updates: any = {};
-
-        if (request.body.quantidade !== undefined) {
-          updates.quantidade = request.body.quantidade;
-        }
-        if (request.body.observacao !== undefined) {
-          updates.observacao = request.body.observacao;
-        }
-        if (request.body.status !== undefined) {
-          updates.status = request.body.status as any;
-        }
-
-        const [updated] = await app.db
-          .update(schema.pedidos)
-          .set(updates)
-          .where(eq(schema.pedidos.id, request.params.id))
-          .returning();
-
-        const subtotalResult = await app.db
-          .select({
-            subtotal: sql<string>`COALESCE(SUM(quantidade * preco_unitario) FILTER (WHERE status <> 'cancelado'), 0)`,
-          })
-          .from(schema.pedidos)
-          .where(eq(schema.pedidos.comandaId, pedido.comandaId));
-
-        const subtotalValue = subtotalResult[0]?.subtotal || "0";
-        const subtotal = parseFloat(String(subtotalValue));
-
-        const gorjetaResult = await app.db
-          .select({ gorjeta: schema.comandas.gorjeta })
-          .from(schema.comandas)
-          .where(eq(schema.comandas.id, pedido.comandaId));
-
-        const gorjetaValue = gorjetaResult[0]?.gorjeta || "0";
-        const gorjeta = parseFloat(String(gorjetaValue));
-        const newTotal = (subtotal + gorjeta).toFixed(2);
-
-        await app.db
-          .update(schema.comandas)
-          .set({ subtotal: subtotal.toString(), total: newTotal })
-          .where(eq(schema.comandas.id, pedido.comandaId));
+        const updated = resultadoEdicao.pedido;
 
         app.logger.info({ pedidoId: updated.id }, "Pedido updated successfully");
 
@@ -922,6 +1019,9 @@ export function registerOrderItemRoutes(app: App) {
           return await reply.code(404).send({ error: "Nenhum restaurante associado" });
         }
 
+        // Papel: garçom, gerente e administrador; a cozinha não exclui item
+        if (!(await requireRole(session, ROLES_ATENDIMENTO, reply))) return;
+
         app.logger.info({ pedidoId: request.params.id, restauranteId }, "Deleting pedido");
 
         const existing = await app.db
@@ -935,6 +1035,31 @@ export function registerOrderItemRoutes(app: App) {
 
         const pedido = existing[0];
 
+        // Exclusão só de item que a cozinha ainda não iniciou. Depois disso (ou se já foi cancelado)
+        // o registro precisa ficar: o item sai por cancelamento, com motivo e, se for o caso, perda.
+        if (pedido.status !== "pendente") {
+          return await reply.code(409).send({
+            error: pedido.status === "cancelado"
+              ? "Item cancelado não pode ser excluído."
+              : "Este item já foi iniciado pela cozinha e não pode ser excluído. Para retirá-lo, cancele o item informando o motivo.",
+          });
+        }
+
+        const [comandaDoItem] = await app.db
+          .select({ tipo: schema.comandas.tipo, status: schema.comandas.status })
+          .from(schema.comandas)
+          .where(and(eq(schema.comandas.id, pedido.comandaId), eq(schema.comandas.restauranteId, restauranteId)));
+
+        if (!comandaDoItem) {
+          return await reply.code(404).send({ error: "Comanda não encontrada." });
+        }
+        if (comandaDoItem.status !== "aberta") {
+          return await reply.code(409).send({ error: "Esta comanda não está aberta." });
+        }
+        if (comandaDoItem.tipo === "delivery") {
+          return await reply.code(409).send({ error: "Em pedido de delivery o item não é excluído: cancele o item informando o motivo." });
+        }
+
         let pratoNome: string | null = null;
         if (pedido.pratoId) {
           const pratoResult = await app.db
@@ -947,7 +1072,21 @@ export function registerOrderItemRoutes(app: App) {
           }
         }
 
-        await app.db.delete(schema.pedidos).where(eq(schema.pedidos.id, request.params.id));
+        // O status "pendente" entra na condição: se a cozinha iniciou o item nesse meio tempo, nada é apagado
+        const excluidos = await app.db
+          .delete(schema.pedidos)
+          .where(and(
+            eq(schema.pedidos.id, request.params.id),
+            eq(schema.pedidos.restauranteId, restauranteId),
+            eq(schema.pedidos.status, "pendente" as any)
+          ))
+          .returning({ id: schema.pedidos.id });
+
+        if (!excluidos.length) {
+          return await reply.code(409).send({
+            error: "A cozinha iniciou este item enquanto você agia. Para retirá-lo, cancele o item informando o motivo.",
+          });
+        }
 
         try {
           realtimeHub.publish(restauranteId, {
