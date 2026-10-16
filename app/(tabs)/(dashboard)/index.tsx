@@ -569,7 +569,7 @@ export default function DashboardScreen() {
               loading={loading}
               onPress={() => {
                 console.log("[Dashboard] Receita no Período card pressed");
-                router.push("/(tabs)/(relatorios)");
+                router.push(Platform.OS === "ios" ? "/relatorio-detalhe" : "/(tabs)/(relatorios)");
               }}
             />
           </View>
@@ -737,7 +737,7 @@ export default function DashboardScreen() {
             <AnimatedPressable
               onPress={() => {
                 console.log("[Dashboard] View all comandas pressed");
-                router.push("/(tabs)/(relatorios)");
+                router.push(Platform.OS === "ios" ? "/relatorio-detalhe" : "/(tabs)/(relatorios)");
               }}
               style={{ flexDirection: "row", alignItems: "center", gap: 2 }}
             >
