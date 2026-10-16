@@ -2081,4 +2081,636 @@ export function registerRelatoriosRoutes(app: App) {
       }
     }
   );
+
+  // GET /api/relatorios/cancelamentos - Cancelation report
+  app.fastify.get(
+    "/api/relatorios/cancelamentos",
+    {
+      schema: {
+        description: "Get cancellation report with breakdown by reason, responsible, dishes, channel, and day (requires authentication)",
+        tags: ["relatorios"],
+        querystring: {
+          type: "object",
+          properties: {
+            periodo: { type: "string", enum: ["hoje", "7dias", "mes", "personalizado"] },
+            dataInicio: { type: "string" },
+            dataFim: { type: "string" },
+          },
+        },
+        response: {
+          200: {
+            type: "object",
+            properties: {
+              totais: {
+                type: "object",
+                required: [
+                  "quantidade_cancelada",
+                  "valor_cancelado",
+                  "quantidade_antes_preparo",
+                  "valor_antes_preparo",
+                  "quantidade_perda",
+                  "valor_perda",
+                  "percentual_cancelamento"
+                ],
+                properties: {
+                  quantidade_cancelada: { type: "number" },
+                  valor_cancelado: { type: "number" },
+                  quantidade_antes_preparo: { type: "number" },
+                  valor_antes_preparo: { type: "number" },
+                  quantidade_perda: { type: "number" },
+                  valor_perda: { type: "number" },
+                  percentual_cancelamento: { type: "number" },
+                },
+              },
+              por_motivo: {
+                type: "array",
+                items: {
+                  type: "object",
+                  required: ["codigo", "nome", "quantidade", "valor", "valor_perda"],
+                  properties: {
+                    codigo: { type: "string" },
+                    nome: { type: "string" },
+                    quantidade: { type: "number" },
+                    valor: { type: "number" },
+                    valor_perda: { type: "number" },
+                  },
+                },
+              },
+              por_responsavel: {
+                type: "array",
+                items: {
+                  type: "object",
+                  required: ["responsavel_id", "nome", "role", "quantidade", "valor", "valor_perda"],
+                  properties: {
+                    responsavel_id: { type: ["string", "null"] },
+                    nome: { type: "string" },
+                    role: { type: ["string", "null"] },
+                    quantidade: { type: "number" },
+                    valor: { type: "number" },
+                    valor_perda: { type: "number" },
+                  },
+                },
+              },
+              pratos_mais_cancelados: {
+                type: "array",
+                items: {
+                  type: "object",
+                  required: ["nome", "quantidade", "valor", "valor_perda"],
+                  properties: {
+                    nome: { type: "string" },
+                    quantidade: { type: "number" },
+                    valor: { type: "number" },
+                    valor_perda: { type: "number" },
+                  },
+                },
+              },
+              por_canal: {
+                type: "array",
+                items: {
+                  type: "object",
+                  required: ["canal", "quantidade", "valor", "valor_perda"],
+                  properties: {
+                    canal: { type: "string", enum: ["mesa", "delivery"] },
+                    quantidade: { type: "number" },
+                    valor: { type: "number" },
+                    valor_perda: { type: "number" },
+                  },
+                },
+              },
+              por_dia: {
+                type: "array",
+                items: {
+                  type: "object",
+                  required: ["data", "quantidade", "valor", "valor_perda"],
+                  properties: {
+                    data: { type: "string" },
+                    quantidade: { type: "number" },
+                    valor: { type: "number" },
+                    valor_perda: { type: "number" },
+                  },
+                },
+              },
+            },
+            required: ["totais", "por_motivo", "por_responsavel", "pratos_mais_cancelados", "por_canal", "por_dia"],
+          },
+          400: { type: "object", properties: { error: { type: "string" } } },
+          401: { type: "object", properties: { error: { type: "string" } } },
+          403: { type: "object", properties: { error: { type: "string" } } },
+          500: { type: "object", properties: { error: { type: "string" } } },
+        },
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const authUser = await customRequireAuth(app, request, reply);
+      if (!authUser) return;
+      if (!(await requireRole(authUser, ["administrador", "gerente"], reply))) return;
+
+      try {
+        const tenantId = requireTenant(authUser);
+        const query = request.query as { periodo?: string; dataInicio?: string; dataFim?: string };
+
+        // Resolve period
+        const { inicio, fim } = resolvePeriodo(query.periodo, query.dataInicio, query.dataFim);
+
+        // Check custom period length (max 366 days)
+        if (query.periodo === "personalizado") {
+          const daysDiff = Math.ceil((fim.getTime() - inicio.getTime()) / (1000 * 60 * 60 * 24));
+          if (daysDiff > 366) {
+            app.logger.warn({ tenantId, daysDiff }, "Custom period exceeds 366 days");
+            return await reply.code(400).send({ error: "O período personalizado não pode ultrapassar 366 dias." });
+          }
+        }
+
+        app.logger.info({ tenantId, periodo: query.periodo, inicio, fim }, "Getting cancelamentos report");
+
+        // Main aggregation query for all metrics
+        const cancelamentosResult = await (app.db as any).execute(
+          sql`
+            WITH pedidos_vivos AS (
+              SELECT id, comanda_id, prato_id, quantidade, preco_unitario, restaurante_id, status::text AS status,
+                cancelado_em, cancelado_por_id, cancelado_por_nome, cancelado_por_role, motivo_cancelamento,
+                cancelado_apos_inicio, 0 AS prioridade_fonte
+              FROM pedidos
+              WHERE restaurante_id = ${tenantId}
+            ),
+            pedidos_hist AS (
+              SELECT id, comanda_id, prato_id, quantidade, preco_unitario, restaurante_id, status,
+                cancelado_em, cancelado_por_id, cancelado_por_nome, cancelado_por_role, motivo_cancelamento,
+                cancelado_apos_inicio, 1 AS prioridade_fonte
+              FROM pedidos_historico
+              WHERE restaurante_id = ${tenantId}
+            ),
+            todos_pedidos AS (
+              SELECT * FROM pedidos_vivos UNION ALL SELECT * FROM pedidos_hist
+            ),
+            dedup_pedidos AS (
+              SELECT DISTINCT ON (restaurante_id, id)
+                id, comanda_id, prato_id, quantidade, preco_unitario, restaurante_id, status,
+                cancelado_em, cancelado_por_id, cancelado_por_nome, cancelado_por_role, motivo_cancelamento,
+                cancelado_apos_inicio
+              FROM todos_pedidos
+              ORDER BY restaurante_id, id, prioridade_fonte ASC
+            ),
+            cancelamentos_filtrados AS (
+              SELECT id, comanda_id, prato_id, quantidade, preco_unitario, cancelado_por_id, cancelado_por_nome,
+                cancelado_por_role, motivo_cancelamento, cancelado_apos_inicio
+              FROM dedup_pedidos
+              WHERE status = 'cancelado' AND cancelado_em >= ${inicio.toISOString()}::timestamptz AND
+                cancelado_em < ${fim.toISOString()}::timestamptz
+            )
+            SELECT
+              SUM(quantidade)::integer AS total_quantidade,
+              SUM(CAST(quantidade AS DECIMAL(10,2)) * CAST(preco_unitario AS DECIMAL(10,2)))::numeric AS total_valor,
+              SUM(CASE WHEN cancelado_apos_inicio = true THEN quantidade ELSE 0 END)::integer AS quantidade_perda,
+              SUM(CASE WHEN cancelado_apos_inicio = true THEN CAST(quantidade AS DECIMAL(10,2)) * CAST(preco_unitario AS DECIMAL(10,2)) ELSE 0 END)::numeric AS valor_perda_total,
+              SUM(CASE WHEN cancelado_apos_inicio = false OR cancelado_apos_inicio IS NULL THEN quantidade ELSE 0 END)::integer AS quantidade_antes_preparo,
+              SUM(CASE WHEN cancelado_apos_inicio = false OR cancelado_apos_inicio IS NULL THEN CAST(quantidade AS DECIMAL(10,2)) * CAST(preco_unitario AS DECIMAL(10,2)) ELSE 0 END)::numeric AS valor_antes_preparo
+            FROM cancelamentos_filtrados
+          `
+        ) as any[];
+
+        // Revenue sold (closed orders in period)
+        const receitaVendidaResult = await (app.db as any).execute(
+          sql`
+            WITH comandas_vivas AS (
+              SELECT id, restaurante_id, subtotal, status::text AS status, closed_at, 0 AS prioridade_fonte
+              FROM comandas
+              WHERE restaurante_id = ${tenantId}
+            ),
+            comandas_hist AS (
+              SELECT id, restaurante_id, subtotal, status, closed_at, 1 AS prioridade_fonte
+              FROM comandas_historico
+              WHERE restaurante_id = ${tenantId}
+            ),
+            todas_comandas AS (
+              SELECT * FROM comandas_vivas UNION ALL SELECT * FROM comandas_hist
+            ),
+            dedup_comandas AS (
+              SELECT DISTINCT ON (restaurante_id, id) id, restaurante_id, subtotal, status, closed_at
+              FROM todas_comandas
+              ORDER BY restaurante_id, id, prioridade_fonte ASC
+            )
+            SELECT COALESCE(SUM(CAST(subtotal AS DECIMAL(10,2))), 0) AS receita_vendida_bruta
+            FROM dedup_comandas
+            WHERE status = 'fechada' AND CAST(subtotal AS DECIMAL(10,2)) > 0 AND
+              closed_at >= ${inicio.toISOString()}::timestamptz AND closed_at < ${fim.toISOString()}::timestamptz
+          `
+        ) as any[];
+
+        // Por motivo
+        const porMotivoResult = await (app.db as any).execute(
+          sql`
+            WITH pedidos_vivos AS (
+              SELECT id, comanda_id, quantidade, preco_unitario, restaurante_id, status::text AS status,
+                cancelado_em, motivo_cancelamento, cancelado_apos_inicio, 0 AS prioridade_fonte
+              FROM pedidos
+              WHERE restaurante_id = ${tenantId}
+            ),
+            pedidos_hist AS (
+              SELECT id, comanda_id, quantidade, preco_unitario, restaurante_id, status,
+                cancelado_em, motivo_cancelamento, cancelado_apos_inicio, 1 AS prioridade_fonte
+              FROM pedidos_historico
+              WHERE restaurante_id = ${tenantId}
+            ),
+            todos_pedidos AS (
+              SELECT * FROM pedidos_vivos UNION ALL SELECT * FROM pedidos_hist
+            ),
+            dedup_pedidos AS (
+              SELECT DISTINCT ON (restaurante_id, id) id, comanda_id, quantidade, preco_unitario, restaurante_id,
+                status, cancelado_em, motivo_cancelamento, cancelado_apos_inicio
+              FROM todos_pedidos
+              ORDER BY restaurante_id, id, prioridade_fonte ASC
+            ),
+            cancelamentos_filtrados AS (
+              SELECT quantidade, preco_unitario, motivo_cancelamento, cancelado_apos_inicio
+              FROM dedup_pedidos
+              WHERE status = 'cancelado' AND cancelado_em >= ${inicio.toISOString()}::timestamptz AND
+                cancelado_em < ${fim.toISOString()}::timestamptz
+            ),
+            com_motivos AS (
+              SELECT
+                CASE
+                  WHEN NULLIF(BTRIM(COALESCE(motivo_cancelamento, '')), '') IS NULL THEN 'sem_motivo'
+                  WHEN LOWER(BTRIM(motivo_cancelamento)) LIKE '%lancamento%' THEN 'erro_lancamento'
+                  WHEN LOWER(BTRIM(motivo_cancelamento)) LIKE '%desistiu%' OR LOWER(BTRIM(motivo_cancelamento)) LIKE '%cliente%desistiu%' THEN 'cliente_desistiu'
+                  WHEN LOWER(BTRIM(motivo_cancelamento)) LIKE '%falta%' THEN 'item_em_falta'
+                  WHEN LOWER(BTRIM(motivo_cancelamento)) LIKE '%demora%' THEN 'demora'
+                  WHEN LOWER(BTRIM(motivo_cancelamento)) LIKE '%qualidade%' THEN 'qualidade'
+                  WHEN LOWER(BTRIM(motivo_cancelamento)) LIKE '%nao%atend%' OR LOWER(BTRIM(motivo_cancelamento)) LIKE '%cliente%nao%atendeu%' THEN 'cliente_nao_atendeu'
+                  WHEN LOWER(BTRIM(motivo_cancelamento)) LIKE '%fora%area%' OR LOWER(BTRIM(motivo_cancelamento)) LIKE '%endereco%' THEN 'endereco_fora_area'
+                  ELSE 'outro'
+                END AS motivo_codigo,
+                quantidade,
+                CAST(quantidade AS DECIMAL(10,2)) * CAST(preco_unitario AS DECIMAL(10,2)) AS valor_bruto,
+                CASE WHEN cancelado_apos_inicio = true THEN CAST(quantidade AS DECIMAL(10,2)) * CAST(preco_unitario AS DECIMAL(10,2)) ELSE 0 END AS valor_perda
+              FROM cancelamentos_filtrados
+            )
+            SELECT
+              motivo_codigo,
+              SUM(quantidade)::integer AS quantidade,
+              SUM(valor_bruto)::numeric AS valor,
+              SUM(valor_perda)::numeric AS valor_perda
+            FROM com_motivos
+            GROUP BY motivo_codigo
+            ORDER BY valor DESC, motivo_codigo ASC
+          `
+        ) as any[];
+
+        // Por responsável
+        const porResponsavelResult = await (app.db as any).execute(
+          sql`
+            WITH pedidos_vivos AS (
+              SELECT id, quantidade, preco_unitario, restaurante_id, status::text AS status,
+                cancelado_em, cancelado_por_id, cancelado_por_nome, cancelado_por_role, cancelado_apos_inicio, 0 AS prioridade_fonte
+              FROM pedidos
+              WHERE restaurante_id = ${tenantId}
+            ),
+            pedidos_hist AS (
+              SELECT id, quantidade, preco_unitario, restaurante_id, status,
+                cancelado_em, cancelado_por_id, cancelado_por_nome, cancelado_por_role, cancelado_apos_inicio, 1 AS prioridade_fonte
+              FROM pedidos_historico
+              WHERE restaurante_id = ${tenantId}
+            ),
+            todos_pedidos AS (
+              SELECT * FROM pedidos_vivos UNION ALL SELECT * FROM pedidos_hist
+            ),
+            dedup_pedidos AS (
+              SELECT DISTINCT ON (restaurante_id, id) id, quantidade, preco_unitario, restaurante_id,
+                status, cancelado_em, cancelado_por_id, cancelado_por_nome, cancelado_por_role, cancelado_apos_inicio
+              FROM todos_pedidos
+              ORDER BY restaurante_id, id, prioridade_fonte ASC
+            ),
+            cancelamentos_filtrados AS (
+              SELECT id, quantidade, preco_unitario, cancelado_por_id, cancelado_por_nome, cancelado_por_role, cancelado_apos_inicio
+              FROM dedup_pedidos
+              WHERE status = 'cancelado' AND cancelado_em >= ${inicio.toISOString()}::timestamptz AND
+                cancelado_em < ${fim.toISOString()}::timestamptz
+            ),
+            agrupados AS (
+              SELECT
+                CASE WHEN NULLIF(BTRIM(COALESCE(cancelado_por_id, '')), '') IS NULL THEN NULL ELSE cancelado_por_id END AS identificador,
+                MAX(NULLIF(BTRIM(COALESCE(cancelado_por_nome, '')), '')) AS nome_snapshot,
+                MAX(NULLIF(BTRIM(COALESCE(cancelado_por_role, '')), '')) AS role_snapshot,
+                SUM(quantidade)::integer AS quantidade,
+                SUM(CAST(quantidade AS DECIMAL(10,2)) * CAST(preco_unitario AS DECIMAL(10,2)))::numeric AS valor,
+                SUM(CASE WHEN cancelado_apos_inicio = true THEN CAST(quantidade AS DECIMAL(10,2)) * CAST(preco_unitario AS DECIMAL(10,2)) ELSE 0 END)::numeric AS valor_perda
+              FROM cancelamentos_filtrados
+              GROUP BY identificador
+            )
+            SELECT
+              identificador AS responsavel_id,
+              CASE WHEN identificador IS NULL THEN 'Não identificado' ELSE COALESCE(nome_snapshot, 'Não identificado') END AS nome,
+              role_snapshot AS role,
+              quantidade,
+              valor,
+              valor_perda
+            FROM agrupados
+            ORDER BY valor DESC, nome ASC, responsavel_id ASC NULLS LAST
+          `
+        ) as any[];
+
+        // Pratos mais cancelados (TOP 10)
+        const pratosMaisCanceladosResult = await (app.db as any).execute(
+          sql`
+            WITH pedidos_vivos AS (
+              SELECT id, prato_id, quantidade, preco_unitario, restaurante_id, status::text AS status,
+                cancelado_em, cancelado_apos_inicio, 0 AS prioridade_fonte
+              FROM pedidos
+              WHERE restaurante_id = ${tenantId}
+            ),
+            pedidos_hist AS (
+              SELECT id, prato_id, quantidade, preco_unitario, restaurante_id, status,
+                cancelado_em, cancelado_apos_inicio, 1 AS prioridade_fonte
+              FROM pedidos_historico
+              WHERE restaurante_id = ${tenantId}
+            ),
+            todos_pedidos AS (
+              SELECT * FROM pedidos_vivos UNION ALL SELECT * FROM pedidos_hist
+            ),
+            dedup_pedidos AS (
+              SELECT DISTINCT ON (restaurante_id, id) id, prato_id, quantidade, preco_unitario, restaurante_id,
+                status, cancelado_em, cancelado_apos_inicio
+              FROM todos_pedidos
+              ORDER BY restaurante_id, id, prioridade_fonte ASC
+            ),
+            cancelamentos_filtrados AS (
+              SELECT prato_id, quantidade, preco_unitario, cancelado_apos_inicio
+              FROM dedup_pedidos
+              WHERE status = 'cancelado' AND cancelado_em >= ${inicio.toISOString()}::timestamptz AND
+                cancelado_em < ${fim.toISOString()}::timestamptz
+            ),
+            com_nomes_vivos AS (
+              SELECT
+                COALESCE(NULLIF(BTRIM(p.nome), ''), 'Prato removido') AS nome,
+                cf.quantidade,
+                CAST(cf.quantidade AS DECIMAL(10,2)) * CAST(cf.preco_unitario AS DECIMAL(10,2)) AS valor_bruto,
+                CASE WHEN cf.cancelado_apos_inicio = true THEN CAST(cf.quantidade AS DECIMAL(10,2)) * CAST(cf.preco_unitario AS DECIMAL(10,2)) ELSE 0 END AS valor_perda
+              FROM cancelamentos_filtrados cf
+              LEFT JOIN pratos p ON cf.prato_id = p.id AND p.restaurante_id = ${tenantId}
+              WHERE cf.prato_id IS NOT NULL
+            ),
+            agregado AS (
+              SELECT nome, SUM(quantidade)::integer AS quantidade, SUM(valor_bruto)::numeric AS valor, SUM(valor_perda)::numeric AS valor_perda
+              FROM com_nomes_vivos
+              GROUP BY nome
+            )
+            SELECT nome, quantidade, valor, valor_perda
+            FROM agregado
+            ORDER BY valor DESC, nome ASC
+            LIMIT 10
+          `
+        ) as any[];
+
+        // Por canal
+        const porCanalResult = await (app.db as any).execute(
+          sql`
+            WITH pedidos_vivos AS (
+              SELECT id, comanda_id, quantidade, preco_unitario, restaurante_id, status::text AS status,
+                cancelado_em, cancelado_apos_inicio, 0 AS prioridade_fonte
+              FROM pedidos
+              WHERE restaurante_id = ${tenantId}
+            ),
+            pedidos_hist AS (
+              SELECT id, comanda_id, quantidade, preco_unitario, restaurante_id, status,
+                cancelado_em, cancelado_apos_inicio, 1 AS prioridade_fonte
+              FROM pedidos_historico
+              WHERE restaurante_id = ${tenantId}
+            ),
+            todos_pedidos AS (
+              SELECT * FROM pedidos_vivos UNION ALL SELECT * FROM pedidos_hist
+            ),
+            dedup_pedidos AS (
+              SELECT DISTINCT ON (restaurante_id, id) id, comanda_id, quantidade, preco_unitario, restaurante_id,
+                status, cancelado_em, cancelado_apos_inicio
+              FROM todos_pedidos
+              ORDER BY restaurante_id, id, prioridade_fonte ASC
+            ),
+            cancelamentos_filtrados AS (
+              SELECT comanda_id, quantidade, preco_unitario, cancelado_apos_inicio
+              FROM dedup_pedidos
+              WHERE status = 'cancelado' AND cancelado_em >= ${inicio.toISOString()}::timestamptz AND
+                cancelado_em < ${fim.toISOString()}::timestamptz
+            ),
+            com_canal_vivas AS (
+              SELECT
+                CASE WHEN c.tipo::text = 'delivery' THEN 'delivery' ELSE 'mesa' END AS canal,
+                cf.quantidade,
+                CAST(cf.quantidade AS DECIMAL(10,2)) * CAST(cf.preco_unitario AS DECIMAL(10,2)) AS valor_bruto,
+                CASE WHEN cf.cancelado_apos_inicio = true THEN CAST(cf.quantidade AS DECIMAL(10,2)) * CAST(cf.preco_unitario AS DECIMAL(10,2)) ELSE 0 END AS valor_perda
+              FROM cancelamentos_filtrados cf
+              LEFT JOIN comandas c ON cf.comanda_id = c.id AND c.restaurante_id = ${tenantId}
+            ),
+            com_canal_hist AS (
+              SELECT
+                'mesa' AS canal,
+                cf.quantidade,
+                CAST(cf.quantidade AS DECIMAL(10,2)) * CAST(cf.preco_unitario AS DECIMAL(10,2)) AS valor_bruto,
+                CASE WHEN cf.cancelado_apos_inicio = true THEN CAST(cf.quantidade AS DECIMAL(10,2)) * CAST(cf.preco_unitario AS DECIMAL(10,2)) ELSE 0 END AS valor_perda
+              FROM cancelamentos_filtrados cf
+              LEFT JOIN comandas_historico ch ON cf.comanda_id = ch.id AND ch.restaurante_id = ${tenantId}
+              WHERE NOT EXISTS (SELECT 1 FROM comandas c WHERE c.id = cf.comanda_id AND c.restaurante_id = ${tenantId})
+            ),
+            agregado AS (
+              SELECT canal, SUM(quantidade)::integer AS quantidade, SUM(valor_bruto)::numeric AS valor, SUM(valor_perda)::numeric AS valor_perda
+              FROM (SELECT * FROM com_canal_vivas UNION ALL SELECT * FROM com_canal_hist) t
+              GROUP BY canal
+            )
+            SELECT COALESCE(canal, 'mesa') AS canal, COALESCE(quantidade, 0) AS quantidade, COALESCE(valor, 0) AS valor, COALESCE(valor_perda, 0) AS valor_perda
+            FROM (SELECT 'mesa' AS canal UNION ALL SELECT 'delivery') canais
+            LEFT JOIN agregado a ON canais.canal = a.canal
+            ORDER BY canal
+          `
+        ) as any[];
+
+        // Por dia (with calendar fill)
+        const porDiaResult = await (app.db as any).execute(
+          sql`
+            WITH pedidos_vivos AS (
+              SELECT id, quantidade, preco_unitario, restaurante_id, status::text AS status,
+                cancelado_em, cancelado_apos_inicio, 0 AS prioridade_fonte
+              FROM pedidos
+              WHERE restaurante_id = ${tenantId}
+            ),
+            pedidos_hist AS (
+              SELECT id, quantidade, preco_unitario, restaurante_id, status,
+                cancelado_em, cancelado_apos_inicio, 1 AS prioridade_fonte
+              FROM pedidos_historico
+              WHERE restaurante_id = ${tenantId}
+            ),
+            todos_pedidos AS (
+              SELECT * FROM pedidos_vivos UNION ALL SELECT * FROM pedidos_hist
+            ),
+            dedup_pedidos AS (
+              SELECT DISTINCT ON (restaurante_id, id) id, quantidade, preco_unitario, restaurante_id,
+                status, cancelado_em, cancelado_apos_inicio
+              FROM todos_pedidos
+              ORDER BY restaurante_id, id, prioridade_fonte ASC
+            ),
+            cancelamentos_filtrados AS (
+              SELECT
+                to_char(cancelado_em AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD') AS data,
+                quantidade,
+                CAST(quantidade AS DECIMAL(10,2)) * CAST(preco_unitario AS DECIMAL(10,2)) AS valor_bruto,
+                CASE WHEN cancelado_apos_inicio = true THEN CAST(quantidade AS DECIMAL(10,2)) * CAST(preco_unitario AS DECIMAL(10,2)) ELSE 0 END AS valor_perda
+              FROM dedup_pedidos
+              WHERE status = 'cancelado' AND cancelado_em >= ${inicio.toISOString()}::timestamptz AND
+                cancelado_em < ${fim.toISOString()}::timestamptz
+            ),
+            agregado AS (
+              SELECT data, SUM(quantidade)::integer AS quantidade, SUM(valor_bruto)::numeric AS valor, SUM(valor_perda)::numeric AS valor_perda
+              FROM cancelamentos_filtrados
+              GROUP BY data
+            ),
+            calendario AS (
+              SELECT to_char(d, 'YYYY-MM-DD') AS data
+              FROM generate_series(${inicio.toISOString()}::date, (${fim.toISOString()}::date - '1 day'::interval)::date, '1 day'::interval) d
+            )
+            SELECT c.data, COALESCE(a.quantidade, 0) AS quantidade, COALESCE(a.valor, 0) AS valor, COALESCE(a.valor_perda, 0) AS valor_perda
+            FROM calendario c
+            LEFT JOIN agregado a ON c.data = a.data
+            ORDER BY c.data
+          `
+        ) as any[];
+
+        // Process totals
+        const totalsCancelamentos = cancelamentosResult[0] || {
+          total_quantidade: 0,
+          total_valor: 0,
+          quantidade_perda: 0,
+          valor_perda_total: 0,
+          quantidade_antes_preparo: 0,
+          valor_antes_preparo: 0,
+        };
+
+        const receitaVendida = receitaVendidaResult[0]?.receita_vendida_bruta || 0;
+        const valorCanceladoBruto = parseFloat(String(totalsCancelamentos.total_valor || 0));
+        const denominador = valorCanceladoBruto + parseFloat(String(receitaVendida || 0));
+        const percentualCancelamento = denominador > 0 ? (valorCanceladoBruto / denominador) * 100 : 0;
+
+        // Fixed motives (9 total)
+        const motivosFixos = [
+          { codigo: "erro_lancamento", nome: "Erro de lançamento" },
+          { codigo: "cliente_desistiu", nome: "Cliente desistiu" },
+          { codigo: "item_em_falta", nome: "Item em falta" },
+          { codigo: "demora", nome: "Demora" },
+          { codigo: "qualidade", nome: "Qualidade" },
+          { codigo: "outro", nome: "Outro" },
+          { codigo: "cliente_nao_atendeu", nome: "Cliente não atendeu" },
+          { codigo: "endereco_fora_area", nome: "Endereço fora da área" },
+          { codigo: "sem_motivo", nome: "Sem motivo informado" },
+        ];
+
+        const motivoMap = new Map<string, { quantidade: number; valor: number; valor_perda: number }>();
+        for (const m of motivosFixos) {
+          motivoMap.set(m.codigo, { quantidade: 0, valor: 0, valor_perda: 0 });
+        }
+
+        if (Array.isArray(porMotivoResult)) {
+          for (const row of porMotivoResult) {
+            const codigo = row.motivo_codigo || "sem_motivo";
+            motivoMap.set(codigo, {
+              quantidade: parseInt(String(row.quantidade || 0)) || 0,
+              valor: Math.round(parseFloat(String(row.valor || 0)) * 100) / 100,
+              valor_perda: Math.round(parseFloat(String(row.valor_perda || 0)) * 100) / 100,
+            });
+          }
+        }
+
+        const porMotivo = motivosFixos
+          .map(m => ({
+            codigo: m.codigo,
+            nome: m.nome,
+            ...motivoMap.get(m.codigo)!,
+          }))
+          .sort((a, b) => {
+            if (b.valor !== a.valor) return b.valor - a.valor;
+            return a.codigo.localeCompare(b.codigo);
+          });
+
+        // Process por_responsavel
+        const porResponsavel = [];
+        if (Array.isArray(porResponsavelResult)) {
+          for (const row of porResponsavelResult) {
+            porResponsavel.push({
+              responsavel_id: row.responsavel_id || null,
+              nome: row.nome || "Não identificado",
+              role: row.role || null,
+              quantidade: parseInt(String(row.quantidade || 0)) || 0,
+              valor: Math.round(parseFloat(String(row.valor || 0)) * 100) / 100,
+              valor_perda: Math.round(parseFloat(String(row.valor_perda || 0)) * 100) / 100,
+            });
+          }
+        }
+
+        // Process pratos_mais_cancelados
+        const pratosMaisCancelados = [];
+        if (Array.isArray(pratosMaisCanceladosResult)) {
+          for (const row of pratosMaisCanceladosResult) {
+            pratosMaisCancelados.push({
+              nome: row.nome || "Prato removido",
+              quantidade: parseInt(String(row.quantidade || 0)) || 0,
+              valor: Math.round(parseFloat(String(row.valor || 0)) * 100) / 100,
+              valor_perda: Math.round(parseFloat(String(row.valor_perda || 0)) * 100) / 100,
+            });
+          }
+        }
+
+        // Process por_canal
+        const porCanal = [];
+        if (Array.isArray(porCanalResult)) {
+          for (const row of porCanalResult) {
+            porCanal.push({
+              canal: row.canal || "mesa",
+              quantidade: parseInt(String(row.quantidade || 0)) || 0,
+              valor: Math.round(parseFloat(String(row.valor || 0)) * 100) / 100,
+              valor_perda: Math.round(parseFloat(String(row.valor_perda || 0)) * 100) / 100,
+            });
+          }
+        }
+
+        // Process por_dia
+        const porDia = [];
+        if (Array.isArray(porDiaResult)) {
+          for (const row of porDiaResult) {
+            porDia.push({
+              data: row.data || "",
+              quantidade: parseInt(String(row.quantidade || 0)) || 0,
+              valor: Math.round(parseFloat(String(row.valor || 0)) * 100) / 100,
+              valor_perda: Math.round(parseFloat(String(row.valor_perda || 0)) * 100) / 100,
+            });
+          }
+        }
+
+        app.logger.info(
+          {
+            tenantId,
+            quantidade_cancelada: totalsCancelamentos.total_quantidade,
+            valor_cancelado: totalsCancelamentos.total_valor,
+            percentual_cancelamento: Math.round(percentualCancelamento * 100) / 100,
+          },
+          "Cancelamentos report retrieved successfully"
+        );
+
+        return await reply.code(200).send({
+          totais: {
+            quantidade_cancelada: parseInt(String(totalsCancelamentos.total_quantidade || 0)) || 0,
+            valor_cancelado: Math.round(parseFloat(String(valorCanceladoBruto)) * 100) / 100,
+            quantidade_antes_preparo: parseInt(String(totalsCancelamentos.quantidade_antes_preparo || 0)) || 0,
+            valor_antes_preparo: Math.round(parseFloat(String(totalsCancelamentos.valor_antes_preparo || 0)) * 100) / 100,
+            quantidade_perda: parseInt(String(totalsCancelamentos.quantidade_perda || 0)) || 0,
+            valor_perda: Math.round(parseFloat(String(totalsCancelamentos.valor_perda_total || 0)) * 100) / 100,
+            percentual_cancelamento: Math.round(percentualCancelamento * 100) / 100,
+          },
+          por_motivo: porMotivo,
+          por_responsavel: porResponsavel,
+          pratos_mais_cancelados: pratosMaisCancelados,
+          por_canal: porCanal,
+          por_dia: porDia,
+        });
+      } catch (error) {
+        app.logger.error({ err: error }, "Failed to get cancelamentos report");
+        return await reply.code(500).send({ error: "Não foi possível gerar o relatório de cancelamentos." });
+      }
+    }
+  );
 }
