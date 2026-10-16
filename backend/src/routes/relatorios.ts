@@ -125,6 +125,368 @@ function resolvePeriodo(
 }
 
 export function registerRelatoriosRoutes(app: App) {
+  // GET /api/relatorios/mix-pratos - Dish mix analysis (ABC classification)
+  app.fastify.get(
+    "/api/relatorios/mix-pratos",
+    {
+      schema: {
+        description: "Get dish mix analysis with ABC classification (requires authentication and admin/manager role)",
+        tags: ["relatorios"],
+        querystring: {
+          type: "object",
+          properties: {
+            periodo: { type: "string", enum: ["hoje", "7dias", "mes", "personalizado"] },
+            dataInicio: { type: "string" },
+            dataFim: { type: "string" },
+          },
+        },
+        response: {
+          200: {
+            type: "object",
+            required: ["totais", "pratos", "resumo_abc", "por_categoria", "mais_vendidos_quantidade", "sem_vendas"],
+            properties: {
+              totais: {
+                type: "object",
+                required: ["pratos_distintos", "quantidade_vendida", "faturamento_itens"],
+                properties: {
+                  pratos_distintos: { type: "number" },
+                  quantidade_vendida: { type: "number" },
+                  faturamento_itens: { type: "number" },
+                },
+              },
+              pratos: {
+                type: "array",
+                items: {
+                  type: "object",
+                  required: ["posicao", "prato_id", "nome", "categoria", "quantidade_vendida", "faturamento", "preco_medio", "percentual_faturamento", "percentual_acumulado", "classe_abc"],
+                  properties: {
+                    posicao: { type: "number" },
+                    prato_id: { type: "string", nullable: true },
+                    nome: { type: "string" },
+                    categoria: { type: "string" },
+                    quantidade_vendida: { type: "number" },
+                    faturamento: { type: "number" },
+                    preco_medio: { type: "number" },
+                    percentual_faturamento: { type: "number" },
+                    percentual_acumulado: { type: "number" },
+                    classe_abc: { type: "string" },
+                  },
+                },
+              },
+              resumo_abc: {
+                type: "array",
+                items: {
+                  type: "object",
+                  required: ["classe", "quantidade_pratos", "faturamento", "percentual_faturamento"],
+                  properties: {
+                    classe: { type: "string" },
+                    quantidade_pratos: { type: "number" },
+                    faturamento: { type: "number" },
+                    percentual_faturamento: { type: "number" },
+                  },
+                },
+              },
+              por_categoria: {
+                type: "array",
+                items: {
+                  type: "object",
+                  required: ["categoria", "quantidade_vendida", "faturamento", "percentual_faturamento"],
+                  properties: {
+                    categoria: { type: "string" },
+                    quantidade_vendida: { type: "number" },
+                    faturamento: { type: "number" },
+                    percentual_faturamento: { type: "number" },
+                  },
+                },
+              },
+              mais_vendidos_quantidade: {
+                type: "array",
+                items: {
+                  type: "object",
+                  required: ["nome", "categoria", "quantidade_vendida", "faturamento"],
+                  properties: {
+                    nome: { type: "string" },
+                    categoria: { type: "string" },
+                    quantidade_vendida: { type: "number" },
+                    faturamento: { type: "number" },
+                  },
+                },
+              },
+              sem_vendas: {
+                type: "array",
+                items: {
+                  type: "object",
+                  required: ["prato_id", "nome", "categoria"],
+                  properties: {
+                    prato_id: { type: "string" },
+                    nome: { type: "string" },
+                    categoria: { type: "string" },
+                  },
+                },
+              },
+            },
+          },
+          400: { type: "object", properties: { error: { type: "string" } } },
+          401: { type: "object", properties: { error: { type: "string" } } },
+          403: { type: "object", properties: { error: { type: "string" } } },
+          500: { type: "object", properties: { error: { type: "string" } } },
+        },
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const authUser = await customRequireAuth(app, request, reply);
+      if (!authUser) return;
+      if (!(await requireRole(authUser, ["administrador", "gerente"], reply))) return;
+
+      try {
+        const tenantId = requireTenant(authUser);
+        const query = request.query as { periodo?: string; dataInicio?: string; dataFim?: string };
+        const { inicio, fim, label: periodoLabel } = resolvePeriodo(query.periodo, query.dataInicio, query.dataFim);
+
+        // Check custom period length (max 366 days)
+        if (query.periodo === "personalizado") {
+          const daysDiff = Math.ceil((fim.getTime() - inicio.getTime()) / (1000 * 60 * 60 * 24));
+          if (daysDiff > 366) {
+            app.logger.warn({ tenantId, daysDiff }, "Custom period exceeds 366 days");
+            return await reply.code(400).send({ error: "O período personalizado não pode ultrapassar 366 dias." });
+          }
+        }
+
+        app.logger.info({ tenantId, periodo: query.periodo, inicio, fim }, "Getting mix-pratos report");
+
+        // Single aggregated query with all metrics
+        const mixResult = await (app.db as any).execute(
+          sql`
+            WITH pedidos_vivos AS (
+              SELECT id, prato_id, quantidade, preco_unitario, restaurante_id, status::text AS status,
+                NULL::text AS prato_nome, 0 AS prioridade_fonte
+              FROM pedidos
+              WHERE restaurante_id = ${tenantId}
+            ),
+            pedidos_hist AS (
+              SELECT id, prato_id, quantidade, preco_unitario, restaurante_id, status,
+                prato_nome AS prato_nome, 1 AS prioridade_fonte
+              FROM pedidos_historico
+              WHERE restaurante_id = ${tenantId}
+            ),
+            todos_pedidos AS (
+              SELECT * FROM pedidos_vivos UNION ALL SELECT * FROM pedidos_hist
+            ),
+            dedup_pedidos AS (
+              SELECT DISTINCT ON (restaurante_id, id)
+                id, prato_id, quantidade, preco_unitario, restaurante_id, status, prato_nome
+              FROM todos_pedidos
+              ORDER BY restaurante_id, id, prioridade_fonte ASC
+            ),
+            pedidos_elegveis AS (
+              SELECT prato_id, quantidade, preco_unitario, prato_nome
+              FROM dedup_pedidos
+              WHERE status != 'cancelado'
+            ),
+            com_nomes AS (
+              SELECT
+                pe.prato_id,
+                p.nome AS prato_nome,
+                pe.prato_nome AS prato_nome_historico,
+                c.nome AS categoria_nome,
+                pe.quantidade,
+                pe.preco_unitario
+              FROM pedidos_elegveis pe
+              LEFT JOIN pratos p ON pe.prato_id = p.id AND p.restaurante_id = ${tenantId}
+              LEFT JOIN categorias c ON p.categoria_id = c.id AND c.restaurante_id = ${tenantId}
+            ),
+            identidades AS (
+              SELECT
+                prato_id,
+                COALESCE(NULLIF(BTRIM(prato_nome),''), NULLIF(BTRIM(prato_nome_historico),''), 'Prato removido') AS nome_resolvido,
+                COALESCE(categoria_nome, 'Sem categoria') AS categoria,
+                SUM(quantidade) AS quantidade_total,
+                SUM(CAST(quantidade AS numeric) * CAST(preco_unitario AS numeric)) AS faturamento_bruto
+              FROM com_nomes
+              GROUP BY prato_id, CASE WHEN prato_id IS NULL THEN prato_nome_historico ELSE NULL END, prato_nome, categoria_nome
+            ),
+            total_faturamento AS (
+              SELECT SUM(faturamento_bruto) AS total_valor
+              FROM identidades
+            ),
+            com_percentuais AS (
+              SELECT
+                ROW_NUMBER() OVER (ORDER BY i.faturamento_bruto DESC, i.nome_resolvido ASC, i.prato_id ASC NULLS LAST) AS posicao,
+                i.prato_id,
+                i.nome_resolvido AS nome,
+                i.categoria,
+                i.quantidade_total,
+                ROUND(i.faturamento_bruto, 2) AS faturamento,
+                CASE WHEN i.quantidade_total > 0 THEN ROUND(i.faturamento_bruto / i.quantidade_total, 2) ELSE 0 END AS preco_medio,
+                CASE WHEN tf.total_valor > 0 THEN ROUND(100 * i.faturamento_bruto / tf.total_valor, 2) ELSE 0 END AS percentual_faturamento,
+                SUM(i.faturamento_bruto) OVER (ORDER BY i.faturamento_bruto DESC, i.nome_resolvido ASC, i.prato_id ASC NULLS LAST ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS faturamento_acumulado,
+                LAG(SUM(i.faturamento_bruto)) OVER (ORDER BY i.faturamento_bruto DESC, i.nome_resolvido ASC, i.prato_id ASC NULLS LAST ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS faturamento_anterior
+              FROM identidades i
+              CROSS JOIN total_faturamento tf
+            ),
+            com_acumulado AS (
+              SELECT
+                posicao,
+                prato_id,
+                nome,
+                categoria,
+                quantidade_total,
+                faturamento,
+                preco_medio,
+                percentual_faturamento,
+                CASE
+                  WHEN total_faturamento > 0 THEN ROUND(100 * faturamento_acumulado / total_faturamento, 2)
+                  ELSE 0
+                END AS percentual_acumulado,
+                CASE
+                  WHEN total_faturamento > 0 THEN ROUND(100 * COALESCE(faturamento_anterior, 0) / total_faturamento, 2)
+                  ELSE 0
+                END AS percentual_anterior,
+                total_faturamento
+              FROM (
+                SELECT cp.*, tf.total_valor AS total_faturamento FROM com_percentuais cp CROSS JOIN total_faturamento tf
+              ) sub
+            ),
+            com_classe AS (
+              SELECT
+                posicao,
+                prato_id,
+                nome,
+                categoria,
+                quantidade_total,
+                faturamento,
+                preco_medio,
+                percentual_faturamento,
+                percentual_acumulado,
+                CASE
+                  WHEN percentual_anterior < 80 THEN 'A'
+                  WHEN percentual_anterior >= 80 AND percentual_anterior < 95 THEN 'B'
+                  ELSE 'C'
+                END AS classe_abc
+              FROM com_acumulado
+            )
+            SELECT json_build_object(
+              'pratos', (
+                SELECT COALESCE(json_agg(json_build_object(
+                  'posicao', posicao,
+                  'prato_id', prato_id,
+                  'nome', nome,
+                  'categoria', categoria,
+                  'quantidade_vendida', quantidade_total,
+                  'faturamento', faturamento,
+                  'preco_medio', preco_medio,
+                  'percentual_faturamento', percentual_faturamento,
+                  'percentual_acumulado', percentual_acumulado,
+                  'classe_abc', classe_abc
+                ) ORDER BY posicao), '[]'::json)
+                FROM com_classe
+              ),
+              'totais', (
+                SELECT json_build_object(
+                  'pratos_distintos', COALESCE(COUNT(DISTINCT prato_id), 0),
+                  'quantidade_vendida', COALESCE(SUM(quantidade_total), 0),
+                  'faturamento_itens', COALESCE(ROUND(SUM(faturamento), 2), 0)
+                )
+                FROM com_classe
+              ),
+              'resumo_abc', (
+                SELECT COALESCE(json_agg(json_build_object(
+                  'classe', classe,
+                  'quantidade_pratos', quantidade_pratos,
+                  'faturamento', fat,
+                  'percentual_faturamento', percentual
+                ) ORDER BY CASE classe WHEN 'A' THEN 1 WHEN 'B' THEN 2 ELSE 3 END), '[]'::json)
+                FROM (
+                  SELECT
+                    classe,
+                    COUNT(*) AS quantidade_pratos,
+                    ROUND(SUM(faturamento), 2) AS fat,
+                    CASE
+                      WHEN (SELECT SUM(faturamento) FROM com_classe) > 0
+                      THEN ROUND(100 * SUM(faturamento) / (SELECT SUM(faturamento) FROM com_classe), 2)
+                      ELSE 0
+                    END AS percentual
+                  FROM com_classe
+                  GROUP BY classe
+                ) sub
+              ),
+              'por_categoria', (
+                SELECT COALESCE(json_agg(json_build_object(
+                  'categoria', categoria,
+                  'quantidade_vendida', SUM(quantidade_total),
+                  'faturamento', ROUND(SUM(faturamento), 2),
+                  'percentual_faturamento', CASE
+                    WHEN (SELECT SUM(faturamento) FROM com_classe) > 0
+                    THEN ROUND(100 * SUM(faturamento) / (SELECT SUM(faturamento) FROM com_classe), 2)
+                    ELSE 0
+                  END
+                ) ORDER BY SUM(faturamento) DESC, categoria ASC), '[]'::json)
+                FROM com_classe
+                GROUP BY categoria
+              ),
+              'mais_vendidos_quantidade', (
+                SELECT COALESCE(json_agg(json_build_object(
+                  'nome', nome,
+                  'categoria', categoria,
+                  'quantidade_vendida', quantidade_total,
+                  'faturamento', faturamento
+                ) ORDER BY quantidade_total DESC, faturamento DESC, nome ASC), '[]'::json)
+                FROM (
+                  SELECT nome, categoria, quantidade_total, faturamento
+                  FROM com_classe
+                  ORDER BY quantidade_total DESC, faturamento DESC, nome ASC
+                  LIMIT 10
+                ) sub
+              ),
+              'sem_vendas', (
+                SELECT COALESCE(json_agg(json_build_object(
+                  'prato_id', prato_id,
+                  'nome', nome,
+                  'categoria', categoria
+                ) ORDER BY nome ASC, prato_id ASC), '[]'::json)
+                FROM (
+                  SELECT p.id AS prato_id, p.nome, COALESCE(c.nome, 'Sem categoria') AS categoria
+                  FROM pratos p
+                  LEFT JOIN categorias c ON p.categoria_id = c.id AND c.restaurante_id = ${tenantId}
+                  WHERE p.restaurante_id = ${tenantId} AND p.disponivel = true
+                    AND NOT EXISTS (
+                      SELECT 1 FROM com_classe cc WHERE cc.prato_id = p.id
+                    )
+                  ORDER BY p.nome ASC, p.id ASC
+                  LIMIT 50
+                ) sub
+              )
+            ) AS result
+          `
+        ) as any[];
+
+        const resultData = mixResult?.[0]?.result || {
+          pratos: [],
+          totais: { pratos_distintos: 0, quantidade_vendida: 0, faturamento_itens: 0 },
+          resumo_abc: [],
+          por_categoria: [],
+          mais_vendidos_quantidade: [],
+          sem_vendas: [],
+        };
+
+        app.logger.info(
+          {
+            tenantId,
+            pratos_distintos: resultData.totais?.pratos_distintos || 0,
+            quantidade_vendida: resultData.totais?.quantidade_vendida || 0,
+            faturamento_itens: resultData.totais?.faturamento_itens || 0,
+          },
+          "Mix-pratos report retrieved successfully"
+        );
+
+        return await reply.code(200).send(resultData);
+      } catch (error) {
+        app.logger.error({ err: error }, "Failed to get mix-pratos report");
+        return await reply.code(500).send({ error: "Não foi possível gerar o relatório de mix de pratos." });
+      }
+    }
+  );
+
   // GET /api/relatorios/resumo - Summary/Dashboard
   app.fastify.get(
     "/api/relatorios/resumo",
@@ -384,60 +746,66 @@ export function registerRelatoriosRoutes(app: App) {
         const totalClosedPeriodoCount = countClosedPeriodoCom + countClosedPeriodoHist;
         const avgTicket = totalClosedPeriodoCount > 0 ? receitaPeriodo / totalClosedPeriodoCount : 0;
 
-        // Top 5 dishes no período - aggregate from both pedidos and pedidos_historico
+        // Top 5 dishes no período - single aggregated query
         let topDishes: Array<{ dish_name: string; quantity_sold: number }> = [];
         try {
-          const topDishesFromPedidosResult = await (app.db as any).execute(
+          const topDishesResult = await (app.db as any).execute(
             sql`
-              SELECT
-                pr.nome as dish_name,
-                SUM(p.quantidade)::integer as quantity_sold
-              FROM pedidos p
-              INNER JOIN pratos pr ON p.prato_id = pr.id
-              WHERE p.restaurante_id = ${tenantId}
-                AND p.created_at >= ${inicio.toISOString()}::timestamptz
-                AND p.created_at < ${fim.toISOString()}::timestamptz
-              GROUP BY pr.nome
-              ORDER BY quantity_sold DESC
+              WITH pedidos_vivos AS (
+                SELECT id, prato_id, quantidade, restaurante_id, status::text AS status,
+                  NULL::text AS prato_nome, 0 AS prioridade_fonte
+                FROM pedidos
+                WHERE restaurante_id = ${tenantId}
+              ),
+              pedidos_hist AS (
+                SELECT id, prato_id, quantidade, restaurante_id, status,
+                  prato_nome AS prato_nome, 1 AS prioridade_fonte
+                FROM pedidos_historico
+                WHERE restaurante_id = ${tenantId}
+              ),
+              todos_pedidos AS (
+                SELECT * FROM pedidos_vivos UNION ALL SELECT * FROM pedidos_hist
+              ),
+              dedup_pedidos AS (
+                SELECT DISTINCT ON (restaurante_id, id)
+                  id, prato_id, quantidade, restaurante_id, status, prato_nome
+                FROM todos_pedidos
+                ORDER BY restaurante_id, id, prioridade_fonte ASC
+              ),
+              pedidos_elegveis AS (
+                SELECT prato_id, quantidade, prato_nome
+                FROM dedup_pedidos
+                WHERE status != 'cancelado'
+              ),
+              com_nomes AS (
+                SELECT
+                  pe.prato_id,
+                  p.nome AS prato_nome_atual,
+                  pe.prato_nome AS prato_nome_historico,
+                  pe.quantidade
+                FROM pedidos_elegveis pe
+                LEFT JOIN pratos p ON pe.prato_id = p.id AND p.restaurante_id = ${tenantId}
+              ),
+              identidades AS (
+                SELECT
+                  COALESCE(NULLIF(BTRIM(prato_nome_atual),''), NULLIF(BTRIM(prato_nome_historico),''), 'Prato removido') AS nome_resolvido,
+                  SUM(quantidade)::integer AS quantidade_total
+                FROM com_nomes
+                GROUP BY CASE WHEN prato_id IS NULL THEN prato_nome_historico ELSE NULL END, prato_nome_atual
+              )
+              SELECT nome_resolvido AS dish_name, quantidade_total AS quantity_sold
+              FROM identidades
+              ORDER BY quantidade_total DESC, nome_resolvido ASC
+              LIMIT 5
             `
           ) as any[];
 
-          const topDishesFromHistoricoResult = await (app.db as any).execute(
-            sql`
-              SELECT
-                prato_nome as dish_name,
-                SUM(quantidade)::integer as quantity_sold
-              FROM pedidos_historico
-              WHERE restaurante_id = ${tenantId} AND prato_nome IS NOT NULL
-                AND created_at >= ${inicio.toISOString()}::timestamptz
-                AND created_at < ${fim.toISOString()}::timestamptz
-              GROUP BY prato_nome
-              ORDER BY quantity_sold DESC
-            `
-          ) as any[];
-
-          const dishMap = new Map<string, number>();
-
-          if (Array.isArray(topDishesFromPedidosResult)) {
-            for (const d of topDishesFromPedidosResult) {
-              const key = d.dish_name || "Unknown";
-              const count = parseInt(String(d.quantity_sold || 0));
-              dishMap.set(key, (dishMap.get(key) || 0) + count);
-            }
+          if (Array.isArray(topDishesResult)) {
+            topDishes = topDishesResult.map((row) => ({
+              dish_name: row.dish_name || "Unknown",
+              quantity_sold: parseInt(String(row.quantity_sold || 0)),
+            }));
           }
-
-          if (Array.isArray(topDishesFromHistoricoResult)) {
-            for (const d of topDishesFromHistoricoResult) {
-              const key = d.dish_name || "Unknown";
-              const count = parseInt(String(d.quantity_sold || 0));
-              dishMap.set(key, (dishMap.get(key) || 0) + count);
-            }
-          }
-
-          topDishes = Array.from(dishMap.entries())
-            .map(([dish_name, quantity_sold]) => ({ dish_name, quantity_sold }))
-            .sort((a, b) => b.quantity_sold - a.quantity_sold)
-            .slice(0, 5);
         } catch (dishError) {
           app.logger.warn({ err: dishError }, "Failed to get top dishes, using empty array");
           topDishes = [];
