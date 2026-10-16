@@ -3438,4 +3438,269 @@ LIMIT 5
       }
     }
   );
+
+  // =========================================================================
+  // GET /api/relatorios/delivery-bairros
+  // =========================================================================
+  app.fastify.get(
+    "/api/relatorios/delivery-bairros",
+    {
+      schema: {
+        description: "Get delivery analytics by neighborhood",
+        tags: ["relatorios"],
+        querystring: {
+          type: "object",
+          properties: {
+            periodo: {
+              type: "string",
+              enum: ["hoje", "7dias", "mes", "personalizado"],
+              description: "Period filter",
+            },
+            dataInicio: { type: "string", description: "Start date for custom period (ISO 8601)" },
+            dataFim: { type: "string", description: "End date for custom period (ISO 8601)" },
+          },
+        },
+        response: {
+          200: {
+            type: "object",
+            required: ["totais", "por_bairro"],
+            properties: {
+              totais: {
+                type: "object",
+                required: [
+                  "pedidos",
+                  "faturamento_itens",
+                  "taxa_entrega",
+                  "total_recebido",
+                  "ticket_medio",
+                  "tempo_medio_entrega_min",
+                  "pedidos_com_tempo",
+                ],
+                properties: {
+                  pedidos: { type: "integer" },
+                  faturamento_itens: { type: "number" },
+                  taxa_entrega: { type: "number" },
+                  total_recebido: { type: "number" },
+                  ticket_medio: { type: "number" },
+                  tempo_medio_entrega_min: { type: ["number", "null"] },
+                  pedidos_com_tempo: { type: "integer" },
+                },
+              },
+              por_bairro: {
+                type: "array",
+                items: {
+                  type: "object",
+                  required: [
+                    "bairro",
+                    "pedidos",
+                    "faturamento_itens",
+                    "taxa_entrega",
+                    "total_recebido",
+                    "ticket_medio",
+                    "taxa_media",
+                    "tempo_medio_entrega_min",
+                    "tempo_estimado_medio_min",
+                    "percentual_pedidos",
+                    "percentual_total_recebido",
+                  ],
+                  properties: {
+                    bairro: { type: "string" },
+                    pedidos: { type: "integer" },
+                    faturamento_itens: { type: "number" },
+                    taxa_entrega: { type: "number" },
+                    total_recebido: { type: "number" },
+                    ticket_medio: { type: "number" },
+                    taxa_media: { type: "number" },
+                    tempo_medio_entrega_min: { type: ["number", "null"] },
+                    tempo_estimado_medio_min: { type: ["number", "null"] },
+                    percentual_pedidos: { type: "number" },
+                    percentual_total_recebido: { type: "number" },
+                  },
+                },
+              },
+            },
+          },
+          400: { type: "object", properties: { error: { type: "string" } } },
+          401: { type: "object", properties: { error: { type: "string" } } },
+          403: { type: "object", properties: { error: { type: "string" } } },
+          500: { type: "object", properties: { error: { type: "string" } } },
+        },
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const authUser = await customRequireAuth(app, request, reply);
+      if (!authUser) return;
+      if (!(await requireRole(authUser, ["administrador", "gerente"], reply))) return;
+
+      const tenantId = requireTenant(authUser);
+      const { periodo, dataInicio, dataFim } = request.query as {
+        periodo?: Periodo;
+        dataInicio?: string;
+        dataFim?: string;
+      };
+
+      app.logger.info({ tenantId, periodo }, "Fetching delivery-bairros report");
+
+      try {
+        // Validate period and get date range
+        const { inicio, fim } = resolvePeriodo(periodo, dataInicio, dataFim);
+
+        // Check custom period length (max 366 days)
+        if (periodo === "personalizado") {
+          const daysDiff = Math.ceil((fim.getTime() - inicio.getTime()) / (1000 * 60 * 60 * 24));
+          if (daysDiff > 366) {
+            app.logger.warn({ tenantId, daysDiff }, "Custom period exceeds 366 days");
+            return await reply.code(400).send({ error: "O período personalizado não pode ultrapassar 366 dias." });
+          }
+        }
+
+        // Base SQL with common CTEs
+        const baseComun = sql`
+          WITH comandas_fontes AS (
+            SELECT c.id AS id, c.restaurante_id AS restaurante_id, c.status::text AS status, c.tipo::text AS tipo, c.subtotal AS subtotal, c.total AS total, c.closed_at AS closed_at, 0 AS prioridade_fonte
+            FROM comandas c
+            WHERE c.restaurante_id = ${tenantId}
+            UNION ALL
+            SELECT ch.id AS id, ch.restaurante_id AS restaurante_id, ch.status::text AS status, NULL::text AS tipo, ch.subtotal AS subtotal, ch.total AS total, ch.closed_at AS closed_at, 1 AS prioridade_fonte
+            FROM comandas_historico ch
+            WHERE ch.restaurante_id = ${tenantId}
+          ),
+          comandas_unicas AS (
+            SELECT DISTINCT ON (cf.restaurante_id, cf.id)
+              cf.id, cf.restaurante_id, cf.status, cf.tipo, cf.subtotal, cf.total, cf.closed_at, cf.prioridade_fonte
+            FROM comandas_fontes cf
+            ORDER BY cf.restaurante_id, cf.id, cf.prioridade_fonte ASC
+          ),
+          entregas_recentes AS (
+            SELECT DISTINCT ON (e.restaurante_id, e.comanda_id)
+              e.id, e.restaurante_id, e.comanda_id, e.bairro, e.taxa_entrega, e.tempo_estimado, e.saiu_em, e.entregue_em
+            FROM entregas e
+            WHERE e.restaurante_id = ${tenantId}
+            ORDER BY e.restaurante_id, e.comanda_id, e.created_at DESC, e.id DESC
+          ),
+          elegiveis AS (
+            SELECT cu.id, cu.restaurante_id, cu.subtotal AS faturamento_itens, cu.total AS total_recebido,
+              COALESCE(er.taxa_entrega, 0) AS taxa_entrega,
+              er.tempo_estimado AS tempo_estimado_min,
+              CASE WHEN er.saiu_em IS NOT NULL AND er.entregue_em IS NOT NULL AND er.entregue_em >= er.saiu_em
+                THEN EXTRACT(EPOCH FROM (er.entregue_em - er.saiu_em))::double precision / 60.0 ELSE NULL END AS tempo_entrega_min,
+              CASE WHEN er.id IS NULL THEN 'Sem dados de entrega' ELSE COALESCE(NULLIF(BTRIM(er.bairro), ''), 'Sem bairro') END AS bairro_nome,
+              CASE WHEN er.id IS NULL THEN 'sem-entrega:' ELSE 'bairro:' || LOWER(COALESCE(NULLIF(BTRIM(er.bairro), ''), 'Sem bairro')) END AS bairro_chave
+            FROM comandas_unicas cu
+            LEFT JOIN entregas_recentes er ON er.comanda_id = cu.id AND er.restaurante_id = cu.restaurante_id AND er.restaurante_id = ${tenantId}
+            WHERE cu.status = 'fechada' AND cu.total > 0
+              AND cu.closed_at >= ${inicio.toISOString()}::timestamptz
+              AND cu.closed_at < ${fim.toISOString()}::timestamptz
+              AND (cu.tipo::text = 'delivery' OR (cu.prioridade_fonte = 1 AND er.id IS NOT NULL))
+          )
+        `;
+
+        // Query 1: Totals
+        const totaisResult = await (app.db as any).execute(
+          sql`
+            ${baseComun}
+            SELECT
+              COUNT(*)::integer AS pedidos,
+              COALESCE(SUM(e.faturamento_itens), 0)::double precision AS faturamento_itens,
+              COALESCE(SUM(e.taxa_entrega), 0)::double precision AS taxa_entrega,
+              COALESCE(SUM(e.total_recebido), 0)::double precision AS total_recebido,
+              COALESCE(AVG(e.total_recebido), 0)::double precision AS ticket_medio,
+              AVG(e.tempo_entrega_min)::double precision AS tempo_medio_entrega_min,
+              COUNT(e.tempo_entrega_min)::integer AS pedidos_com_tempo
+            FROM elegiveis e
+          `
+        ) as any[];
+
+        // Validate Q1 result
+        if (!Array.isArray(totaisResult)) {
+          app.logger.error({ tenantId, resultType: typeof totaisResult }, "Query 1 (totals) result is not an array");
+          return await reply.code(500).send({ error: "Falha na consulta de totais de entrega: resultado inválido." });
+        }
+        if (totaisResult.length === 0) {
+          app.logger.error({ tenantId }, "Query 1 (totals) returned empty array");
+          return await reply.code(500).send({ error: "Falha na consulta de totais de entrega: resultado vazio." });
+        }
+
+        // Query 2: Per-neighborhood breakdown
+        const porBairroResult = await (app.db as any).execute(
+          sql`
+            ${baseComun}
+            SELECT
+              MODE() WITHIN GROUP (ORDER BY e.bairro_nome) AS bairro,
+              COUNT(*)::integer AS pedidos,
+              COALESCE(SUM(e.faturamento_itens), 0)::double precision AS faturamento_itens,
+              COALESCE(SUM(e.taxa_entrega), 0)::double precision AS taxa_entrega,
+              COALESCE(SUM(e.total_recebido), 0)::double precision AS total_recebido,
+              COALESCE(AVG(e.total_recebido), 0)::double precision AS ticket_medio,
+              COALESCE(AVG(e.taxa_entrega), 0)::double precision AS taxa_media,
+              AVG(e.tempo_entrega_min)::double precision AS tempo_medio_entrega_min,
+              AVG(e.tempo_estimado_min)::double precision AS tempo_estimado_medio_min
+            FROM elegiveis e
+            GROUP BY e.bairro_chave
+            ORDER BY SUM(e.total_recebido) DESC, MODE() WITHIN GROUP (ORDER BY e.bairro_nome) ASC, e.bairro_chave ASC
+            LIMIT 50
+          `
+        ) as any[];
+
+        // Validate Q2 result
+        if (!Array.isArray(porBairroResult)) {
+          app.logger.error({ tenantId, resultType: typeof porBairroResult }, "Query 2 (per-neighborhood) result is not an array");
+          return await reply.code(500).send({ error: "Falha na consulta de bairros: resultado inválido." });
+        }
+
+        // Process totals
+        const totalRow = totaisResult[0];
+        const totalPedidos = parseInt(String(totalRow.pedidos || 0)) || 0;
+        const totalRecebido = parseFloat(String(totalRow.total_recebido || 0));
+
+        const totais = {
+          pedidos: totalPedidos,
+          faturamento_itens: Number(Number(parseFloat(String(totalRow.faturamento_itens || 0))).toFixed(2)),
+          taxa_entrega: Number(Number(parseFloat(String(totalRow.taxa_entrega || 0))).toFixed(2)),
+          total_recebido: Number(Number(parseFloat(String(totalRow.total_recebido || 0))).toFixed(2)),
+          ticket_medio: Number(Number(parseFloat(String(totalRow.ticket_medio || 0))).toFixed(2)),
+          tempo_medio_entrega_min: totalRow.tempo_medio_entrega_min !== null ? Number(Number(parseFloat(String(totalRow.tempo_medio_entrega_min))).toFixed(2)) : null,
+          pedidos_com_tempo: parseInt(String(totalRow.pedidos_com_tempo || 0)) || 0,
+        };
+
+        // Process per-neighborhood data
+        const porBairro = [];
+        for (const row of porBairroResult) {
+          const pedidosBairro = parseInt(String(row.pedidos || 0)) || 0;
+          const totalRecebidoBairro = parseFloat(String(row.total_recebido || 0));
+
+          porBairro.push({
+            bairro: row.bairro || "Sem bairro",
+            pedidos: pedidosBairro,
+            faturamento_itens: Number(Number(parseFloat(String(row.faturamento_itens || 0))).toFixed(2)),
+            taxa_entrega: Number(Number(parseFloat(String(row.taxa_entrega || 0))).toFixed(2)),
+            total_recebido: Number(Number(parseFloat(String(row.total_recebido || 0))).toFixed(2)),
+            ticket_medio: Number(Number(parseFloat(String(row.ticket_medio || 0))).toFixed(2)),
+            taxa_media: Number(Number(parseFloat(String(row.taxa_media || 0))).toFixed(2)),
+            tempo_medio_entrega_min: row.tempo_medio_entrega_min !== null ? Number(Number(parseFloat(String(row.tempo_medio_entrega_min))).toFixed(2)) : null,
+            tempo_estimado_medio_min: row.tempo_estimado_medio_min !== null ? Number(Number(parseFloat(String(row.tempo_estimado_medio_min))).toFixed(2)) : null,
+            percentual_pedidos: totalPedidos > 0 ? Number(Number((100 * pedidosBairro / totalPedidos)).toFixed(2)) : 0,
+            percentual_total_recebido: totalRecebido > 0 ? Number(Number((100 * totalRecebidoBairro / totalRecebido)).toFixed(2)) : 0,
+          });
+        }
+
+        app.logger.info(
+          {
+            tenantId,
+            pedidos: totais.pedidos,
+            total_recebido: totais.total_recebido,
+          },
+          "Delivery-bairros report retrieved successfully"
+        );
+
+        return await reply.code(200).send({
+          totais,
+          por_bairro: porBairro,
+        });
+      } catch (error) {
+        app.logger.error({ err: error }, "Failed to get delivery-bairros report");
+        return await reply.code(500).send({ error: "Não foi possível gerar o relatório de delivery por bairro." });
+      }
+    }
+  );
 }
