@@ -943,7 +943,7 @@ export function registerRelatoriosRoutes(app: App) {
               SELECT
                 id,
                 restaurante_id,
-                tipo,
+                tipo::text AS tipo,
                 closed_at,
                 subtotal,
                 gorjeta,
@@ -1037,7 +1037,7 @@ export function registerRelatoriosRoutes(app: App) {
               SELECT
                 id,
                 restaurante_id,
-                tipo,
+                tipo::text AS tipo,
                 closed_at,
                 subtotal,
                 gorjeta,
@@ -1129,7 +1129,7 @@ export function registerRelatoriosRoutes(app: App) {
               SELECT
                 id,
                 restaurante_id,
-                tipo,
+                tipo::text AS tipo,
                 closed_at,
                 subtotal,
                 gorjeta,
@@ -1212,7 +1212,7 @@ export function registerRelatoriosRoutes(app: App) {
               GROUP BY (closed_at AT TIME ZONE 'America/Sao_Paulo')::date
             )
             SELECT
-              data_local,
+              to_char(data_local, 'YYYY-MM-DD') AS data_local,
               total_comandas,
               faturamento_itens,
               gorjeta_total,
@@ -1230,7 +1230,7 @@ export function registerRelatoriosRoutes(app: App) {
               SELECT
                 id,
                 restaurante_id,
-                tipo,
+                tipo::text AS tipo,
                 closed_at,
                 subtotal,
                 gorjeta,
@@ -1416,7 +1416,7 @@ export function registerRelatoriosRoutes(app: App) {
 
         if (Array.isArray(vendasPorDiaResult)) {
           for (const row of vendasPorDiaResult) {
-            const data = row.data_local;
+            const data: string = row.data_local;
             const faturamento = parseFloat(String(row.faturamento_itens)) || 0;
             const comandas = parseInt(String(row.total_comandas)) || 0;
             const ticket = comandas > 0 ? faturamento / comandas : 0;
