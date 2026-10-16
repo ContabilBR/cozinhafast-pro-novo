@@ -3089,4 +3089,294 @@ LIMIT 5
       }
     }
   );
+
+  // =========================================================================
+  // GET /api/relatorios/cozinha-tempos
+  // =========================================================================
+  app.fastify.get(
+    "/api/relatorios/cozinha-tempos",
+    {
+      schema: {
+        description: "Get kitchen timing analytics (preparation times and percentiles)",
+        tags: ["relatorios"],
+        querystring: {
+          type: "object",
+          required: ["periodo"],
+          properties: {
+            periodo: {
+              type: "string",
+              enum: ["hoje", "7dias", "mes", "personalizado"],
+              description: "Period filter",
+            },
+            dataInicio: { type: "string", description: "Start date for custom period (ISO 8601)" },
+            dataFim: { type: "string", description: "End date for custom period (ISO 8601)" },
+          },
+        },
+        response: {
+          200: {
+            type: "object",
+            required: ["totais", "por_prato", "por_hora"],
+            properties: {
+              totais: {
+                type: "object",
+                required: ["itens_medidos", "tempo_medio_min", "p50_min", "p90_min"],
+                properties: {
+                  itens_medidos: { type: "number" },
+                  tempo_medio_min: { type: "number" },
+                  p50_min: { type: "number" },
+                  p90_min: { type: "number" },
+                },
+              },
+              por_prato: {
+                type: "array",
+                items: {
+                  type: "object",
+                  required: ["prato_id", "nome", "categoria", "itens", "tempo_medio_min", "p50_min", "p90_min", "percentual_meta"],
+                  properties: {
+                    prato_id: { type: ["string", "null"] },
+                    nome: { type: "string" },
+                    categoria: { type: ["string", "null"] },
+                    itens: { type: "number" },
+                    tempo_medio_min: { type: "number" },
+                    p50_min: { type: "number" },
+                    p90_min: { type: "number" },
+                    percentual_meta: { type: "number" },
+                  },
+                },
+              },
+              por_hora: {
+                type: "array",
+                items: {
+                  type: "object",
+                  required: ["hora", "itens", "tempo_medio_min", "p50_min", "p90_min"],
+                  properties: {
+                    hora: { type: "number" },
+                    itens: { type: "number" },
+                    tempo_medio_min: { type: "number" },
+                    p50_min: { type: "number" },
+                    p90_min: { type: "number" },
+                  },
+                },
+              },
+            },
+          },
+          400: { type: "object", properties: { error: { type: "string" } } },
+          401: { type: "object", properties: { error: { type: "string" } } },
+          500: { type: "object", properties: { error: { type: "string" } } },
+        },
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const authUser = await customRequireAuth(app, request, reply);
+      if (!authUser) return;
+
+      const tenantId = requireTenant(authUser);
+      const { periodo, dataInicio, dataFim } = request.query as {
+        periodo: Periodo;
+        dataInicio?: string;
+        dataFim?: string;
+      };
+
+      app.logger.info({ tenantId, periodo }, "Fetching cozinha-tempos report");
+
+      try {
+        // Validate period and get date range
+        const { inicio, fim } = resolvePeriodo(periodo, dataInicio, dataFim);
+
+        // Check custom period length (max 366 days)
+        if (periodo === "personalizado") {
+          const daysDiff = Math.ceil((fim.getTime() - inicio.getTime()) / (1000 * 60 * 60 * 24));
+          if (daysDiff > 366) {
+            app.logger.warn({ tenantId, daysDiff }, "Custom period exceeds 366 days");
+            return await reply.code(400).send({ error: "O período personalizado não pode ultrapassar 366 dias." });
+          }
+        }
+
+        // Base SQL fragment with 7 CTEs for deduplication and filtering
+        const baseComun = sql`
+          WITH comandas_fontes AS (
+            SELECT id, restaurante_id, 0 AS prioridade_fonte FROM comandas WHERE restaurante_id = ${tenantId}
+            UNION ALL
+            SELECT id, restaurante_id, 1 AS prioridade_fonte FROM comandas_historico WHERE restaurante_id = ${tenantId}
+          ),
+          comandas_unicas AS (
+            SELECT DISTINCT ON (restaurante_id, id) id, restaurante_id, prioridade_fonte
+            FROM comandas_fontes
+            ORDER BY restaurante_id, id, prioridade_fonte ASC
+          ),
+          comandas_elegiveis AS (
+            SELECT cu.id
+            FROM comandas_unicas cu
+          ),
+          itens_fontes AS (
+            SELECT id, comanda_id, prato_id, quantidade, restaurante_id, iniciado_em, pronto_em, 0 AS prioridade_fonte
+            FROM pedidos
+            WHERE restaurante_id = ${tenantId}
+            UNION ALL
+            SELECT id, comanda_id, prato_id, quantidade, restaurante_id, iniciado_em, pronto_em, 1 AS prioridade_fonte
+            FROM pedidos_historico
+            WHERE restaurante_id = ${tenantId}
+          ),
+          itens_unicos AS (
+            SELECT DISTINCT ON (restaurante_id, id) id, comanda_id, prato_id, quantidade, restaurante_id, iniciado_em, pronto_em, prioridade_fonte
+            FROM itens_fontes
+            ORDER BY restaurante_id, id, prioridade_fonte ASC
+          ),
+          itens_elegiveis AS (
+            SELECT iu.id, iu.comanda_id, iu.prato_id, iu.quantidade, iu.restaurante_id, iu.iniciado_em, iu.pronto_em
+            FROM itens_unicos iu
+            INNER JOIN comandas_elegiveis ce ON iu.comanda_id = ce.id
+          ),
+          itens_medidos AS (
+            SELECT
+              ie.id, ie.prato_id, ie.quantidade, ie.restaurante_id,
+              EXTRACT(EPOCH FROM (ie.pronto_em - ie.iniciado_em)) / 60.0 AS tempo_preparo_min,
+              EXTRACT(HOUR FROM ie.iniciado_em AT TIME ZONE 'America/Sao_Paulo') AS hora_iniciado
+            FROM itens_elegiveis ie
+            WHERE ie.iniciado_em IS NOT NULL AND ie.pronto_em IS NOT NULL
+              AND ie.pronto_em >= ie.iniciado_em
+              AND ie.iniciado_em >= ${inicio.toISOString()}::timestamptz
+              AND ie.iniciado_em < ${fim.toISOString()}::timestamptz
+          )
+        `;
+
+        // Query 1: Totals across all items
+        const totaisResult = await (app.db as any).execute(
+          sql`
+            ${baseComun}
+            SELECT
+              COUNT(*)::integer AS itens_medidos,
+              COALESCE(AVG(tempo_preparo_min), 0)::numeric AS tempo_medio_min,
+              COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY tempo_preparo_min), 0)::numeric AS p50_min,
+              COALESCE(PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY tempo_preparo_min), 0)::numeric AS p90_min
+            FROM itens_medidos
+          `
+        ) as any[];
+
+        // Query 2: Per-dish breakdown (limited to 30 dishes)
+        const porPratoResult = await (app.db as any).execute(
+          sql`
+            ${baseComun}
+            SELECT
+              p.id AS prato_id,
+              COALESCE(p.nome, 'Prato desconhecido') AS nome,
+              COALESCE(c.nome, NULL) AS categoria,
+              COUNT(im.id)::integer AS itens,
+              COALESCE(AVG(im.tempo_preparo_min), 0)::numeric AS tempo_medio_min,
+              COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY im.tempo_preparo_min), 0)::numeric AS p50_min,
+              COALESCE(PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY im.tempo_preparo_min), 0)::numeric AS p90_min,
+              COALESCE(p.tempo_preparo_min, 0)::integer AS meta_min
+            FROM itens_medidos im
+            LEFT JOIN pratos p ON im.prato_id = p.id
+            LEFT JOIN categorias c ON p.categoria_id = c.id
+            GROUP BY p.id, p.nome, c.nome, p.tempo_preparo_min
+            ORDER BY itens DESC, tempo_medio_min DESC
+            LIMIT 30
+          `
+        ) as any[];
+
+        // Query 3: Hourly breakdown (all 24 hours)
+        const porHoraResult = await (app.db as any).execute(
+          sql`
+            ${baseComun}
+            SELECT
+              hora_iniciado AS hora,
+              COUNT(*)::integer AS itens,
+              COALESCE(AVG(tempo_preparo_min), 0)::numeric AS tempo_medio_min,
+              COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY tempo_preparo_min), 0)::numeric AS p50_min,
+              COALESCE(PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY tempo_preparo_min), 0)::numeric AS p90_min
+            FROM itens_medidos
+            GROUP BY hora_iniciado
+            ORDER BY hora_iniciado ASC
+          `
+        ) as any[];
+
+        // Process totals
+        const totalRow = totaisResult[0] || {
+          itens_medidos: 0,
+          tempo_medio_min: 0,
+          p50_min: 0,
+          p90_min: 0,
+        };
+
+        const totais = {
+          itens_medidos: parseInt(String(totalRow.itens_medidos || 0)) || 0,
+          tempo_medio_min: Math.round(parseFloat(String(totalRow.tempo_medio_min || 0)) * 100) / 100,
+          p50_min: Math.round(parseFloat(String(totalRow.p50_min || 0)) * 100) / 100,
+          p90_min: Math.round(parseFloat(String(totalRow.p90_min || 0)) * 100) / 100,
+        };
+
+        // Process per-dish data
+        const porPrato = [];
+        if (Array.isArray(porPratoResult)) {
+          for (const row of porPratoResult) {
+            const tempoMedio = parseFloat(String(row.tempo_medio_min || 0));
+            const p90 = parseFloat(String(row.p90_min || 0));
+            const metaMin = parseInt(String(row.meta_min || 0)) || 0;
+            const percentualMeta = metaMin > 0 ? Math.round((1 - Math.min(p90 / metaMin, 1)) * 10000) / 100 : 0;
+
+            porPrato.push({
+              prato_id: row.prato_id || null,
+              nome: row.nome || "Prato desconhecido",
+              categoria: row.categoria || null,
+              itens: parseInt(String(row.itens || 0)) || 0,
+              tempo_medio_min: Math.round(tempoMedio * 100) / 100,
+              p50_min: Math.round(parseFloat(String(row.p50_min || 0)) * 100) / 100,
+              p90_min: Math.round(parseFloat(String(row.p90_min || 0)) * 100) / 100,
+              percentual_meta: percentualMeta,
+            });
+          }
+        }
+
+        // Process hourly data (fill all 24 hours)
+        const horaMap = new Map<number, { itens: number; tempo_medio_min: number; p50_min: number; p90_min: number }>();
+        for (let h = 0; h < 24; h++) {
+          horaMap.set(h, { itens: 0, tempo_medio_min: 0, p50_min: 0, p90_min: 0 });
+        }
+
+        if (Array.isArray(porHoraResult)) {
+          for (const row of porHoraResult) {
+            const hora = parseInt(String(row.hora || 0)) || 0;
+            if (hora >= 0 && hora < 24) {
+              horaMap.set(hora, {
+                itens: parseInt(String(row.itens || 0)) || 0,
+                tempo_medio_min: Math.round(parseFloat(String(row.tempo_medio_min || 0)) * 100) / 100,
+                p50_min: Math.round(parseFloat(String(row.p50_min || 0)) * 100) / 100,
+                p90_min: Math.round(parseFloat(String(row.p90_min || 0)) * 100) / 100,
+              });
+            }
+          }
+        }
+
+        const porHora = Array.from({ length: 24 }, (_, i) => {
+          const metrics = horaMap.get(i) || { itens: 0, tempo_medio_min: 0, p50_min: 0, p90_min: 0 };
+          return {
+            hora: i,
+            itens: metrics.itens,
+            tempo_medio_min: metrics.tempo_medio_min,
+            p50_min: metrics.p50_min,
+            p90_min: metrics.p90_min,
+          };
+        });
+
+        app.logger.info(
+          {
+            tenantId,
+            itens_medidos: totais.itens_medidos,
+            tempo_medio_min: totais.tempo_medio_min,
+          },
+          "Cozinha-tempos report retrieved successfully"
+        );
+
+        return await reply.code(200).send({
+          totais,
+          por_prato: porPrato,
+          por_hora: porHora,
+        });
+      } catch (error) {
+        app.logger.error({ err: error }, "Failed to get cozinha-tempos report");
+        return await reply.code(500).send({ error: "Não foi possível gerar o relatório de tempos de cozinha." });
+      }
+    }
+  );
 }
