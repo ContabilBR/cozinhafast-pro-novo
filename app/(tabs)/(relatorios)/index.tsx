@@ -12,6 +12,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useColors } from "@/hooks/useColors";
+import { useAuth } from "@/contexts/AuthContext";
 import { AnimatedPressable } from "@/components/AnimatedPressable";
 import { SkeletonLine } from "@/components/SkeletonLoader";
 import { apiGet } from "@/utils/api";
@@ -54,6 +55,7 @@ const PERIODOS: { key: PeriodoKey; label: string }[] = [
 export default function RelatoriosScreen() {
   const COLORS = useColors();
   const router = useRouter();
+  const { user } = useAuth();
 
   const [periodo, setPeriodo] = useState<PeriodoKey>("hoje");
   const [summary, setSummary] = useState<ReportSummary>({});
@@ -213,6 +215,29 @@ export default function RelatoriosScreen() {
             );
           })}
         </View>
+
+        {(user?.role === 'gerente' || user?.role === 'administrador') && (
+          <View style={{ gap: 10 }}>
+            <Text style={{ fontFamily: 'Outfit_700Bold', fontSize: 18, color: COLORS.text }}>
+              Relatórios detalhados
+            </Text>
+            <AnimatedPressable
+              accessibilityRole="button"
+              accessibilityLabel="Vendas. Ver relatório detalhado do período selecionado"
+              onPress={() => router.push({ pathname: '/relatorio-detalhe/vendas', params: { periodo } } as any)}
+              style={{ flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: COLORS.surface, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: COLORS.border }}
+            >
+              <View style={{ padding: 10, borderRadius: 12, backgroundColor: COLORS.primaryMuted }}>
+                <Ionicons name="bar-chart-outline" size={24} color={COLORS.primary} />
+              </View>
+              <View style={{ flex: 1, gap: 4 }}>
+                <Text style={{ fontFamily: 'Outfit_600SemiBold', fontSize: 16, color: COLORS.text }}>Vendas</Text>
+                <Text style={{ fontFamily: 'Outfit_400Regular', fontSize: 13, color: COLORS.textSecondary }}>Recebimentos por canal e por dia.</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={COLORS.textSecondary} />
+            </AnimatedPressable>
+          </View>
+        )}
 
         {error ? (
           <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 32, gap: 12 }}>
