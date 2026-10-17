@@ -33,6 +33,23 @@ interface Mix {
   por_categoria: { categoria: string; quantidade_vendida: number; faturamento: number; percentual_faturamento: number }[];
   sem_vendas: { prato_id: string; nome: string; categoria: string }[];
 }
+interface MargemVenda {
+  id: string | null; nome: string; quantidade_vendida: number; receita: number;
+}
+interface MargemPratos {
+  periodo: { inicio: string; fim: string };
+  resumo: {
+    total_pratos_vendidos: number; pratos_com_ficha: number; pratos_sem_ficha: number;
+    pratos_custo_incompleto: number; receita_total_geral: number; receita_coberta: number;
+    custo_total: number; margem_total: number; margem_percentual: NullableNumber;
+    cobertura_percentual: NullableNumber;
+  };
+  com_ficha: (MargemVenda & { custo_unitario_ficha: number; custo_total: number;
+    margem: number; margem_percentual: NullableNumber })[];
+  sem_ficha: MargemVenda[];
+  custo_incompleto: (MargemVenda & { insumos_sem_custo: string[] })[];
+  observacao_custo: string;
+}
 interface Cozinha {
   totais: { itens_medidos: number; itens_sem_medicao: number; comandas_medidas: number;
     tempo_medio_item_min: number; mediana_item_min: NullableNumber; p90_item_min: NullableNumber;
@@ -179,6 +196,71 @@ function mixSheets(data: Mix): Sheet[] {
     [], ['PRATOS SEM VENDA'], ['Prato', 'Categoria'], ...data.sem_vendas.map(row => [row.nome, row.categoria]),
   ])];
 }
+function assertMargemPratos(value: unknown): asserts value is MargemPratos {
+  const invalid = () => { throw new Error('Resposta incompleta do relatório de margem por prato.'); };
+  const isObject = (data: unknown): data is Record<string, unknown> =>
+    data !== null && typeof data === 'object' && !Array.isArray(data);
+  const isText = (data: unknown): data is string => typeof data === 'string' && data.trim().length > 0;
+  const nullableFinite = (data: unknown) => data === null || (typeof data === 'number' && Number.isFinite(data));
+  if (!isObject(value) || !isObject(value.periodo) || !isObject(value.resumo)) return invalid();
+  for (const date of [value.periodo.inicio, value.periodo.fim]) {
+    if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return invalid();
+    const parsed = new Date(`${date}T12:00:00Z`);
+    if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) return invalid();
+  }
+  const resumo = value.resumo;
+  const counts = ['total_pratos_vendidos', 'pratos_com_ficha', 'pratos_sem_ficha', 'pratos_custo_incompleto'];
+  assertNumbers(resumo, [...counts, 'receita_total_geral', 'receita_coberta', 'custo_total', 'margem_total']);
+  if (counts.some(key => !Number.isInteger(resumo[key]) || (resumo[key] as number) < 0)
+    || !nullableFinite(resumo.margem_percentual) || !nullableFinite(resumo.cobertura_percentual)
+    || !isText(value.observacao_custo)
+    || !Array.isArray(value.com_ficha) || !Array.isArray(value.sem_ficha) || !Array.isArray(value.custo_incompleto)) return invalid();
+  const assertVenda = (row: unknown): void => {
+    if (!isObject(row) || (row.id !== null && !isText(row.id)) || !isText(row.nome)) return invalid();
+    assertNumbers(row, ['quantidade_vendida', 'receita']);
+  };
+  for (const row of value.com_ficha) {
+    // A seção só será montada depois de todas as linhas e contagens serem validadas.
+    if (!isObject(row)) return invalid();
+    assertVenda(row);
+    assertNumbers(row, ['custo_unitario_ficha', 'custo_total', 'margem']);
+    if (!nullableFinite(row.margem_percentual)) return invalid();
+  }
+  for (const row of value.sem_ficha) assertVenda(row);
+  for (const row of value.custo_incompleto) {
+    if (!isObject(row)) return invalid();
+    assertVenda(row);
+    if (!Array.isArray(row.insumos_sem_custo) || row.insumos_sem_custo.some(name => !isText(name))) return invalid();
+  }
+  if (resumo.pratos_com_ficha !== value.com_ficha.length || resumo.pratos_sem_ficha !== value.sem_ficha.length
+    || resumo.pratos_custo_incompleto !== value.custo_incompleto.length
+    || resumo.total_pratos_vendidos !== value.com_ficha.length + value.sem_ficha.length + value.custo_incompleto.length) return invalid();
+}
+function margemPratosSheets(data: unknown): Sheet[] {
+  assertMargemPratos(data);
+  const resumo = data.resumo;
+  return [sheet('Margem por prato', [
+    ['RESUMO'],
+    ['Margem total', money(resumo.margem_total)],
+    ['Margem percentual', percentage(resumo.margem_percentual)],
+    ['Receita coberta', money(resumo.receita_coberta)],
+    ['Custo total', money(resumo.custo_total)],
+    ['Receita total geral', money(resumo.receita_total_geral)],
+    ['Cobertura da receita', percentage(resumo.cobertura_percentual)],
+    ['Pratos com ficha', count(resumo.pratos_com_ficha)],
+    ['Pratos sem ficha', count(resumo.pratos_sem_ficha)],
+    ['Pratos com custo incompleto', count(resumo.pratos_custo_incompleto)],
+    [], ['PRATOS COM FICHA'],
+    ['Prato', 'Quantidade vendida', 'Receita', 'Custo unitário da ficha', 'Custo total', 'Margem', 'Margem percentual'],
+    ...data.com_ficha.map(row => [row.nome, count(row.quantidade_vendida), money(row.receita),
+      money(row.custo_unitario_ficha), money(row.custo_total), money(row.margem), percentage(row.margem_percentual)]),
+    [], ['SEM FICHA TÉCNICA'], ['Prato', 'Quantidade vendida', 'Receita'],
+    ...data.sem_ficha.map(row => [row.nome, count(row.quantidade_vendida), money(row.receita)]),
+    [], ['CUSTO INCOMPLETO'], ['Prato', 'Quantidade vendida', 'Receita', 'Insumos sem custo'],
+    ...data.custo_incompleto.map(row => [row.nome, count(row.quantidade_vendida), money(row.receita), row.insumos_sem_custo.join(', ')]),
+    [], ['Observação', data.observacao_custo],
+  ])];
+}
 function cozinhaSheets(data: Cozinha): Sheet[] {
   assertReport(data, ['por_prato', 'por_hora']);
   const totals = data.totais;
@@ -308,6 +390,7 @@ export async function appendDetailedReportSheets(workbook: XLSX.WorkBook, period
     { name: 'Vendas e Vendas por dia', load: async () => vendasSheets(await apiGet<Vendas>(`/api/relatorios/vendas${query}`)) },
     { name: 'Cancelamentos', load: async () => cancelamentosSheets(await apiGet<Cancelamentos>(`/api/relatorios/cancelamentos${query}`)) },
     { name: 'Mix de pratos', load: async () => mixSheets(await apiGet<Mix>(`/api/relatorios/mix-pratos${query}`)) },
+    { name: 'Margem por prato', load: async () => margemPratosSheets(await apiGet<unknown>(`/api/relatorios/margem-pratos${query}`)) },
     { name: 'Cozinha', load: async () => cozinhaSheets(await apiGet<Cozinha>(`/api/relatorios/cozinha-tempos${query}`)) },
     { name: 'Delivery por bairro', load: async () => deliverySheets(await apiGet<Delivery>(`/api/relatorios/delivery-bairros${query}`)) },
   ];
