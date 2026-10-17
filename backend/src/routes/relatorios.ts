@@ -3703,4 +3703,483 @@ LIMIT 5
       }
     }
   );
+
+  // =========================================================================
+  // GET /api/relatorios/fechamento-dia
+  // =========================================================================
+  app.fastify.get(
+    "/api/relatorios/fechamento-dia",
+    {
+      schema: {
+        description: "Get daily closing report",
+        tags: ["relatorios"],
+        querystring: {
+          type: "object",
+          properties: {
+            data: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$", description: "Date in YYYY-MM-DD format" },
+          },
+        },
+        response: {
+          200: {
+            type: "object",
+            required: ["data", "eh_hoje", "vendas", "pagamentos", "cancelamentos", "pendencias"],
+            properties: {
+              data: { type: "string" },
+              eh_hoje: { type: "boolean" },
+              vendas: {
+                type: "object",
+                required: ["comandas_fechadas", "faturamento_itens", "gorjeta", "taxa_entrega", "total_recebido", "ticket_medio", "por_canal"],
+                properties: {
+                  comandas_fechadas: { type: "integer" },
+                  faturamento_itens: { type: "number" },
+                  gorjeta: { type: "number" },
+                  taxa_entrega: { type: "number" },
+                  total_recebido: { type: "number" },
+                  ticket_medio: { type: "number" },
+                  por_canal: {
+                    type: "object",
+                    properties: {
+                      mesa: { type: "object", properties: { comandas_fechadas: { type: "integer" }, total_recebido: { type: "number" } } },
+                      delivery: { type: "object", properties: { comandas_fechadas: { type: "integer" }, total_recebido: { type: "number" } } },
+                    },
+                  },
+                },
+              },
+              pagamentos: {
+                type: "object",
+                required: ["formas", "total_liquido", "dinheiro_em_caixa", "conciliacao", "comandas_sem_pagamento"],
+                properties: {
+                  formas: {
+                    type: "object",
+                    properties: {
+                      dinheiro: { type: "object", properties: { quantidade: { type: "integer" }, valor_entregue: { type: "number" }, troco: { type: "number" }, valor_liquido: { type: "number" } } },
+                      pix: { type: "object", properties: { quantidade: { type: "integer" }, valor_entregue: { type: "number" }, troco: { type: "number" }, valor_liquido: { type: "number" } } },
+                      cartao_debito: { type: "object", properties: { quantidade: { type: "integer" }, valor_entregue: { type: "number" }, troco: { type: "number" }, valor_liquido: { type: "number" } } },
+                      cartao_credito: { type: "object", properties: { quantidade: { type: "integer" }, valor_entregue: { type: "number" }, troco: { type: "number" }, valor_liquido: { type: "number" } } },
+                    },
+                  },
+                  total_liquido: { type: "number" },
+                  dinheiro_em_caixa: { type: "number" },
+                  conciliacao: { type: "object", properties: { comandas_pago_menor: { type: "integer" }, valor_faltante: { type: "number" }, comandas_pago_maior: { type: "integer" }, valor_excedente: { type: "number" } } },
+                  comandas_sem_pagamento: { type: "integer" },
+                },
+              },
+              cancelamentos: {
+                type: "object",
+                required: ["quantidade", "valor", "quantidade_perda", "valor_perda"],
+                properties: {
+                  quantidade: { type: "integer" },
+                  valor: { type: "number" },
+                  quantidade_perda: { type: "integer" },
+                  valor_perda: { type: "number" },
+                },
+              },
+              pendencias: {
+                type: "object",
+                required: ["disponivel", "total_comandas_abertas", "valor_parcial_total", "comandas_abertas", "entregas_em_andamento"],
+                properties: {
+                  disponivel: { type: "boolean" },
+                  total_comandas_abertas: { type: "integer" },
+                  valor_parcial_total: { type: "number" },
+                  comandas_abertas: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        comanda_id: { type: "string" },
+                        tipo: { type: "string", enum: ["mesa", "delivery"] },
+                        mesa_numero: { type: ["integer", "null"] },
+                        rotulo: { type: ["string", "null"] },
+                        aberta_em: { type: "string" },
+                        subtotal_parcial: { type: "number" },
+                      },
+                    },
+                  },
+                  entregas_em_andamento: { type: "integer" },
+                },
+              },
+            },
+          },
+          400: { type: "object", properties: { error: { type: "string" } } },
+          401: { type: "object", properties: { error: { type: "string" } } },
+          403: { type: "object", properties: { error: { type: "string" } } },
+          500: { type: "object", properties: { error: { type: "string" } } },
+        },
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const authUser = await customRequireAuth(app, request, reply);
+      if (!authUser) return;
+      if (!(await requireRole(authUser, ["administrador", "gerente"], reply))) return;
+
+      const tenantId = requireTenant(authUser);
+      const queryData = request.query as { data?: string };
+
+      app.logger.info({ tenantId, data: queryData.data }, "Fetching fechamento-dia report");
+
+      try {
+        // Validate and parse date parameter
+        let targetDate: Date;
+        let ehHoje = false;
+
+        if (queryData.data) {
+          // Strict validation
+          if (typeof queryData.data !== "string") {
+            app.logger.warn({ tenantId, dataType: typeof queryData.data }, "Data parameter is not a string");
+            return await reply.code(400).send({ error: "Parâmetro 'data' deve ser uma string no formato YYYY-MM-DD." });
+          }
+
+          const dataRegex = /^\d{4}-\d{2}-\d{2}$/;
+          if (!dataRegex.test(queryData.data)) {
+            app.logger.warn({ tenantId, data: queryData.data }, "Data parameter does not match YYYY-MM-DD format");
+            return await reply.code(400).send({ error: "Data deve estar no formato YYYY-MM-DD." });
+          }
+
+          const parts = queryData.data.split("-");
+          const year = parseInt(parts[0], 10);
+          const month = parseInt(parts[1], 10);
+          const day = parseInt(parts[2], 10);
+
+          // Check valid civil date
+          const testDate = new Date(Date.UTC(year, month - 1, day));
+          if (testDate.getUTCFullYear() !== year || testDate.getUTCMonth() !== month - 1 || testDate.getUTCDate() !== day) {
+            app.logger.warn({ tenantId, data: queryData.data }, "Invalid civil date");
+            return await reply.code(400).send({ error: "Data inválida." });
+          }
+
+          targetDate = testDate;
+
+          // Check not future
+          const localToday = diaLocalDeInstante(new Date());
+          const todayUtc = new Date(Date.UTC(localToday.ano, localToday.mes0, localToday.dia));
+          if (targetDate > todayUtc) {
+            app.logger.warn({ tenantId, data: queryData.data }, "Data is in the future");
+            return await reply.code(400).send({ error: "Data não pode ser no futuro." });
+          }
+
+          ehHoje = targetDate.getTime() === todayUtc.getTime();
+        } else {
+          // Default to today
+          const localToday = diaLocalDeInstante(new Date());
+          targetDate = new Date(Date.UTC(localToday.ano, localToday.mes0, localToday.dia));
+          ehHoje = true;
+        }
+
+        // Format date for response
+        const dateStr = `${String(targetDate.getUTCFullYear()).padStart(4, "0")}-${String(targetDate.getUTCMonth() + 1).padStart(2, "0")}-${String(targetDate.getUTCDate()).padStart(2, "0")}`;
+
+        // Get date range (00:00 local to 00:00 next day local)
+        const inicio = inicioDoDiaLocal(targetDate.getUTCFullYear(), targetDate.getUTCMonth(), targetDate.getUTCDate());
+        const fim = new Date(inicio.getTime() + 24 * 60 * 60 * 1000);
+
+        // Common base for deduped sold comandas
+        const baseComandas = sql`
+          WITH comandas_fontes AS (
+            SELECT c.id AS id, c.restaurante_id AS restaurante_id, c.status::text AS status, c.tipo::text AS tipo, c.subtotal AS subtotal, c.gorjeta AS gorjeta, c.total AS total, c.closed_at AS closed_at, 0 AS prioridade_fonte
+            FROM comandas c
+            WHERE c.restaurante_id = ${tenantId}
+            UNION ALL
+            SELECT ch.id AS id, ch.restaurante_id AS restaurante_id, ch.status::text AS status, NULL::text AS tipo, ch.subtotal AS subtotal, ch.gorjeta AS gorjeta, ch.total AS total, ch.closed_at AS closed_at, 1 AS prioridade_fonte
+            FROM comandas_historico ch
+            WHERE ch.restaurante_id = ${tenantId}
+          ),
+          comandas_unicas AS (
+            SELECT DISTINCT ON (cf.restaurante_id, cf.id)
+              cf.id, cf.restaurante_id, cf.status, cf.tipo, cf.subtotal, cf.gorjeta, cf.total, cf.closed_at, cf.prioridade_fonte
+            FROM comandas_fontes cf
+            ORDER BY cf.restaurante_id, cf.id, cf.prioridade_fonte ASC
+          ),
+          vendidas AS (
+            SELECT cu.id, cu.restaurante_id, cu.status, cu.tipo, cu.subtotal, cu.gorjeta, cu.total, cu.closed_at, cu.prioridade_fonte
+            FROM comandas_unicas cu
+            WHERE cu.status = 'fechada' AND cu.total > 0
+              AND cu.closed_at >= ${inicio.toISOString()}::timestamptz
+              AND cu.closed_at < ${fim.toISOString()}::timestamptz
+          )
+        `;
+
+        // Query 1: Sales totals
+        const vendidosResult = await (app.db as any).execute(
+          sql`
+            ${baseComandas}
+            SELECT
+              COUNT(*)::integer AS comandas_fechadas,
+              COALESCE(SUM(v.subtotal), 0)::double precision AS faturamento_itens,
+              COALESCE(SUM(v.gorjeta), 0)::double precision AS gorjeta,
+              COALESCE(SUM(v.total), 0)::double precision AS total_recebido
+            FROM vendidas v
+          `
+        ) as any[];
+
+        if (!Array.isArray(vendidosResult)) {
+          app.logger.error({ tenantId, resultType: typeof vendidosResult }, "Query 1 (sales totals) result is not an array");
+          return await reply.code(500).send({ error: "Falha na consulta de vendas: resultado inválido." });
+        }
+        if (vendidosResult.length === 0) {
+          app.logger.error({ tenantId }, "Query 1 (sales totals) returned empty array");
+          return await reply.code(500).send({ error: "Falha na consulta de vendas: resultado vazio." });
+        }
+
+        // Query 2: Sales by channel (mesa/delivery)
+        const porCanalResult = await (app.db as any).execute(
+          sql`
+            ${baseComandas}
+            SELECT
+              COALESCE(v.tipo, 'mesa') AS canal,
+              COUNT(*)::integer AS comandas_fechadas,
+              COALESCE(SUM(v.total), 0)::double precision AS total_recebido
+            FROM vendidas v
+            GROUP BY COALESCE(v.tipo, 'mesa')
+          `
+        ) as any[];
+
+        if (!Array.isArray(porCanalResult)) {
+          app.logger.error({ tenantId, resultType: typeof porCanalResult }, "Query 2 (sales by channel) result is not an array");
+          return await reply.code(500).send({ error: "Falha na consulta de vendas por canal: resultado inválido." });
+        }
+
+        // Query 3: Confirmed payments
+        const pagamentosResult = await (app.db as any).execute(
+          sql`
+            WITH pagamentos_fontes AS (
+              SELECT p.id AS id, p.restaurante_id AS restaurante_id, p.forma_pagamento::text AS forma, p.valor AS valor, p.troco AS troco, p.comanda_id AS comanda_id, 0 AS prioridade_fonte
+              FROM pagamentos p
+              WHERE p.restaurante_id = ${tenantId} AND p.status = 'confirmado'
+              UNION ALL
+              SELECT ph.id AS id, ph.restaurante_id AS restaurante_id, ph.forma_pagamento::text AS forma, ph.valor AS valor, ph.troco AS troco, ph.comanda_id AS comanda_id, 1 AS prioridade_fonte
+              FROM pagamentos_historico ph
+              WHERE ph.restaurante_id = ${tenantId}
+            ),
+            pagamentos_unicos AS (
+              SELECT DISTINCT ON (pf.restaurante_id, pf.id)
+                pf.id, pf.restaurante_id, pf.forma, pf.valor, pf.troco, pf.comanda_id
+              FROM pagamentos_fontes pf
+              ORDER BY pf.restaurante_id, pf.id, pf.prioridade_fonte ASC
+            ),
+            confirmados AS (
+              SELECT pu.forma, pu.valor, pu.troco, pu.comanda_id
+              FROM pagamentos_unicos pu
+              INNER JOIN (${baseComandas}, vendidas v WHERE pu.comanda_id = v.id AND pu.restaurante_id = v.restaurante_id) ON TRUE
+            )
+            SELECT
+              c.forma,
+              COUNT(*)::integer AS quantidade,
+              COALESCE(SUM(c.valor), 0)::double precision AS valor_entregue,
+              COALESCE(SUM(c.troco), 0)::double precision AS troco
+            FROM confirmados c
+            GROUP BY c.forma
+          `
+        ) as any[];
+
+        if (!Array.isArray(pagamentosResult)) {
+          app.logger.error({ tenantId, resultType: typeof pagamentosResult }, "Query 3 (payments) result is not an array");
+          return await reply.code(500).send({ error: "Falha na consulta de pagamentos: resultado inválido." });
+        }
+
+        // Query 4: Cancelamentos
+        const cancelamentosResult = await (app.db as any).execute(
+          sql`
+            WITH pedidos_fontes AS (
+              SELECT p.id AS id, p.restaurante_id AS restaurante_id, p.quantidade AS quantidade, p.preco_unitario AS preco, p.cancelado_apos_inicio AS apos_inicio, p.cancelado_em AS cancelado_em, 0 AS prioridade_fonte
+              FROM pedidos p
+              WHERE p.restaurante_id = ${tenantId} AND p.status = 'cancelado'
+              UNION ALL
+              SELECT ph.id AS id, ph.restaurante_id AS restaurante_id, ph.quantidade AS quantidade, ph.preco_unitario AS preco, ph.cancelado_apos_inicio AS apos_inicio, ph.cancelado_em AS cancelado_em, 1 AS prioridade_fonte
+              FROM pedidos_historico ph
+              WHERE ph.restaurante_id = ${tenantId} AND ph.status = 'cancelado'
+            ),
+            pedidos_unicos AS (
+              SELECT DISTINCT ON (pf.restaurante_id, pf.id)
+                pf.id, pf.restaurante_id, pf.quantidade, pf.preco, pf.apos_inicio, pf.cancelado_em
+              FROM pedidos_fontes pf
+              ORDER BY pf.restaurante_id, pf.id, pf.prioridade_fonte ASC
+            ),
+            cancelados_dia AS (
+              SELECT pu.quantidade, pu.preco, pu.apos_inicio
+              FROM pedidos_unicos pu
+              WHERE pu.cancelado_em >= ${inicio.toISOString()}::timestamptz AND pu.cancelado_em < ${fim.toISOString()}::timestamptz
+            )
+            SELECT
+              SUM(c.quantidade)::integer AS quantidade,
+              COALESCE(SUM(CAST(c.quantidade AS DECIMAL(10,2)) * CAST(c.preco AS DECIMAL(10,2))), 0)::double precision AS valor,
+              SUM(CASE WHEN c.apos_inicio = true THEN c.quantidade ELSE 0 END)::integer AS quantidade_perda,
+              COALESCE(SUM(CASE WHEN c.apos_inicio = true THEN CAST(c.quantidade AS DECIMAL(10,2)) * CAST(c.preco AS DECIMAL(10,2)) ELSE 0 END), 0)::double precision AS valor_perda
+            FROM cancelados_dia c
+          `
+        ) as any[];
+
+        if (!Array.isArray(cancelamentosResult)) {
+          app.logger.error({ tenantId, resultType: typeof cancelamentosResult }, "Query 4 (cancelamentos) result is not an array");
+          return await reply.code(500).send({ error: "Falha na consulta de cancelamentos: resultado inválido." });
+        }
+
+        // Query 5: Pending (only if today)
+        let pendenciasResult: any[] = [];
+        if (ehHoje) {
+          pendenciasResult = await (app.db as any).execute(
+            sql`
+              SELECT
+                c.id AS comanda_id,
+                c.tipo::text AS tipo,
+                c.mesa_numero AS mesa_numero,
+                c.rotulo AS rotulo,
+                to_char(c.created_at AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD"T"HH24:MI:SS.000Z') AS aberta_em,
+                CAST(c.subtotal AS DECIMAL(10,2)) AS subtotal_parcial
+              FROM comandas c
+              WHERE c.restaurante_id = ${tenantId} AND c.status = 'aberta'
+              ORDER BY c.created_at ASC, c.id ASC
+              LIMIT 50
+            `
+          ) as any[];
+
+          if (!Array.isArray(pendenciasResult)) {
+            app.logger.error({ tenantId, resultType: typeof pendenciasResult }, "Query 5 (pending) result is not an array");
+            return await reply.code(500).send({ error: "Falha na consulta de pendências: resultado inválido." });
+          }
+        }
+
+        // Process sales data
+        const vendidosRow = vendidosResult[0];
+        const totalComandasFechadas = parseInt(String(vendidosRow.comandas_fechadas || 0)) || 0;
+        const totalRecebido = parseFloat(String(vendidosRow.total_recebido || 0));
+
+        // Process channel data
+        const porCanalMap = new Map<string, { comandas: number; total: number }>();
+        porCanalMap.set("mesa", { comandas: 0, total: 0 });
+        porCanalMap.set("delivery", { comandas: 0, total: 0 });
+
+        for (const row of porCanalResult) {
+          const canal = row.canal || "mesa";
+          porCanalMap.set(canal, {
+            comandas: parseInt(String(row.comandas_fechadas || 0)) || 0,
+            total: parseFloat(String(row.total_recebido || 0)),
+          });
+        }
+
+        // Process payments data
+        const formasMap = new Map<string, { quantidade: number; valor_entregue: number; troco: number }>();
+        formasMap.set("dinheiro", { quantidade: 0, valor_entregue: 0, troco: 0 });
+        formasMap.set("pix", { quantidade: 0, valor_entregue: 0, troco: 0 });
+        formasMap.set("cartao_debito", { quantidade: 0, valor_entregue: 0, troco: 0 });
+        formasMap.set("cartao_credito", { quantidade: 0, valor_entregue: 0, troco: 0 });
+
+        for (const row of pagamentosResult) {
+          const forma = row.forma || "pix";
+          formasMap.set(forma, {
+            quantidade: parseInt(String(row.quantidade || 0)) || 0,
+            valor_entregue: parseFloat(String(row.valor_entregue || 0)),
+            troco: parseFloat(String(row.troco || 0)),
+          });
+        }
+
+        // Process cancelamentos data
+        const cancelRow = cancelamentosResult[0] || { quantidade: 0, valor: 0, quantidade_perda: 0, valor_perda: 0 };
+
+        // Process pending data
+        const pendenciasRows = pendenciasResult || [];
+
+        app.logger.info(
+          {
+            tenantId,
+            data: dateStr,
+            comandas_fechadas: totalComandasFechadas,
+            total_recebido: totalRecebido,
+          },
+          "Fechamento-dia report retrieved successfully"
+        );
+
+        return await reply.code(200).send({
+          data: dateStr,
+          eh_hoje: ehHoje,
+          vendas: {
+            comandas_fechadas: totalComandasFechadas,
+            faturamento_itens: Number(Number(parseFloat(String(vendidosRow.faturamento_itens || 0))).toFixed(2)),
+            gorjeta: Number(Number(parseFloat(String(vendidosRow.gorjeta || 0))).toFixed(2)),
+            taxa_entrega: Number(Number(parseFloat(String(vendidosRow.taxa_entrega || 0))).toFixed(2)),
+            total_recebido: Number(Number(parseFloat(String(vendidosRow.total_recebido || 0))).toFixed(2)),
+            ticket_medio: totalComandasFechadas > 0 ? Number(Number(totalRecebido / totalComandasFechadas).toFixed(2)) : 0,
+            por_canal: {
+              mesa: {
+                comandas_fechadas: porCanalMap.get("mesa")?.comandas || 0,
+                total_recebido: Number(Number((porCanalMap.get("mesa")?.total || 0)).toFixed(2)),
+              },
+              delivery: {
+                comandas_fechadas: porCanalMap.get("delivery")?.comandas || 0,
+                total_recebido: Number(Number((porCanalMap.get("delivery")?.total || 0)).toFixed(2)),
+              },
+            },
+          },
+          pagamentos: {
+            formas: {
+              dinheiro: {
+                quantidade: formasMap.get("dinheiro")?.quantidade || 0,
+                valor_entregue: Number(Number((formasMap.get("dinheiro")?.valor_entregue || 0)).toFixed(2)),
+                troco: Number(Number((formasMap.get("dinheiro")?.troco || 0)).toFixed(2)),
+                valor_liquido: Number(Number(((formasMap.get("dinheiro")?.valor_entregue || 0) - (formasMap.get("dinheiro")?.troco || 0))).toFixed(2)),
+              },
+              pix: {
+                quantidade: formasMap.get("pix")?.quantidade || 0,
+                valor_entregue: Number(Number((formasMap.get("pix")?.valor_entregue || 0)).toFixed(2)),
+                troco: Number(Number((formasMap.get("pix")?.troco || 0)).toFixed(2)),
+                valor_liquido: Number(Number(((formasMap.get("pix")?.valor_entregue || 0) - (formasMap.get("pix")?.troco || 0))).toFixed(2)),
+              },
+              cartao_debito: {
+                quantidade: formasMap.get("cartao_debito")?.quantidade || 0,
+                valor_entregue: Number(Number((formasMap.get("cartao_debito")?.valor_entregue || 0)).toFixed(2)),
+                troco: Number(Number((formasMap.get("cartao_debito")?.troco || 0)).toFixed(2)),
+                valor_liquido: Number(Number(((formasMap.get("cartao_debito")?.valor_entregue || 0) - (formasMap.get("cartao_debito")?.troco || 0))).toFixed(2)),
+              },
+              cartao_credito: {
+                quantidade: formasMap.get("cartao_credito")?.quantidade || 0,
+                valor_entregue: Number(Number((formasMap.get("cartao_credito")?.valor_entregue || 0)).toFixed(2)),
+                troco: Number(Number((formasMap.get("cartao_credito")?.troco || 0)).toFixed(2)),
+                valor_liquido: Number(Number(((formasMap.get("cartao_credito")?.valor_entregue || 0) - (formasMap.get("cartao_credito")?.troco || 0))).toFixed(2)),
+              },
+            },
+            total_liquido: Number(
+              Number(
+                Array.from(formasMap.values()).reduce((sum, f) => sum + (f.valor_entregue - f.troco), 0)
+              ).toFixed(2)
+            ),
+            dinheiro_em_caixa: Number(
+              Number((formasMap.get("dinheiro")?.valor_entregue || 0) - (formasMap.get("dinheiro")?.troco || 0)).toFixed(2)
+            ),
+            conciliacao: { comandas_pago_menor: 0, valor_faltante: 0, comandas_pago_maior: 0, valor_excedente: 0 },
+            comandas_sem_pagamento: 0,
+          },
+          cancelamentos: {
+            quantidade: parseInt(String(cancelRow.quantidade || 0)) || 0,
+            valor: Number(Number(parseFloat(String(cancelRow.valor || 0))).toFixed(2)),
+            quantidade_perda: parseInt(String(cancelRow.quantidade_perda || 0)) || 0,
+            valor_perda: Number(Number(parseFloat(String(cancelRow.valor_perda || 0))).toFixed(2)),
+          },
+          pendencias: {
+            disponivel: ehHoje,
+            total_comandas_abertas: ehHoje ? pendenciasRows.length : 0,
+            valor_parcial_total: ehHoje
+              ? Number(
+                  Number(
+                    (pendenciasRows as any[]).reduce((sum: number, row: any) => sum + (parseFloat(String(row.subtotal_parcial || 0)) || 0), 0)
+                  ).toFixed(2)
+                )
+              : 0,
+            comandas_abertas: ehHoje
+              ? (pendenciasRows as any[]).map((row: any) => ({
+                  comanda_id: row.comanda_id || "",
+                  tipo: (row.tipo || "mesa") as "mesa" | "delivery",
+                  mesa_numero: row.mesa_numero || null,
+                  rotulo: row.rotulo || null,
+                  aberta_em: row.aberta_em || "",
+                  subtotal_parcial: Number(Number(parseFloat(String(row.subtotal_parcial || 0))).toFixed(2)),
+                }))
+              : [],
+            entregas_em_andamento: 0,
+          },
+        });
+      } catch (error) {
+        app.logger.error({ err: error }, "Failed to get fechamento-dia report");
+        return await reply.code(500).send({ error: "Não foi possível gerar o relatório de fechamento do dia." });
+      }
+    }
+  );
 }
