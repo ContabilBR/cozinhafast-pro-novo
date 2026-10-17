@@ -4009,9 +4009,9 @@ LIMIT 5
               WHERE pu.cancelado_em >= ${inicio.toISOString()}::timestamptz AND pu.cancelado_em < ${fim.toISOString()}::timestamptz
             )
             SELECT
-              SUM(c.quantidade)::integer AS quantidade,
+              COALESCE(SUM(c.quantidade),0)::integer AS quantidade,
               COALESCE(SUM(CAST(c.quantidade AS DECIMAL(10,2)) * CAST(c.preco AS DECIMAL(10,2))), 0)::double precision AS valor,
-              SUM(CASE WHEN c.apos_inicio = true THEN c.quantidade ELSE 0 END)::integer AS quantidade_perda,
+              COALESCE(SUM(CASE WHEN c.apos_inicio = true THEN c.quantidade ELSE 0 END),0)::integer AS quantidade_perda,
               COALESCE(SUM(CASE WHEN c.apos_inicio = true THEN CAST(c.quantidade AS DECIMAL(10,2)) * CAST(c.preco AS DECIMAL(10,2)) ELSE 0 END), 0)::double precision AS valor_perda
             FROM cancelados_dia c
           `
@@ -4050,13 +4050,15 @@ LIMIT 5
           // Query 5b: Count entregas_em_andamento
           const entregasCountResult = await (app.db as any).execute(
             sql`
-              SELECT COUNT(*)::integer AS count FROM entregas WHERE restaurante_id = ${tenantId} AND status IN ('pendente', 'preparando', 'saiu_entrega')
+              SELECT COUNT(*)::integer AS total FROM entregas WHERE restaurante_id = ${tenantId} AND status IN ('pendente', 'preparando', 'saiu_entrega')
             `
           ) as any[];
 
-          if (Array.isArray(entregasCountResult) && entregasCountResult.length > 0) {
-            entregas_em_andamento = parseInt(String(entregasCountResult[0].count || 0)) || 0;
+          if (!Array.isArray(entregasCountResult) || entregasCountResult.length === 0) {
+            app.logger.error({ tenantId, resultType: typeof entregasCountResult }, "Query 5b (entregas em andamento) result is not an array or empty");
+            return await reply.code(500).send({ error: "Falha na consulta de entregas em andamento." });
           }
+          entregas_em_andamento = parseInt(String(entregasCountResult[0].total || 0)) || 0;
         }
 
         // Process sales data
@@ -4125,11 +4127,11 @@ LIMIT 5
             ),
             conciliacao_data AS (
               SELECT
-                SUM(CASE WHEN v.total > COALESCE(ppc.valor_liquido, 0) THEN 1 ELSE 0 END)::integer AS comandas_pago_menor,
-                SUM(CASE WHEN v.total > COALESCE(ppc.valor_liquido, 0) THEN v.total - COALESCE(ppc.valor_liquido, 0) ELSE 0 END)::double precision AS valor_faltante,
-                SUM(CASE WHEN COALESCE(ppc.valor_liquido, 0) > v.total THEN 1 ELSE 0 END)::integer AS comandas_pago_maior,
-                SUM(CASE WHEN COALESCE(ppc.valor_liquido, 0) > v.total THEN COALESCE(ppc.valor_liquido, 0) - v.total ELSE 0 END)::double precision AS valor_excedente,
-                SUM(CASE WHEN ppc.comanda_id IS NULL THEN 1 ELSE 0 END)::integer AS comandas_sem_pagamento
+                COALESCE(SUM(CASE WHEN v.total::numeric - COALESCE(ppc.valor_liquido,0)::numeric > 0.01::numeric THEN 1 ELSE 0 END),0)::integer AS comandas_pago_menor,
+                COALESCE(SUM(CASE WHEN v.total::numeric - COALESCE(ppc.valor_liquido,0)::numeric > 0.01::numeric THEN v.total::numeric - COALESCE(ppc.valor_liquido,0)::numeric ELSE 0::numeric END),0)::double precision AS valor_faltante,
+                COALESCE(SUM(CASE WHEN COALESCE(ppc.valor_liquido,0)::numeric - v.total::numeric > 0.01::numeric THEN 1 ELSE 0 END),0)::integer AS comandas_pago_maior,
+                COALESCE(SUM(CASE WHEN COALESCE(ppc.valor_liquido,0)::numeric - v.total::numeric > 0.01::numeric THEN COALESCE(ppc.valor_liquido,0)::numeric - v.total::numeric ELSE 0::numeric END),0)::double precision AS valor_excedente,
+                COALESCE(SUM(CASE WHEN ppc.comanda_id IS NULL THEN 1 ELSE 0 END),0)::integer AS comandas_sem_pagamento
               FROM vendidas v
               LEFT JOIN pagos_por_comanda ppc ON v.id = ppc.comanda_id
               WHERE v.total > 0
