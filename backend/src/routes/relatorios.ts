@@ -4125,10 +4125,11 @@ LIMIT 5
             ),
             conciliacao_data AS (
               SELECT
-                SUM(CASE WHEN v.total > ppc.valor_liquido THEN 1 ELSE 0 END)::integer AS comandas_pago_menor,
-                SUM(CASE WHEN v.total > ppc.valor_liquido THEN v.total - ppc.valor_liquido ELSE 0 END)::double precision AS valor_faltante,
-                SUM(CASE WHEN v.total < ppc.valor_liquido THEN 1 ELSE 0 END)::integer AS comandas_pago_maior,
-                SUM(CASE WHEN v.total < ppc.valor_liquido THEN ppc.valor_liquido - v.total ELSE 0 END)::double precision AS valor_excedente
+                SUM(CASE WHEN v.total > COALESCE(ppc.valor_liquido, 0) THEN 1 ELSE 0 END)::integer AS comandas_pago_menor,
+                SUM(CASE WHEN v.total > COALESCE(ppc.valor_liquido, 0) THEN v.total - COALESCE(ppc.valor_liquido, 0) ELSE 0 END)::double precision AS valor_faltante,
+                SUM(CASE WHEN COALESCE(ppc.valor_liquido, 0) > v.total THEN 1 ELSE 0 END)::integer AS comandas_pago_maior,
+                SUM(CASE WHEN COALESCE(ppc.valor_liquido, 0) > v.total THEN COALESCE(ppc.valor_liquido, 0) - v.total ELSE 0 END)::double precision AS valor_excedente,
+                SUM(CASE WHEN ppc.comanda_id IS NULL THEN 1 ELSE 0 END)::integer AS comandas_sem_pagamento
               FROM vendidas v
               LEFT JOIN pagos_por_comanda ppc ON v.id = ppc.comanda_id
               WHERE v.total > 0
@@ -4142,7 +4143,7 @@ LIMIT 5
           return await reply.code(500).send({ error: "Falha na consulta de conciliação: resultado inválido." });
         }
 
-        const conciliacaoRow = conciliacaoResult[0] || { comandas_pago_menor: 0, valor_faltante: 0, comandas_pago_maior: 0, valor_excedente: 0 };
+        const conciliacaoRow = conciliacaoResult[0] || { comandas_pago_menor: 0, valor_faltante: 0, comandas_pago_maior: 0, valor_excedente: 0, comandas_sem_pagamento: 0 };
 
         app.logger.info(
           {
@@ -4216,7 +4217,7 @@ LIMIT 5
               comandas_pago_maior: parseInt(String(conciliacaoRow.comandas_pago_maior || 0)) || 0,
               valor_excedente: Number(Number(parseFloat(String(conciliacaoRow.valor_excedente || 0))).toFixed(2)),
             },
-            comandas_sem_pagamento: parseInt(String(conciliacaoRow.comandas_pago_menor || 0)) || 0,
+            comandas_sem_pagamento: parseInt(String(conciliacaoRow.comandas_sem_pagamento || 0)) || 0,
           },
           cancelamentos: {
             quantidade: parseInt(String(cancelRow.quantidade || 0)) || 0,
