@@ -9,6 +9,7 @@ import { realtimeHub } from "../realtime/hub.js";
 import { fecharComanda } from "../services/fechamento-comanda.js";
 import { liberarMesaSeVazia } from "../services/liberar-mesa.js";
 import { abrirComandaNaMesa, TAMANHO_MAXIMO_NOME_COMANDA } from "../services/abrir-comanda.js";
+import { calcularTotalComandaMesa } from "../services/total-comanda.js";
 
 interface CreateComandaBody {
   mesaId?: string;
@@ -709,14 +710,25 @@ export function registerOrderRoutes(app: App) {
         const subtotalValue = subtotalResult[0]?.subtotal || "0";
         const subtotal = parseFloat(String(subtotalValue));
 
-        const gorjetaResult = await app.db
-          .select({ gorjeta: schema.comandas.gorjeta })
+        const comandaResult = await app.db
+          .select({
+            gorjeta: schema.comandas.gorjeta,
+            descontoValor: schema.comandas.descontoValor,
+            descontoTipo: schema.comandas.descontoTipo,
+          })
           .from(schema.comandas)
           .where(eq(schema.comandas.id, comandaId));
 
-        const gorjetaValue = gorjetaResult[0]?.gorjeta || "0";
-        const gorjeta = parseFloat(String(gorjetaValue));
-        const total = (subtotal + gorjeta).toFixed(2);
+        const gorjeta = parseFloat(String(comandaResult[0]?.gorjeta || "0"));
+        let desconto = 0;
+        if (comandaResult[0]?.descontoTipo === "cortesia") {
+          desconto = subtotal;
+        } else if (comandaResult[0]?.descontoValor) {
+          desconto = parseFloat(String(comandaResult[0]?.descontoValor || "0"));
+        }
+
+        const { total: totalValue } = calcularTotalComandaMesa(subtotal, gorjeta, desconto);
+        const total = totalValue.toFixed(2);
 
         // Update comanda subtotal and total
         await app.db
@@ -794,9 +806,16 @@ export function registerOrderRoutes(app: App) {
         }
 
         const subtotal = parseFloat(comanda[0].subtotal ?? "0");
-        const novoTotal = subtotal + gorjetaValue;
+        let desconto = 0;
+        if (comanda[0].descontoTipo === "cortesia") {
+          desconto = subtotal;
+        } else if (comanda[0].descontoValor) {
+          desconto = parseFloat(String(comanda[0].descontoValor || "0"));
+        }
+
+        const { total: novoTotal } = calcularTotalComandaMesa(subtotal, gorjetaValue, desconto);
         await app.db.update(schema.comandas).set({ total: novoTotal.toString(), gorjeta: gorjetaValue.toString() }).where(and(eq(schema.comandas.id, request.params.id), eq(schema.comandas.restauranteId, restauranteId)));
-        return await reply.code(200).send({ subtotal, gorjeta: gorjetaValue, total: novoTotal });
+        return await reply.code(200).send({ subtotal, gorjeta: gorjetaValue, desconto_valor: desconto, total: novoTotal });
       } catch (err) {
         return await reply.code(500).send({ error: "Erro interno" });
       }
@@ -831,6 +850,8 @@ export function registerOrderRoutes(app: App) {
               rotulo: { type: "string", nullable: true },
               subtotal: { type: "number" },
               gorjeta: { type: "number" },
+              desconto_valor: { type: "number" },
+              desconto_tipo: { type: "string", nullable: true },
               total_final: { type: "number" },
               num_pessoas: { type: "number", nullable: true },
               valor_por_pessoa: { type: "number", nullable: true },
@@ -937,6 +958,8 @@ export function registerOrderRoutes(app: App) {
           rotulo: resultado.rotulo ?? null,
           subtotal: resultado.subtotal,
           gorjeta: resultado.gorjeta,
+          desconto_valor: resultado.desconto_valor,
+          desconto_tipo: resultado.desconto_tipo,
           total_final: resultado.totalFinal,
           num_pessoas: numPessoas > 0 ? numPessoas : null,
           valor_por_pessoa: valorPorPessoa,

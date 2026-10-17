@@ -7,7 +7,7 @@ import { realtimeHub } from "../realtime/hub.js";
 import { cancelarPedido, MOTIVOS_CANCELAMENTO, ROLES_ATENDIMENTO } from "../services/cancelamento-pedido.js";
 import { liberarMesaSeVazia } from "../services/liberar-mesa.js";
 import { lancarItens } from "../services/lancamento-pedidos.js";
-import { subtotalDaComanda, totalDelivery } from "../services/total-comanda.js";
+import { subtotalDaComanda, totalDelivery, calcularTotalComandaMesa } from "../services/total-comanda.js";
 import { avaliarTransicao, validarEdicao } from "../services/transicao-pedidos.js";
 
 // Recalcula e grava o subtotal e o total da comanda depois de mexer num item (item cancelado fica
@@ -15,14 +15,24 @@ import { avaliarTransicao, validarEdicao } from "../services/transicao-pedidos.j
 // pendente acompanha o novo total); mesa = subtotal + gorjeta. `executor` é o banco ou uma transação.
 async function regravarTotaisDaComanda(
   executor: any,
-  comanda: { id: string; tipo: string | null; gorjeta: string | null }
-): Promise<void> {
+  comanda: { id: string; tipo: string | null; gorjeta: string | null; descontoValor?: string | null; descontoTipo?: string | null }
+): Promise<{ descontoEfetivo?: number }> {
   const subtotal = await subtotalDaComanda(executor, comanda.id);
   let total: number;
+  let descontoEfetivo: number | undefined;
   if (comanda.tipo === "delivery") {
     total = await totalDelivery(executor, comanda.id);
   } else {
-    total = subtotal + parseFloat(String(comanda.gorjeta || "0"));
+    const gorjeta = parseFloat(String(comanda.gorjeta || "0"));
+    let desconto = 0;
+    if (comanda.descontoTipo === "cortesia") {
+      desconto = subtotal;
+    } else if (comanda.descontoValor) {
+      desconto = parseFloat(String(comanda.descontoValor || "0"));
+    }
+    const result = calcularTotalComandaMesa(subtotal, gorjeta, desconto);
+    total = result.total;
+    descontoEfetivo = result.descontoEfetivo;
   }
   await executor
     .update(schema.comandas)
@@ -35,6 +45,8 @@ async function regravarTotaisDaComanda(
       .set({ valor: total.toFixed(2) })
       .where(and(eq(schema.pagamentos.comandaId, comanda.id), eq(schema.pagamentos.status, "pendente" as any)));
   }
+
+  return { descontoEfetivo };
 }
 
 interface CreatePedidoBody {
@@ -910,6 +922,8 @@ export function registerOrderItemRoutes(app: App) {
               tipo: schema.comandas.tipo,
               status: schema.comandas.status,
               gorjeta: schema.comandas.gorjeta,
+              descontoValor: schema.comandas.descontoValor,
+              descontoTipo: schema.comandas.descontoTipo,
             })
             .from(schema.comandas)
             .where(and(eq(schema.comandas.id, pedido.comandaId), eq(schema.comandas.restauranteId, restauranteIdAtual)))
@@ -1109,14 +1123,33 @@ export function registerOrderItemRoutes(app: App) {
         const subtotalValue = subtotalResult[0]?.subtotal || "0";
         const subtotal = parseFloat(String(subtotalValue));
 
-        const gorjetaResult = await app.db
-          .select({ gorjeta: schema.comandas.gorjeta })
+        const comandaResult = await app.db
+          .select({
+            gorjeta: schema.comandas.gorjeta,
+            tipo: schema.comandas.tipo,
+            descontoValor: schema.comandas.descontoValor,
+            descontoTipo: schema.comandas.descontoTipo,
+          })
           .from(schema.comandas)
           .where(eq(schema.comandas.id, pedido.comandaId));
 
-        const gorjetaValue = gorjetaResult[0]?.gorjeta || "0";
-        const gorjeta = parseFloat(String(gorjetaValue));
-        const newTotal = (subtotal + gorjeta).toFixed(2);
+        const gorjeta = parseFloat(String(comandaResult[0]?.gorjeta || "0"));
+        let newTotal: string;
+        let descontoEfetivo: number | undefined;
+
+        if (comandaResult[0]?.tipo === "delivery") {
+          newTotal = (subtotal + 0).toFixed(2);
+        } else {
+          let desconto = 0;
+          if (comandaResult[0]?.descontoTipo === "cortesia") {
+            desconto = subtotal;
+          } else if (comandaResult[0]?.descontoValor) {
+            desconto = parseFloat(String(comandaResult[0]?.descontoValor || "0"));
+          }
+          const result = calcularTotalComandaMesa(subtotal, gorjeta, desconto);
+          newTotal = result.total.toFixed(2);
+          descontoEfetivo = result.descontoEfetivo;
+        }
 
         await app.db
           .update(schema.comandas)
@@ -1142,6 +1175,13 @@ export function registerOrderItemRoutes(app: App) {
               closedAt: schema.comandas.closedAt,
               mesaNumero: schema.comandas.mesaNumero,
               rotulo: schema.comandas.rotulo,
+              descontoValor: schema.comandas.descontoValor,
+              descontoTipo: schema.comandas.descontoTipo,
+              descontoMotivo: schema.comandas.descontoMotivo,
+              descontoMotivoDetalhe: schema.comandas.descontoMotivoDetalhe,
+              descontoPorId: schema.comandas.descontoPorId,
+              descontoPorNome: schema.comandas.descontoPorNome,
+              descontoEm: schema.comandas.descontoEm,
             })
             .from(schema.comandas)
             .where(eq(schema.comandas.id, pedido.comandaId));
@@ -1160,6 +1200,13 @@ export function registerOrderItemRoutes(app: App) {
                 garcomId: comanda.garcomId,
                 status: comanda.status,
                 total: comanda.total as any,
+                descontoValor: descontoEfetivo !== undefined ? descontoEfetivo.toString() : (comanda.descontoValor ?? null),
+                descontoTipo: comanda.descontoTipo ?? null,
+                descontoMotivo: comanda.descontoMotivo ?? null,
+                descontoMotivoDetalhe: comanda.descontoMotivoDetalhe ?? null,
+                descontoPorId: comanda.descontoPorId ?? null,
+                descontoPorNome: comanda.descontoPorNome ?? null,
+                descontoEm: comanda.descontoEm ?? null,
                 createdAt: comanda.createdAt,
                 closedAt: comanda.closedAt,
                 archivedAt: new Date(),

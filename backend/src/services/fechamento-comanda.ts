@@ -39,7 +39,7 @@ import { and, eq } from "drizzle-orm";
 import * as schema from "../db/schema/schema.js";
 import type { App } from "../index.js";
 import { realtimeHub } from "../realtime/hub.js";
-import { subtotalDaComanda } from "./total-comanda.js";
+import { subtotalDaComanda, calcularTotalComandaMesa } from "./total-comanda.js";
 import { liberarMesaSeVazia } from "./liberar-mesa.js";
 
 export interface QuemFechou {
@@ -75,6 +75,8 @@ export type ResultadoFechamento =
       rotulo: string | null;
       subtotal: number;
       gorjeta: number;
+      desconto_valor: number;
+      desconto_tipo: string | null;
       totalFinal: number;
       createdAt: Date;
       closedAt: Date;
@@ -110,6 +112,14 @@ export async function fecharComanda(
           tipo: schema.comandas.tipo,
           rotulo: schema.comandas.rotulo,
           createdAt: schema.comandas.createdAt,
+          gorjeta: schema.comandas.gorjeta,
+          descontoValor: schema.comandas.descontoValor,
+          descontoTipo: schema.comandas.descontoTipo,
+          descontoMotivo: schema.comandas.descontoMotivo,
+          descontoMotivoDetalhe: schema.comandas.descontoMotivoDetalhe,
+          descontoPorId: schema.comandas.descontoPorId,
+          descontoPorNome: schema.comandas.descontoPorNome,
+          descontoEm: schema.comandas.descontoEm,
         })
         .from(schema.comandas)
         .where(and(eq(schema.comandas.id, comandaId), eq(schema.comandas.restauranteId, restauranteId)))
@@ -146,7 +156,16 @@ export async function fecharComanda(
       // 4) Subtotal calculado a partir dos pedidos
       const subtotal = await subtotalDaComanda(tx, comandaId);
       app.logger.info({ comandaId, subtotalCalculated: subtotal }, "Subtotal dynamically calculated from pedidos");
-      const totalFinal = subtotal + gorjetaValue;
+
+      // Determine desconto (either type 'cortesia' at 100% of subtotal, or parse descontoValor)
+      let descontoParaCalculo = 0;
+      if (comanda.descontoTipo === "cortesia") {
+        descontoParaCalculo = subtotal;
+      } else if (comanda.descontoValor && comanda.descontoValor > 0) {
+        descontoParaCalculo = parseFloat(String(comanda.descontoValor));
+      }
+
+      const { total: totalFinal, descontoEfetivo } = calcularTotalComandaMesa(subtotal, gorjetaValue, descontoParaCalculo);
 
       const createdAt: Date = comanda.createdAt;
       const closedAt = new Date();
@@ -223,6 +242,13 @@ export async function fecharComanda(
         total: totalFinal.toString(),
         subtotal: subtotal.toString(),
         gorjeta: gorjetaValue.toString(),
+        descontoValor: descontoEfetivo.toString(),
+        descontoTipo: comanda.descontoTipo ?? null,
+        descontoMotivo: comanda.descontoMotivo ?? null,
+        descontoMotivoDetalhe: comanda.descontoMotivoDetalhe ?? null,
+        descontoPorId: comanda.descontoPorId ?? null,
+        descontoPorNome: comanda.descontoPorNome ?? null,
+        descontoEm: comanda.descontoEm ?? null,
         createdAt: createdAt,
         closedAt: closedAt,
         archivedAt: closedAt,
@@ -318,6 +344,8 @@ export async function fecharComanda(
         rotulo: comanda.rotulo ?? null,
         subtotal,
         gorjeta: gorjetaValue,
+        desconto_valor: descontoEfetivo,
+        desconto_tipo: comanda.descontoTipo ?? null,
         totalFinal,
         createdAt,
         closedAt,

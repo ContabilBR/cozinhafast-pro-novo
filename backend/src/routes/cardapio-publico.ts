@@ -3,6 +3,7 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import type { App } from "../index.js";
 import * as schema from "../db/schema/schema.js";
 import { checkRateLimit } from "../utils/rate-limit.js";
+import { calcularTotalComandaMesa } from "../services/total-comanda.js";
 
 // Id do restaurante: CNPJ (14 dígitos) ou uuid (restaurantes antigos)
 const UUID_RE = /^(?:\d{14}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
@@ -249,12 +250,29 @@ init()
           const subtotalValue = subtotalResult[0]?.subtotal || "0";
           const subtotal = parseFloat(String(subtotalValue));
 
-          // Fetch gorjeta from comanda
-          const gorjetaResult = await tx.select({ gorjeta: schema.comandas.gorjeta }).from(schema.comandas).where(eq(schema.comandas.id, comanda.id));
-          const gorjetaValue = gorjetaResult[0]?.gorjeta || "0";
-          const gorjeta = parseFloat(String(gorjetaValue));
+          // Fetch gorjeta and desconto from comanda
+          const comandaResult = await tx.select({
+            gorjeta: schema.comandas.gorjeta,
+            tipo: schema.comandas.tipo,
+            descontoValor: schema.comandas.descontoValor,
+            descontoTipo: schema.comandas.descontoTipo,
+          }).from(schema.comandas).where(eq(schema.comandas.id, comanda.id));
 
-          const newTotal = (subtotal + gorjeta).toFixed(2);
+          const gorjeta = parseFloat(String(comandaResult[0]?.gorjeta || "0"));
+          let newTotal: string;
+
+          if (comandaResult[0]?.tipo === "delivery") {
+            newTotal = subtotal.toFixed(2);
+          } else {
+            let desconto = 0;
+            if (comandaResult[0]?.descontoTipo === "cortesia") {
+              desconto = subtotal;
+            } else if (comandaResult[0]?.descontoValor) {
+              desconto = parseFloat(String(comandaResult[0]?.descontoValor || "0"));
+            }
+            const result = calcularTotalComandaMesa(subtotal, gorjeta, desconto);
+            newTotal = result.total.toFixed(2);
+          }
 
           // Update comanda with calculated subtotal and total
           await tx.update(schema.comandas).set({ subtotal: subtotal.toString(), total: newTotal }).where(eq(schema.comandas.id, comanda.id));

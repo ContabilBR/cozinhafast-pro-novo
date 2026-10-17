@@ -17,7 +17,7 @@ import { and, eq, sql } from "drizzle-orm";
 import * as schema from "../db/schema/schema.js";
 import type { App } from "../index.js";
 import { realtimeHub } from "../realtime/hub.js";
-import { subtotalDaComanda, totalDelivery } from "./total-comanda.js";
+import { subtotalDaComanda, totalDelivery, calcularTotalComandaMesa } from "./total-comanda.js";
 
 export const MOTIVOS_CANCELAMENTO = [
   "erro_lancamento",
@@ -87,6 +87,8 @@ export async function cancelarPedido(
         gorjeta: schema.comandas.gorjeta,
         mesaNumero: schema.comandas.mesaNumero,
         tipo: schema.comandas.tipo,
+        descontoValor: schema.comandas.descontoValor,
+        descontoTipo: schema.comandas.descontoTipo,
       })
       .from(schema.comandas)
       .where(and(eq(schema.comandas.id, comandaId), eq(schema.comandas.restauranteId, restauranteId)))
@@ -137,12 +139,21 @@ export async function cancelarPedido(
     // 5) Recalcula o total gravado na comanda (sem os itens cancelados)
     const subtotal = await subtotalDaComanda(tx, comandaId);
     let total: number;
+    let descontoEfetivo: number | undefined;
     if (comanda.tipo === "delivery") {
       // Para delivery: subtotal + taxa de entrega (gorjeta não se aplica)
       total = await totalDelivery(tx, comandaId);
     } else {
       const gorjeta = parseFloat(String(comanda.gorjeta || "0"));
-      total = subtotal + gorjeta;
+      let desconto = 0;
+      if (comanda.descontoTipo === "cortesia") {
+        desconto = subtotal;
+      } else if (comanda.descontoValor) {
+        desconto = parseFloat(String(comanda.descontoValor || "0"));
+      }
+      const result = calcularTotalComandaMesa(subtotal, gorjeta, desconto);
+      total = result.total;
+      descontoEfetivo = result.descontoEfetivo;
     }
     await tx
       .update(schema.comandas)

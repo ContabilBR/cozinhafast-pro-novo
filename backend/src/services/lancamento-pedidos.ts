@@ -22,7 +22,7 @@ import * as schema from "../db/schema/schema.js";
 import type { App } from "../index.js";
 import { realtimeHub } from "../realtime/hub.js";
 import { ehGestor } from "./cancelamento-pedido.js";
-import { subtotalDaComanda } from "./total-comanda.js";
+import { subtotalDaComanda, calcularTotalComandaMesa } from "./total-comanda.js";
 
 export const QUANTIDADE_MINIMA = 1;
 export const QUANTIDADE_MAXIMA = 99;
@@ -96,6 +96,8 @@ export async function lancarItens(
         status: schema.comandas.status,
         tipo: schema.comandas.tipo,
         gorjeta: schema.comandas.gorjeta,
+        descontoValor: schema.comandas.descontoValor,
+        descontoTipo: schema.comandas.descontoTipo,
       })
       .from(schema.comandas)
       .where(and(eq(schema.comandas.id, comandaId), eq(schema.comandas.restauranteId, restauranteId)))
@@ -147,7 +149,21 @@ export async function lancarItens(
     // 5) Recalcula o total gravado na comanda (itens cancelados não contam)
     const subtotal = await subtotalDaComanda(tx, comandaId);
     const gorjeta = parseFloat(String(comanda.gorjeta || "0"));
-    const total = subtotal + gorjeta;
+    let total: number;
+
+    if (comanda.tipo === "delivery") {
+      total = subtotal;
+    } else {
+      let desconto = 0;
+      if (comanda.descontoTipo === "cortesia") {
+        desconto = subtotal;
+      } else if (comanda.descontoValor) {
+        desconto = parseFloat(String(comanda.descontoValor || "0"));
+      }
+      const result = calcularTotalComandaMesa(subtotal, gorjeta, desconto);
+      total = result.total;
+    }
+
     await tx
       .update(schema.comandas)
       .set({ subtotal: subtotal.toString(), total: total.toFixed(2) })
