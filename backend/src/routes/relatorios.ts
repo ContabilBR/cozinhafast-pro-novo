@@ -4240,4 +4240,230 @@ LIMIT 5
       }
     }
   );
+
+  // GET /api/relatorios/margem-pratos
+  app.fastify.get(
+    "/api/relatorios/margem-pratos",
+    { schema: {} } as any,
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const session = await customRequireAuth(app, request, reply);
+        if (!session) return;
+        if (!(await requireRole(session, ["administrador", "gerente", "admin"], reply))) return;
+        const restauranteId = requireTenant(session);
+
+        const query = request.query as { periodo?: string; dataInicio?: string; dataFim?: string };
+        const { inicio, fim } = resolvePeriodo(query.periodo, query.dataInicio, query.dataFim);
+
+        const diaInicio = diaLocalDeInstante(inicio);
+        const diaFim = diaLocalDeInstante(new Date(fim.getTime() - 1000));
+
+        const dataInicioStr = `${String(diaInicio.ano).padStart(4, "0")}-${String(diaInicio.mes0 + 1).padStart(2, "0")}-${String(diaInicio.dia).padStart(2, "0")}`;
+        const dataFimStr = `${String(diaFim.ano).padStart(4, "0")}-${String(diaFim.mes0 + 1).padStart(2, "0")}-${String(diaFim.dia).padStart(2, "0")}`;
+
+        const result: any = await (app.db as any).execute(
+          sql`
+            WITH comandas_fontes AS (
+              SELECT c.id, c.restaurante_id, c.status::text, c.closed_at, 0 AS prioridade_fonte
+              FROM ${schema.comandas} c
+              WHERE c.restaurante_id = ${restauranteId}
+              UNION ALL
+              SELECT ch.id, ch.restaurante_id, ch.status::text, ch.closed_at, 1 AS prioridade_fonte
+              FROM ${schema.comandasHistorico} ch
+              WHERE ch.restaurante_id = ${restauranteId}
+            ),
+            comandas_unicas AS (
+              SELECT DISTINCT ON (cf.restaurante_id, cf.id)
+                cf.id, cf.restaurante_id, cf.status, cf.closed_at, cf.prioridade_fonte
+              FROM comandas_fontes cf
+              ORDER BY cf.restaurante_id, cf.id, cf.prioridade_fonte ASC
+            ),
+            vendidas AS (
+              SELECT cu.id
+              FROM comandas_unicas cu
+              WHERE cu.status = 'fechada' AND cu.closed_at >= ${dataInicioStr}::date::timestamp AT TIME ZONE 'America/Sao_Paulo'
+                AND cu.closed_at < (${dataFimStr}::date + INTERVAL '1 day')::timestamp AT TIME ZONE 'America/Sao_Paulo'
+            ),
+            pedidos_fontes AS (
+              SELECT p.id, p.comanda_id, p.prato_id, p.quantidade, p.preco_unitario, p.status::text, p.cancelado_em, p.restaurante_id, 0 AS prioridade_fonte
+              FROM ${schema.pedidos} p
+              WHERE p.restaurante_id = ${restauranteId}
+              UNION ALL
+              SELECT ph.id, ph.comanda_id, ph.prato_id, ph.quantidade, ph.preco_unitario, ph.status::text, ph.cancelado_em, ph.restaurante_id, 1 AS prioridade_fonte
+              FROM ${schema.pedidosHistorico} ph
+              WHERE ph.restaurante_id = ${restauranteId}
+            ),
+            pedidos_unicas AS (
+              SELECT DISTINCT ON (pf.restaurante_id, pf.id)
+                pf.id, pf.comanda_id, pf.prato_id, pf.quantidade, pf.preco_unitario, pf.status, pf.cancelado_em, pf.restaurante_id
+              FROM pedidos_fontes pf
+              ORDER BY pf.restaurante_id, pf.id, pf.prioridade_fonte ASC
+            ),
+            vendas_por_prato AS (
+              SELECT
+                COALESCE(MAX(pu.prato_id::text), MAX(p.nome)) AS prato_key,
+                MAX(pu.prato_id::text) AS prato_id,
+                MAX(p.nome) AS prato_nome,
+                SUM(pu.quantidade) AS quantidade_vendida,
+                SUM(pu.quantidade * pu.preco_unitario) AS receita_total
+              FROM pedidos_unicas pu
+              INNER JOIN vendidas v ON pu.comanda_id = v.id
+              LEFT JOIN ${schema.pratos} p ON pu.prato_id = p.id AND p.restaurante_id = ${restauranteId}
+              WHERE pu.status = 'gravado' AND (pu.cancelado_em IS NULL AND pu.status != 'cancelado')
+              GROUP BY COALESCE(MAX(pu.prato_id::text), MAX(p.nome))
+            ),
+            prato_insumos_custo AS (
+              SELECT
+                pi.restaurante_id,
+                pi.prato_id,
+                SUM(pi.quantidade_usada * COALESCE(i.custo_unitario, 0)) AS custo_total_ficha,
+                ARRAY_AGG(DISTINCT CASE WHEN i.custo_unitario IS NULL OR i.custo_unitario <= 0 THEN i.nome ELSE NULL END) FILTER (WHERE i.custo_unitario IS NULL OR i.custo_unitario <= 0) AS insumos_sem_custo
+              FROM ${schema.pratoInsumos} pi
+              LEFT JOIN ${schema.insumos} i ON pi.insumo_id = i.id AND i.restaurante_id = pi.restaurante_id
+              WHERE pi.restaurante_id = ${restauranteId}
+              GROUP BY pi.restaurante_id, pi.prato_id
+            )
+            SELECT
+              vpp.prato_key,
+              vpp.prato_id,
+              vpp.prato_nome,
+              vpp.quantidade_vendida,
+              vpp.receita_total,
+              COALESCE(pic.custo_total_ficha, 0)::numeric AS custo_ficha,
+              COALESCE(pic.insumos_sem_custo, ARRAY[]::text[]) AS insumos_sem_custo
+            FROM vendas_por_prato vpp
+            LEFT JOIN prato_insumos_custo pic ON vpp.prato_id::uuid = pic.prato_id OR vpp.prato_name = pic.prato_id
+          `
+        );
+
+        if (!Array.isArray(result)) {
+          app.logger.error({}, "Query result is not an array");
+          return await reply.code(500).send({ error: "Não foi possível gerar o relatório de margem por prato." });
+        }
+
+        const comFicha: any[] = [];
+        const semFicha: any[] = [];
+        const custoIncompleto: any[] = [];
+
+        let receitaTotalGeral = 0;
+        let receitaCoberta = 0;
+        let custoTotal = 0;
+        let margemTotal = 0;
+
+        for (const row of result) {
+          if (!row || typeof row !== "object") continue;
+
+          const quantidadeVendida = Number(row.quantidade_vendida || 0);
+          const receitaTotal = Number(row.receita_total || 0);
+          const custoFicha = Number(row.custo_ficha || 0);
+          const insumosEmCusto = Array.isArray(row.insumos_sem_custo) ? row.insumos_sem_custo.filter((x: any) => x) : [];
+
+          if (!Number.isFinite(quantidadeVendida) || !Number.isFinite(receitaTotal) || !Number.isFinite(custoFicha)) {
+            continue;
+          }
+
+          receitaTotalGeral += receitaTotal;
+          const pratoId = row.prato_id || null;
+          const pratoNome = row.prato_nome || "Prato removido";
+
+          if (insumosEmCusto.length > 0) {
+            custoIncompleto.push({
+              id: pratoId,
+              nome: pratoNome,
+              quantidade_vendida: quantidadeVendida,
+              receita: Number(receitaTotal.toFixed(2)),
+              insumos_sem_custo: insumosEmCusto,
+            });
+          } else if (custoFicha <= 0) {
+            semFicha.push({
+              id: pratoId,
+              nome: pratoNome,
+              quantidade_vendida: quantidadeVendida,
+              receita: Number(receitaTotal.toFixed(2)),
+            });
+          } else {
+            const custoTotalPrato = custoFicha * quantidadeVendida;
+            const margemPrato = receitaTotal - custoTotalPrato;
+            const margemPercentualPrato = receitaTotal > 0 ? (100 * margemPrato) / receitaTotal : null;
+
+            comFicha.push({
+              id: pratoId,
+              nome: pratoNome,
+              quantidade_vendida: quantidadeVendida,
+              receita: Number(receitaTotal.toFixed(2)),
+              custo_unitario_ficha: Number(custoFicha.toFixed(2)),
+              custo_total: Number(custoTotalPrato.toFixed(2)),
+              margem: Number(margemPrato.toFixed(2)),
+              margem_percentual: margemPercentualPrato !== null ? Number(margemPercentualPrato.toFixed(2)) : null,
+            });
+
+            receitaCoberta += receitaTotal;
+            custoTotal += custoTotalPrato;
+            margemTotal += margemPrato;
+          }
+        }
+
+        comFicha.sort((a, b) => {
+          const margem_cmp = b.margem - a.margem;
+          if (margem_cmp !== 0) return margem_cmp;
+          return a.nome.localeCompare(b.nome, "pt-BR");
+        });
+
+        semFicha.sort((a, b) => {
+          const receita_cmp = b.receita - a.receita;
+          if (receita_cmp !== 0) return receita_cmp;
+          return a.nome.localeCompare(b.nome, "pt-BR");
+        });
+
+        custoIncompleto.sort((a, b) => {
+          const receita_cmp = b.receita - a.receita;
+          if (receita_cmp !== 0) return receita_cmp;
+          return a.nome.localeCompare(b.nome, "pt-BR");
+        });
+
+        const margemPercentualGeral = receitaCoberta > 0 ? (100 * margemTotal) / receitaCoberta : null;
+        const coberturaPercentual = receitaTotalGeral > 0 ? (100 * receitaCoberta) / receitaTotalGeral : null;
+
+        if (!Number.isFinite(margemTotal) || !Number.isFinite(custoTotal) || (margemPercentualGeral !== null && !Number.isFinite(margemPercentualGeral)) || (coberturaPercentual !== null && !Number.isFinite(coberturaPercentual))) {
+          app.logger.error({}, "Invalid numeric values in final calculations");
+          return await reply.code(500).send({ error: "Não foi possível gerar o relatório de margem por prato." });
+        }
+
+        app.logger.info(
+          {
+            data_inicio: dataInicioStr,
+            data_fim: dataFimStr,
+            total_pratos_vendidos: comFicha.length + semFicha.length + custoIncompleto.length,
+            pratos_com_ficha: comFicha.length,
+            pratos_sem_ficha: semFicha.length,
+            pratos_custo_incompleto: custoIncompleto.length,
+          },
+          "Margem por prato report retrieved"
+        );
+
+        return await reply.code(200).send({
+          periodo: { inicio: dataInicioStr, fim: dataFimStr },
+          resumo: {
+            total_pratos_vendidos: comFicha.length + semFicha.length + custoIncompleto.length,
+            pratos_com_ficha: comFicha.length,
+            pratos_sem_ficha: semFicha.length,
+            pratos_custo_incompleto: custoIncompleto.length,
+            receita_total_geral: Number(receitaTotalGeral.toFixed(2)),
+            receita_coberta: Number(receitaCoberta.toFixed(2)),
+            custo_total: Number(custoTotal.toFixed(2)),
+            margem_total: Number(margemTotal.toFixed(2)),
+            margem_percentual: margemPercentualGeral !== null ? Number(margemPercentualGeral.toFixed(2)) : null,
+            cobertura_percentual: coberturaPercentual !== null ? Number(coberturaPercentual.toFixed(2)) : null,
+          },
+          com_ficha: comFicha,
+          sem_ficha: semFicha,
+          custo_incompleto: custoIncompleto,
+          observacao_custo: "Custo calculado com o custo atual dos insumos, sem histórico de preços. Pratos sem ficha ou com custo incompleto não entram nos totais de custo e margem.",
+        });
+      } catch (error) {
+        app.logger.error({}, "Failed to get margem-pratos report");
+        return await reply.code(500).send({ error: "Não foi possível gerar o relatório de margem por prato." });
+      }
+    }
+  );
 }
