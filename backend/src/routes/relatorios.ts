@@ -3895,10 +3895,16 @@ LIMIT 5
             WHERE cu.status = 'fechada' AND cu.total > 0
               AND cu.closed_at >= ${inicio.toISOString()}::timestamptz
               AND cu.closed_at < ${fim.toISOString()}::timestamptz
+          ),
+          entregas_por_comanda AS (
+            SELECT e.restaurante_id, e.comanda_id, SUM(e.taxa_entrega) AS taxa_entrega
+            FROM entregas e
+            WHERE e.restaurante_id = ${tenantId}
+            GROUP BY e.restaurante_id, e.comanda_id
           )
         `;
 
-        // Query 1: Sales totals
+        // Query 1: Sales totals with taxa
         const vendidosResult = await (app.db as any).execute(
           sql`
             ${baseComandas}
@@ -3906,8 +3912,10 @@ LIMIT 5
               COUNT(*)::integer AS comandas_fechadas,
               COALESCE(SUM(v.subtotal), 0)::double precision AS faturamento_itens,
               COALESCE(SUM(v.gorjeta), 0)::double precision AS gorjeta,
+              COALESCE(SUM(epc.taxa_entrega), 0)::double precision AS taxa_entrega,
               COALESCE(SUM(v.total), 0)::double precision AS total_recebido
             FROM vendidas v
+            LEFT JOIN entregas_por_comanda epc ON epc.comanda_id = v.id AND epc.restaurante_id = v.restaurante_id AND epc.restaurante_id = ${tenantId}
           `
         ) as any[];
 
@@ -3941,14 +3949,15 @@ LIMIT 5
         // Query 3: Confirmed payments
         const pagamentosResult = await (app.db as any).execute(
           sql`
-            WITH pagamentos_fontes AS (
+            ${baseComandas},
+            pagamentos_fontes AS (
               SELECT p.id AS id, p.restaurante_id AS restaurante_id, p.forma_pagamento::text AS forma, p.valor AS valor, p.troco AS troco, p.comanda_id AS comanda_id, 0 AS prioridade_fonte
               FROM pagamentos p
-              WHERE p.restaurante_id = ${tenantId} AND p.status = 'confirmado'
+              WHERE p.restaurante_id = ${tenantId} AND p.status::text = 'confirmado'
               UNION ALL
-              SELECT ph.id AS id, ph.restaurante_id AS restaurante_id, ph.forma_pagamento::text AS forma, ph.valor AS valor, ph.troco AS troco, ph.comanda_id AS comanda_id, 1 AS prioridade_fonte
+              SELECT ph.id AS id, ph.restaurante_id AS restaurante_id, ph.forma_pagamento::text AS forma, ph.valor AS valor, COALESCE(ph.troco, 0) AS troco, ph.comanda_id AS comanda_id, 1 AS prioridade_fonte
               FROM pagamentos_historico ph
-              WHERE ph.restaurante_id = ${tenantId}
+              WHERE ph.restaurante_id = ${tenantId} AND ph.status::text = 'confirmado'
             ),
             pagamentos_unicos AS (
               SELECT DISTINCT ON (pf.restaurante_id, pf.id)
@@ -3956,17 +3965,17 @@ LIMIT 5
               FROM pagamentos_fontes pf
               ORDER BY pf.restaurante_id, pf.id, pf.prioridade_fonte ASC
             ),
-            confirmados AS (
-              SELECT pu.forma, pu.valor, pu.troco, pu.comanda_id
+            confirmados_unidos AS (
+              SELECT pu.forma, pu.valor, pu.troco
               FROM pagamentos_unicos pu
-              INNER JOIN (${baseComandas}, vendidas v WHERE pu.comanda_id = v.id AND pu.restaurante_id = v.restaurante_id) ON TRUE
+              INNER JOIN vendidas v ON pu.comanda_id = v.id AND pu.restaurante_id = v.restaurante_id AND pu.restaurante_id = ${tenantId}
             )
             SELECT
               c.forma,
               COUNT(*)::integer AS quantidade,
               COALESCE(SUM(c.valor), 0)::double precision AS valor_entregue,
               COALESCE(SUM(c.troco), 0)::double precision AS troco
-            FROM confirmados c
+            FROM confirmados_unidos c
             GROUP BY c.forma
           `
         ) as any[];
@@ -4015,6 +4024,7 @@ LIMIT 5
 
         // Query 5: Pending (only if today)
         let pendenciasResult: any[] = [];
+        let entregas_em_andamento = 0;
         if (ehHoje) {
           pendenciasResult = await (app.db as any).execute(
             sql`
@@ -4023,7 +4033,7 @@ LIMIT 5
                 c.tipo::text AS tipo,
                 c.mesa_numero AS mesa_numero,
                 c.rotulo AS rotulo,
-                to_char(c.created_at AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD"T"HH24:MI:SS.000Z') AS aberta_em,
+                to_char(c.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS aberta_em,
                 CAST(c.subtotal AS DECIMAL(10,2)) AS subtotal_parcial
               FROM comandas c
               WHERE c.restaurante_id = ${tenantId} AND c.status = 'aberta'
@@ -4035,6 +4045,17 @@ LIMIT 5
           if (!Array.isArray(pendenciasResult)) {
             app.logger.error({ tenantId, resultType: typeof pendenciasResult }, "Query 5 (pending) result is not an array");
             return await reply.code(500).send({ error: "Falha na consulta de pendências: resultado inválido." });
+          }
+
+          // Query 5b: Count entregas_em_andamento
+          const entregasCountResult = await (app.db as any).execute(
+            sql`
+              SELECT COUNT(*)::integer AS count FROM entregas WHERE restaurante_id = ${tenantId} AND status IN ('pendente', 'preparando', 'saiu_entrega')
+            `
+          ) as any[];
+
+          if (Array.isArray(entregasCountResult) && entregasCountResult.length > 0) {
+            entregas_em_andamento = parseInt(String(entregasCountResult[0].count || 0)) || 0;
           }
         }
 
@@ -4077,6 +4098,51 @@ LIMIT 5
 
         // Process pending data
         const pendenciasRows = pendenciasResult || [];
+
+        // Query 6: Conciliacao (payment reconciliation)
+        const conciliacaoResult = await (app.db as any).execute(
+          sql`
+            ${baseComandas},
+            pagamentos_fontes AS (
+              SELECT p.id AS id, p.restaurante_id AS restaurante_id, p.valor AS valor, p.troco AS troco, p.comanda_id AS comanda_id, 0 AS prioridade_fonte
+              FROM pagamentos p
+              WHERE p.restaurante_id = ${tenantId} AND p.status::text = 'confirmado'
+              UNION ALL
+              SELECT ph.id AS id, ph.restaurante_id AS restaurante_id, ph.valor AS valor, COALESCE(ph.troco, 0) AS troco, ph.comanda_id AS comanda_id, 1 AS prioridade_fonte
+              FROM pagamentos_historico ph
+              WHERE ph.restaurante_id = ${tenantId} AND ph.status::text = 'confirmado'
+            ),
+            pagamentos_unicos AS (
+              SELECT DISTINCT ON (pf.restaurante_id, pf.id)
+                pf.valor, pf.troco, pf.comanda_id
+              FROM pagamentos_fontes pf
+              ORDER BY pf.restaurante_id, pf.id, pf.prioridade_fonte ASC
+            ),
+            pagos_por_comanda AS (
+              SELECT pu.comanda_id, SUM(pu.valor - COALESCE(pu.troco, 0)) AS valor_liquido
+              FROM pagamentos_unicos pu
+              GROUP BY pu.comanda_id
+            ),
+            conciliacao_data AS (
+              SELECT
+                SUM(CASE WHEN v.total > ppc.valor_liquido THEN 1 ELSE 0 END)::integer AS comandas_pago_menor,
+                SUM(CASE WHEN v.total > ppc.valor_liquido THEN v.total - ppc.valor_liquido ELSE 0 END)::double precision AS valor_faltante,
+                SUM(CASE WHEN v.total < ppc.valor_liquido THEN 1 ELSE 0 END)::integer AS comandas_pago_maior,
+                SUM(CASE WHEN v.total < ppc.valor_liquido THEN ppc.valor_liquido - v.total ELSE 0 END)::double precision AS valor_excedente
+              FROM vendidas v
+              LEFT JOIN pagos_por_comanda ppc ON v.id = ppc.comanda_id
+              WHERE v.total > 0
+            )
+            SELECT * FROM conciliacao_data
+          `
+        ) as any[];
+
+        if (!Array.isArray(conciliacaoResult)) {
+          app.logger.error({ tenantId, resultType: typeof conciliacaoResult }, "Query 6 (conciliacao) result is not an array");
+          return await reply.code(500).send({ error: "Falha na consulta de conciliação: resultado inválido." });
+        }
+
+        const conciliacaoRow = conciliacaoResult[0] || { comandas_pago_menor: 0, valor_faltante: 0, comandas_pago_maior: 0, valor_excedente: 0 };
 
         app.logger.info(
           {
@@ -4144,8 +4210,13 @@ LIMIT 5
             dinheiro_em_caixa: Number(
               Number((formasMap.get("dinheiro")?.valor_entregue || 0) - (formasMap.get("dinheiro")?.troco || 0)).toFixed(2)
             ),
-            conciliacao: { comandas_pago_menor: 0, valor_faltante: 0, comandas_pago_maior: 0, valor_excedente: 0 },
-            comandas_sem_pagamento: 0,
+            conciliacao: {
+              comandas_pago_menor: parseInt(String(conciliacaoRow.comandas_pago_menor || 0)) || 0,
+              valor_faltante: Number(Number(parseFloat(String(conciliacaoRow.valor_faltante || 0))).toFixed(2)),
+              comandas_pago_maior: parseInt(String(conciliacaoRow.comandas_pago_maior || 0)) || 0,
+              valor_excedente: Number(Number(parseFloat(String(conciliacaoRow.valor_excedente || 0))).toFixed(2)),
+            },
+            comandas_sem_pagamento: parseInt(String(conciliacaoRow.comandas_pago_menor || 0)) || 0,
           },
           cancelamentos: {
             quantidade: parseInt(String(cancelRow.quantidade || 0)) || 0,
@@ -4173,7 +4244,7 @@ LIMIT 5
                   subtotal_parcial: Number(Number(parseFloat(String(row.subtotal_parcial || 0))).toFixed(2)),
                 }))
               : [],
-            entregas_em_andamento: 0,
+            entregas_em_andamento: ehHoje ? entregas_em_andamento : 0,
           },
         });
       } catch (error) {
