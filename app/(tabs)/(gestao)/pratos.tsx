@@ -522,6 +522,20 @@ export default function GestaoPratos() {
         </View>
       </View>
 
+      {canOpenFicha && (
+        <View style={{ paddingHorizontal: 12, paddingTop: 12 }}>
+          <AnimatedPressable
+            accessibilityRole="button"
+            accessibilityLabel="Importar fichas técnicas"
+            onPress={() => router.push('/prato/ficha-tecnica/importar' as any)}
+            style={{ minHeight: 48, borderRadius: 12, padding: 12, backgroundColor: COLORS.primaryMuted, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+          >
+            <Ionicons name="document-text-outline" size={20} color={COLORS.primary} />
+            <Text style={{ fontFamily: 'Outfit_600SemiBold', fontSize: 15, color: COLORS.primary }}>Importar fichas técnicas</Text>
+          </AnimatedPressable>
+        </View>
+      )}
+
       {loading ? (
         <View style={{ paddingTop: 16 }}>
           {[0, 1, 2].map((i) => (
