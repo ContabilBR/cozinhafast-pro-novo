@@ -39,3 +39,26 @@ export async function totalDelivery(executor: any, comandaId: string): Promise<n
   const taxa = parseFloat(String(linhas[0]?.taxa ?? "0"));
   return subtotal + taxa;
 }
+
+/**
+ * Calculate total bill with discount and tip for table bills.
+ * Normalizes inputs, ensures discount never exceeds subtotal, returns total and effective discount.
+ */
+export function calcularTotalComandaMesa(
+  subtotal: number,
+  gorjeta: number,
+  desconto: number
+): { total: number; descontoEfetivo: number } {
+  // Normalize each input: Number.isFinite and >= 0, else 0
+  const subtotalNorm = Number.isFinite(subtotal) && subtotal >= 0 ? subtotal : 0;
+  const gorjetaNorm = Number.isFinite(gorjeta) && gorjeta >= 0 ? gorjeta : 0;
+  const descontoNorm = Number.isFinite(desconto) && desconto >= 0 ? desconto : 0;
+
+  // descontoEfetivo never exceeds subtotal
+  const descontoEfetivo = Math.min(descontoNorm, subtotalNorm);
+
+  // total = subtotal - descontoEfetivo + gorjeta, rounded to 2 decimals
+  const total = Math.round((subtotalNorm - descontoEfetivo + gorjetaNorm) * 100) / 100;
+
+  return { total, descontoEfetivo };
+}
