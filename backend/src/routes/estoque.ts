@@ -349,25 +349,35 @@ export function registerEstoqueRoutes(app: App) {
 
   // ==================== FICHA TÉCNICA ====================
 
-  // Helper: Validate and normalize quantity
-  function validarQuantidade(qty: string | number): number | null {
+  // Helper: Validate and normalize quantity (string|number only)
+  function validarQuantidade(qty: any): { valid: boolean; value: number | null; error?: string } {
+    if (typeof qty !== "string" && typeof qty !== "number") {
+      return { valid: false, value: null, error: "Quantidade deve ser texto ou número." };
+    }
+
     let str = "";
     if (typeof qty === "string") {
       str = qty.trim();
-      if (str.length === 0 || str.length > 200) return null;
-    } else if (typeof qty === "number") {
-      if (!isFinite(qty)) return null;
-      str = String(qty);
+      if (str.length === 0 || str.length > 200) {
+        return { valid: false, value: null, error: "Quantidade inválida." };
+      }
     } else {
-      return null;
+      if (!isFinite(qty)) {
+        return { valid: false, value: null, error: "Quantidade inválida." };
+      }
+      str = String(qty);
     }
 
     str = str.replace(/,/g, ".");
-    if (!/^[0-9]+(\.[0-9]{1,3})?$/.test(str)) return null;
+    if (!/^[0-9]+(\.[0-9]{1,3})?$/.test(str)) {
+      return { valid: false, value: null, error: "Quantidade inválida." };
+    }
 
     const num = parseFloat(str);
-    if (!isFinite(num) || num <= 0 || num > 1000000) return null;
-    return num;
+    if (!isFinite(num) || num <= 0 || num > 1000000) {
+      return { valid: false, value: null, error: "Quantidade inválida." };
+    }
+    return { valid: true, value: num };
   }
 
   // Helper: Normalize Unicode name for matching
@@ -378,6 +388,250 @@ export function registerEstoqueRoutes(app: App) {
       .toLowerCase()
       .trim()
       .replace(/\s+/g, " ");
+  }
+
+  // Helper: Load pratos, insumos, vinculos from database
+  async function carregarDados(connection: any, restauranteId: string) {
+    const pratos: any = await connection.select({
+      id: schema.pratos.id,
+      nome: schema.pratos.nome,
+    }).from(schema.pratos).where(eq(schema.pratos.restauranteId, restauranteId));
+
+    if (!Array.isArray(pratos)) throw new Error("Pratos result not array");
+    for (const p of pratos) {
+      if (!p || typeof p !== "object" || Array.isArray(p) || !p.id || typeof p.nome !== "string") {
+        throw new Error("Invalid prato row");
+      }
+    }
+
+    const insumos: any = await connection.select({
+      id: schema.insumos.id,
+      nome: schema.insumos.nome,
+      unidade: schema.insumos.unidade,
+      ativo: schema.insumos.ativo,
+    }).from(schema.insumos).where(eq(schema.insumos.restauranteId, restauranteId));
+
+    if (!Array.isArray(insumos)) throw new Error("Insumos result not array");
+    for (const i of insumos) {
+      if (!i || typeof i !== "object" || Array.isArray(i) || !i.id || typeof i.nome !== "string" || typeof i.unidade !== "string" || typeof i.ativo !== "boolean") {
+        throw new Error("Invalid insumo row");
+      }
+    }
+
+    const vinculos: any = await connection.select({
+      id: schema.pratoInsumos.id,
+      pratoId: schema.pratoInsumos.pratoId,
+      insumoId: schema.pratoInsumos.insumoId,
+      quantidadeUsada: schema.pratoInsumos.quantidadeUsada,
+    }).from(schema.pratoInsumos).where(eq(schema.pratoInsumos.restauranteId, restauranteId));
+
+    if (!Array.isArray(vinculos)) throw new Error("Vinculos result not array");
+    for (const v of vinculos) {
+      if (!v || typeof v !== "object" || Array.isArray(v) || !v.id || !v.pratoId || !v.insumoId || typeof v.quantidadeUsada !== "string") {
+        throw new Error("Invalid vinculo row");
+      }
+      const qtyNum = parseFloat(v.quantidadeUsada);
+      if (!isFinite(qtyNum)) throw new Error("Invalid vinculo quantity");
+    }
+
+    return { pratos, insumos, vinculos };
+  }
+
+  // Helper: Validate and classify all rows (used in both phase 1 and phase 2)
+  function validarEClassificar(
+    linhas: any[],
+    pratos: any[],
+    insumos: any[],
+    vinculos: any[],
+    restauranteId: string
+  ) {
+    const pratoNormMap = new Map<string, string[]>();
+    pratos.forEach(p => {
+      const norm = normalizeNameNFD(p.nome);
+      if (!pratoNormMap.has(norm)) pratoNormMap.set(norm, []);
+      pratoNormMap.get(norm)!.push(p.id);
+    });
+
+    const insumoNormMap = new Map<string, string[]>();
+    insumos.forEach(i => {
+      const norm = normalizeNameNFD(i.nome);
+      if (!insumoNormMap.has(norm)) insumoNormMap.set(norm, []);
+      insumoNormMap.get(norm)!.push(i.id);
+    });
+
+    const vinculoMap = new Map<string, any>();
+    for (const v of vinculos) {
+      const key = `${v.pratoId}|${v.insumoId}`;
+      if (vinculoMap.has(key)) {
+        vinculoMap.set(key, null);
+      } else {
+        vinculoMap.set(key, v);
+      }
+    }
+
+    const resultados: any[] = [];
+    const seenPairs = new Set<string>();
+    let novas = 0, atualizam = 0, sem_alteracao = 0, com_erro = 0;
+
+    for (let idx = 0; idx < linhas.length; idx++) {
+      const linha = linhas[idx] as any;
+      const lineNumber = idx + 1;
+      let resultado: any = { linha: lineNumber, status: "erro" };
+
+      // Validate required fields exist and are strings/number for quantidade
+      if (linha.prato === undefined || linha.insumo === undefined || linha.unidade === undefined || linha.quantidade === undefined) {
+        resultado.mensagem = "Prato, insumo, quantidade e unidade são obrigatórios.";
+        resultados.push(resultado);
+        com_erro++;
+        continue;
+      }
+
+      // Type checks before trim/normalize
+      if (typeof linha.prato !== "string" && linha.prato !== null) {
+        resultado.mensagem = "Nome do prato inválido.";
+        resultados.push(resultado);
+        com_erro++;
+        continue;
+      }
+      if (typeof linha.insumo !== "string" && linha.insumo !== null) {
+        resultado.mensagem = "Nome do insumo inválido.";
+        resultados.push(resultado);
+        com_erro++;
+        continue;
+      }
+      if (typeof linha.unidade !== "string" && linha.unidade !== null) {
+        resultado.mensagem = "Unidade inválida.";
+        resultados.push(resultado);
+        com_erro++;
+        continue;
+      }
+
+      const pratoNome = String(linha.prato).trim();
+      const insumoNome = String(linha.insumo).trim();
+      const unidadeStr = String(linha.unidade).trim().toLowerCase();
+
+      if (pratoNome.length === 0 || pratoNome.length > 200) {
+        resultado.mensagem = "Nome do prato inválido.";
+        resultados.push(resultado);
+        com_erro++;
+        continue;
+      }
+      if (insumoNome.length === 0 || insumoNome.length > 200) {
+        resultado.mensagem = "Nome do insumo inválido.";
+        resultados.push(resultado);
+        com_erro++;
+        continue;
+      }
+
+      const qtyValidation = validarQuantidade(linha.quantidade);
+      if (!qtyValidation.valid) {
+        resultado.mensagem = qtyValidation.error || "Quantidade inválida.";
+        resultados.push(resultado);
+        com_erro++;
+        continue;
+      }
+      if (qtyValidation.value === null) {
+        resultado.mensagem = "Quantidade inválida.";
+        resultados.push(resultado);
+        com_erro++;
+        continue;
+      }
+      const qty: any = qtyValidation.value;
+
+      // Resolve prato
+      const pratoNorm = normalizeNameNFD(pratoNome);
+      const pratoIds = pratoNormMap.get(pratoNorm) || [];
+      if (pratoIds.length === 0) {
+        resultado.mensagem = "Prato não encontrado.";
+        resultados.push(resultado);
+        com_erro++;
+        continue;
+      }
+      if (pratoIds.length > 1) {
+        resultado.mensagem = "Nome de prato ambíguo.";
+        resultados.push(resultado);
+        com_erro++;
+        continue;
+      }
+      const pratoId = pratoIds[0];
+
+      // Resolve insumo
+      const insumoNorm = normalizeNameNFD(insumoNome);
+      const insumoIds = insumoNormMap.get(insumoNorm) || [];
+      if (insumoIds.length === 0) {
+        resultado.mensagem = "Insumo não encontrado.";
+        resultados.push(resultado);
+        com_erro++;
+        continue;
+      }
+      if (insumoIds.length > 1) {
+        resultado.mensagem = "Nome de insumo ambíguo.";
+        resultados.push(resultado);
+        com_erro++;
+        continue;
+      }
+      const insumoId = insumoIds[0];
+
+      const insumoObj = insumos.find(i => i.id === insumoId);
+      if (!insumoObj || insumoObj.ativo !== true) {
+        resultado.mensagem = "Insumo inativo.";
+        resultados.push(resultado);
+        com_erro++;
+        continue;
+      }
+
+      // Check unidade
+      const cadastradoUnit = insumoObj.unidade.toLowerCase();
+      if (unidadeStr !== cadastradoUnit) {
+        resultado.mensagem = `Unidade inválida. Cadastrada: ${insumoObj.unidade}`;
+        resultados.push(resultado);
+        com_erro++;
+        continue;
+      }
+
+      // Check for duplicates in file (first occurrence reserves)
+      const pair = `${pratoId}|${insumoId}`;
+      if (seenPairs.has(pair)) {
+        resultado.mensagem = "Repetida no arquivo";
+        resultados.push(resultado);
+        com_erro++;
+        continue;
+      }
+      seenPairs.add(pair);
+
+      // Check for DB duplicate
+      const existing = vinculoMap.get(pair);
+      if (existing === null) {
+        resultado.mensagem = "Prato e insumo duplicados no banco de dados.";
+        resultados.push(resultado);
+        com_erro++;
+        continue;
+      }
+
+      // Determine status
+      if (existing) {
+        const existingQty = parseFloat(existing.quantidadeUsada);
+        if (Math.abs(existingQty - Number(qty)) < 1e-10) {
+          resultado.status = "sem_alteracao";
+          resultado.quantidade_atual = existingQty;
+          sem_alteracao++;
+        } else {
+          resultado.status = "atualiza";
+          resultado.quantidade_atual = existingQty;
+          resultado.quantidade_solicitada = Number(qty);
+          resultado.vinculo_id = existing.id;
+          atualizam++;
+        }
+      } else {
+        resultado.status = "nova";
+        resultado.quantidade_solicitada = Number(qty);
+        novas++;
+      }
+
+      resultados.push(resultado);
+    }
+
+    return { resultados, resumo: { total: linhas.length, novas, atualizam, sem_alteracao, com_erro } };
   }
 
   // PUT /api/pratos/:pratoId/insumos/:id — atualizar quantidade do vínculo
@@ -393,6 +647,12 @@ export function registerEstoqueRoutes(app: App) {
       const { pratoId, id } = request.params;
       const body: any = request.body;
 
+      // Validate UUID format: 8-4-4-4-12 hex digits
+      const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+      if (!uuidRegex.test(id) || !uuidRegex.test(pratoId)) {
+        return await reply.code(404).send({ error: "Vínculo não encontrado" });
+      }
+
       if (!body || typeof body !== "object" || Array.isArray(body)) {
         return await reply.code(400).send({ error: "Body deve ser um objeto." });
       }
@@ -401,13 +661,17 @@ export function registerEstoqueRoutes(app: App) {
         return await reply.code(400).send({ error: "quantidade é obrigatória." });
       }
 
-      const qty = validarQuantidade(body.quantidade as string | number);
-      if (qty === null) {
+      const qtyValidation = validarQuantidade(body.quantidade);
+      if (!qtyValidation.valid) {
+        return await reply.code(400).send({ error: qtyValidation.error || "quantidade inválida." });
+      }
+      if (qtyValidation.value === null) {
         return await reply.code(400).send({ error: "quantidade inválida." });
       }
+      const qty = qtyValidation.value;
 
       // Atomic update with existence check
-      const updated = await db.update(schema.pratoInsumos).set({
+      const updated: any = await db.update(schema.pratoInsumos).set({
         quantidadeUsada: qty.toString(),
       }).where(
         and(
@@ -418,20 +682,24 @@ export function registerEstoqueRoutes(app: App) {
         )
       ).returning();
 
-      if (!Array.isArray(updated) || updated.length === 0) {
-        return await reply.code(404).send({ error: "Vínculo não encontrado" });
-      }
-
-      if (updated.length !== 1 || typeof updated[0] !== "object") {
-        app.logger.error({ rows: updated.length }, "Resultado inesperado ao atualizar vínculo");
+      if (!Array.isArray(updated)) {
+        app.logger.error({ resultType: typeof updated }, "UPDATE returned non-array");
         return await reply.code(500).send({ error: "Não foi possível processar a ficha técnica." });
       }
 
-      app.logger.info({ vínculo_id: id }, "Vínculo atualizado");
+      if (updated.length === 0) {
+        return await reply.code(404).send({ error: "Vínculo não encontrado" });
+      }
+
+      if (updated.length !== 1 || !updated[0] || typeof updated[0] !== "object" || Array.isArray(updated[0])) {
+        app.logger.error({ rows: updated.length }, "Unexpected UPDATE result structure");
+        return await reply.code(500).send({ error: "Não foi possível processar a ficha técnica." });
+      }
+
+      app.logger.info({ vinculo_id: id }, "Vínculo atualizado");
       return await reply.code(200).send(updated[0]);
     } catch (err: any) {
-      if (err.statusCode) return await reply.code(err.statusCode).send({ error: err.message });
-      app.logger.error({ err: err.message }, "Erro ao atualizar vínculo");
+      app.logger.error({}, "Erro ao atualizar vínculo");
       return await reply.code(500).send({ error: "Não foi possível processar a ficha técnica." });
     }
   });
@@ -642,7 +910,7 @@ export function registerEstoqueRoutes(app: App) {
         seenPairs.add(pair);
 
         // Check for DB duplicate
-        const existing = linkMap.get(pair);
+        const existing: any = linkMap.get(pair);
         if (existing === null) {
           resultado.mensagem = "Prato e insumo duplicados no banco de dados.";
           resultados.push(resultado);
@@ -653,19 +921,20 @@ export function registerEstoqueRoutes(app: App) {
         // Determine status
         if (existing) {
           const existingQty = parseFloat(existing.quantidadeUsada);
-          if (Math.abs(existingQty - qty) < 1e-6) {
+          if (Math.abs(existingQty - Number(qty)) < 1e-6) {
             resultado.status = "sem_alteracao";
             resultado.quantidade_atual = existingQty;
             sem_alteracao++;
           } else {
             resultado.status = "atualiza";
             resultado.quantidade_atual = existingQty;
-            resultado.quantidade_solicitada = qty;
+            resultado.quantidade_solicitada = Number(qty);
+            resultado.vinculo_id = existing.id;
             atualizam++;
           }
         } else {
           resultado.status = "nova";
-          resultado.quantidade_solicitada = qty;
+          resultado.quantidade_solicitada = Number(qty);
           novas++;
         }
 
@@ -807,8 +1076,7 @@ export function registerEstoqueRoutes(app: App) {
         ...(confirmar && { gravados }),
       });
     } catch (err: any) {
-      if (err.statusCode) return await reply.code(err.statusCode).send({ error: err.message });
-      app.logger.error({ err: err.message }, "Erro na importação de ficha técnica");
+      app.logger.error({}, "Erro na importação de ficha técnica");
       return await reply.code(500).send({ error: "Não foi possível processar a ficha técnica." });
     }
   });
