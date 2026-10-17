@@ -159,3 +159,79 @@ export async function garantirColunasDeModoComanda(app: App): Promise<number> {
 
   return criadas;
 }
+
+/**
+ * Desconto/cortesia (etapa 1a).
+ *
+ * Cria, só se faltarem, sete colunas nas tabelas `comandas` e `comandas_historico`:
+ *  - desconto_valor numeric(10,2) NOT NULL DEFAULT 0
+ *  - desconto_tipo text NULL
+ *  - desconto_motivo text NULL
+ *  - desconto_motivo_detalhe text NULL
+ *  - desconto_por_id text NULL
+ *  - desconto_por_nome text NULL
+ *  - desconto_em timestamp with time zone NULL
+ * Idempotente: confere o information_schema antes e usa IF NOT EXISTS, então convive com
+ * colunas já criadas à mão no banco e com uma eventual migração do Drizzle.
+ * Devolve quantas colunas foram criadas (0 quando o banco já estava em dia).
+ */
+const COLUNAS_DESCONTO: Array<[coluna: string, tipo: string]> = [
+  ["desconto_valor", "numeric(10,2) NOT NULL DEFAULT 0"],
+  ["desconto_tipo", "text"],
+  ["desconto_motivo", "text"],
+  ["desconto_motivo_detalhe", "text"],
+  ["desconto_por_id", "text"],
+  ["desconto_por_nome", "text"],
+  ["desconto_em", "timestamp with time zone"],
+];
+
+const TABELAS_DESCONTO = ["comandas", "comandas_historico"] as const;
+
+export async function garantirColunasContinuasDeDesconto(app: App): Promise<number> {
+  const db = app.db as any;
+  let criadas = 0;
+
+  try {
+    const nomes = COLUNAS_DESCONTO.map(([coluna]) => coluna);
+    let existentes: any[] = [];
+
+    try {
+      const result = await db.execute(
+        sql`SELECT table_name, column_name
+            FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name IN ('comandas', 'comandas_historico')
+              AND column_name IN (${sql.join(nomes.map((n) => sql`${n}`), sql`, `)})`
+      );
+      existentes = linhasDe(result);
+    } catch (queryErr) {
+      app.logger.warn({ err: queryErr }, "Failed to query information_schema for discount columns - proceeding anyway");
+      // Continue without checking existing columns - ALTER TABLE will use IF NOT EXISTS
+    }
+
+    const jaExiste = new Set(existentes.map((r: any) => `${r.table_name}.${r.column_name}`));
+
+    for (const tabela of TABELAS_DESCONTO) {
+      for (const [coluna, tipo] of COLUNAS_DESCONTO) {
+        if (jaExiste.has(`${tabela}.${coluna}`)) continue;
+        try {
+          await db.execute(sql.raw(`ALTER TABLE "${tabela}" ADD COLUMN IF NOT EXISTS "${coluna}" ${tipo}`));
+          criadas++;
+        } catch (err) {
+          // Não derruba o backend: o erro aparece no log e as demais colunas seguem
+          app.logger.error({ err, tabela, coluna }, "Failed to add missing discount column at startup");
+        }
+      }
+    }
+
+    if (criadas > 0) {
+      app.logger.warn({ criadas }, "Missing discount columns were created at startup");
+    } else {
+      app.logger.debug("Discount columns already present");
+    }
+  } catch (err) {
+    app.logger.error({ err }, "Failed to check discount columns at startup");
+  }
+
+  return criadas;
+}

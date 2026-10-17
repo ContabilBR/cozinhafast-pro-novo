@@ -28,7 +28,7 @@ import { registerSuperAdminRoutes } from './routes/superadmin.js';
 import { registerRenovacaoDeImagens } from './utils/imagem-assinada.js';
 import { seedDatabase } from './db/seed.js';
 import { enableSelectRetry } from './db/withRetry.js';
-import { garantirColunasDeCancelamento, garantirColunasDeModoComanda } from './db/ensure-schema.js';
+import { garantirColunasDeCancelamento, garantirColunasDeModoComanda, garantirColunasContinuasDeDesconto } from './db/ensure-schema.js';
 import { garantirRestauranteIdTexto } from './db/ensure-restaurante-id.js';
 
 // Combine schemas
@@ -76,6 +76,14 @@ try {
   await garantirColunasDeModoComanda(app);
 } catch (error) {
   app.logger.error({ err: error }, 'Failed to ensure modo_comanda columns');
+  // Don't exit - this is not critical
+}
+
+// Garante as colunas de desconto/cortesia (etapa 1a)
+try {
+  await garantirColunasContinuasDeDesconto(app);
+} catch (error) {
+  app.logger.error({ err: error }, 'Failed to ensure discount columns');
   // Don't exit - this is not critical
 }
 
