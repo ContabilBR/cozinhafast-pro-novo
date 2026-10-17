@@ -478,7 +478,7 @@ export function registerEstoqueRoutes(app: App) {
       const lineNumber = idx + 1;
       let resultado: any = { linha: lineNumber, status: "erro" };
 
-      // Validate required fields exist and are strings/number for quantidade
+      // Validate required fields exist
       if (linha.prato === undefined || linha.insumo === undefined || linha.unidade === undefined || linha.quantidade === undefined) {
         resultado.mensagem = "Prato, insumo, quantidade e unidade são obrigatórios.";
         resultados.push(resultado);
@@ -486,29 +486,30 @@ export function registerEstoqueRoutes(app: App) {
         continue;
       }
 
-      // Type checks before trim/normalize
-      if (typeof linha.prato !== "string" && linha.prato !== null) {
+      // Type checks: must be string (never null)
+      if (typeof linha.prato !== "string") {
         resultado.mensagem = "Nome do prato inválido.";
         resultados.push(resultado);
         com_erro++;
         continue;
       }
-      if (typeof linha.insumo !== "string" && linha.insumo !== null) {
+      if (typeof linha.insumo !== "string") {
         resultado.mensagem = "Nome do insumo inválido.";
         resultados.push(resultado);
         com_erro++;
         continue;
       }
-      if (typeof linha.unidade !== "string" && linha.unidade !== null) {
+      if (typeof linha.unidade !== "string") {
         resultado.mensagem = "Unidade inválida.";
         resultados.push(resultado);
         com_erro++;
         continue;
       }
 
-      const pratoNome = String(linha.prato).trim();
-      const insumoNome = String(linha.insumo).trim();
-      const unidadeStr = String(linha.unidade).trim().toLowerCase();
+      // Trim and normalize
+      const pratoNome = linha.prato.trim();
+      const insumoNome = linha.insumo.trim();
+      const unidadeStr = linha.unidade.trim().toLowerCase();
 
       if (pratoNome.length === 0 || pratoNome.length > 200) {
         resultado.mensagem = "Nome do prato inválido.";
@@ -522,21 +523,21 @@ export function registerEstoqueRoutes(app: App) {
         com_erro++;
         continue;
       }
+      if (unidadeStr.length === 0 || unidadeStr.length > 200) {
+        resultado.mensagem = "Unidade inválida.";
+        resultados.push(resultado);
+        com_erro++;
+        continue;
+      }
 
       const qtyValidation = validarQuantidade(linha.quantidade);
-      if (!qtyValidation.valid) {
+      if (!qtyValidation.valid || qtyValidation.value === null) {
         resultado.mensagem = qtyValidation.error || "Quantidade inválida.";
         resultados.push(resultado);
         com_erro++;
         continue;
       }
-      if (qtyValidation.value === null) {
-        resultado.mensagem = "Quantidade inválida.";
-        resultados.push(resultado);
-        com_erro++;
-        continue;
-      }
-      const qty: any = qtyValidation.value;
+      const qty = qtyValidation.value;
 
       // Resolve prato
       const pratoNorm = normalizeNameNFD(pratoNome);
@@ -611,20 +612,20 @@ export function registerEstoqueRoutes(app: App) {
       // Determine status
       if (existing) {
         const existingQty = parseFloat(existing.quantidadeUsada);
-        if (Math.abs(existingQty - Number(qty)) < 1e-10) {
+        if (Math.abs(existingQty - qty) < 1e-10) {
           resultado.status = "sem_alteracao";
           resultado.quantidade_atual = existingQty;
           sem_alteracao++;
         } else {
           resultado.status = "atualiza";
           resultado.quantidade_atual = existingQty;
-          resultado.quantidade_solicitada = Number(qty);
+          resultado.quantidade_solicitada = qty;
           resultado.vinculo_id = existing.id;
           atualizam++;
         }
       } else {
         resultado.status = "nova";
-        resultado.quantidade_solicitada = Number(qty);
+        resultado.quantidade_solicitada = qty;
         novas++;
       }
 
@@ -716,6 +717,8 @@ export function registerEstoqueRoutes(app: App) {
       const restauranteId = requireTenant(session);
       const body: any = request.body;
 
+      app.logger.info({ confirmar: body?.confirmar, ignorar_erros: body?.ignorar_erros }, "Iniciando importação de ficha técnica");
+
       // Validate body structure
       if (!body || typeof body !== "object" || Array.isArray(body)) {
         return await reply.code(400).send({ error: "Body deve ser um objeto." });
@@ -746,337 +749,106 @@ export function registerEstoqueRoutes(app: App) {
         }
       }
 
-      // Phase 1: Validate all rows
-      const pratos: any = await db.select({ id: schema.pratos.id, nome: schema.pratos.nome })
-        .from(schema.pratos)
-        .where(eq(schema.pratos.restauranteId, restauranteId));
+      // Load data from database
+      const dados = await carregarDados(db, restauranteId);
 
-      const insumos: any = await db.select({ id: schema.insumos.id, nome: schema.insumos.nome, unidade: schema.insumos.unidade, ativo: schema.insumos.ativo })
-        .from(schema.insumos)
-        .where(eq(schema.insumos.restauranteId, restauranteId));
+      // Phase 1: Validate and classify all rows
+      const validacao = validarEClassificar(linhas, dados.pratos, dados.insumos, dados.vinculos, restauranteId);
 
-      if (!Array.isArray(pratos) || !pratos.every(p => p && typeof p === "object")) {
-        app.logger.error({ rows: pratos.length }, "Resultado inválido ao carregar pratos");
-        return await reply.code(500).send({ error: "Não foi possível processar a ficha técnica." });
-      }
-      if (!Array.isArray(insumos) || !insumos.every(i => i && typeof i === "object")) {
-        app.logger.error({ rows: insumos.length }, "Resultado inválido ao carregar insumos");
-        return await reply.code(500).send({ error: "Não foi possível processar a ficha técnica." });
+      if (!confirmar) {
+        app.logger.info({ total: linhas.length, com_erro: validacao.resumo.com_erro }, "Pré-visualização concluída");
+        return await reply.code(200).send({
+          resumo: validacao.resumo,
+          resultados: validacao.resultados
+        });
       }
 
-      // Build normalized maps (allowing collisions)
-      const pratoNormMap = new Map<string, string[]>();
-      pratos.forEach(p => {
-        const norm = normalizeNameNFD(p.nome);
-        if (!pratoNormMap.has(norm)) pratoNormMap.set(norm, []);
-        pratoNormMap.get(norm)!.push(p.id);
-      });
-
-      const insumoNormMap = new Map<string, string[]>();
-      insumos.forEach(i => {
-        const norm = normalizeNameNFD(i.nome);
-        if (!insumoNormMap.has(norm)) insumoNormMap.set(norm, []);
-        insumoNormMap.get(norm)!.push(i.id);
-      });
-
-      // Get existing links
-      const existingLinks: any = await db.select({
-        pratoId: schema.pratoInsumos.pratoId,
-        insumoId: schema.pratoInsumos.insumoId,
-        quantidadeUsada: schema.pratoInsumos.quantidadeUsada,
-      })
-        .from(schema.pratoInsumos)
-        .where(eq(schema.pratoInsumos.restauranteId, restauranteId));
-
-      if (!Array.isArray(existingLinks) || !existingLinks.every(l => l && typeof l === "object")) {
-        app.logger.error({ rows: existingLinks.length }, "Resultado inválido ao carregar vínculos");
-        return await reply.code(500).send({ error: "Não foi possível processar a ficha técnica." });
-      }
-
-      const linkKey = (pratoId: string, insumoId: string) => `${pratoId}|${insumoId}`;
-      const linkMap = new Map<string, any>();
-      for (const link of existingLinks) {
-        const key = linkKey(link.pratoId, link.insumoId);
-        if (linkMap.has(key)) {
-          // Duplicate in DB - error on any line trying to use it
-          linkMap.set(key, null);
-        } else {
-          linkMap.set(key, link);
-        }
-      }
-
-      const resultados: any[] = [];
-      const seenPairs = new Set<string>();
-      let novas = 0, atualizam = 0, sem_alteracao = 0, com_erro = 0;
-
-      // Validate each row
-      for (let idx = 0; idx < (linhas as any[]).length; idx++) {
-        const linha = (linhas as any[])[idx];
-        const lineNumber = idx + 1;
-        let resultado: any = { linha: lineNumber, status: "erro" };
-
-        // Check structure
-        if (!linha.prato || !linha.insumo || linha.quantidade === undefined || !linha.unidade) {
-          resultado.mensagem = "Prato, insumo, quantidade e unidade são obrigatórios.";
-          resultados.push(resultado);
-          com_erro++;
-          continue;
-        }
-
-        const pratoNome = String((linha as any).prato).trim();
-        const insumoNome = String((linha as any).insumo).trim();
-        const unidadeStr = String((linha as any).unidade).trim().toLowerCase();
-
-        if (pratoNome.length === 0 || pratoNome.length > 200) {
-          resultado.mensagem = "Nome do prato inválido.";
-          resultados.push(resultado);
-          com_erro++;
-          continue;
-        }
-        if (insumoNome.length === 0 || insumoNome.length > 200) {
-          resultado.mensagem = "Nome do insumo inválido.";
-          resultados.push(resultado);
-          com_erro++;
-          continue;
-        }
-
-        const qty = validarQuantidade((linha as any).quantidade as string | number);
-        if (qty === null) {
-          resultado.mensagem = "Quantidade inválida.";
-          resultados.push(resultado);
-          com_erro++;
-          continue;
-        }
-
-        // Resolve prato
-        const pratoNorm = normalizeNameNFD(pratoNome);
-        const pratoIds = pratoNormMap.get(pratoNorm) || [];
-        if (pratoIds.length === 0) {
-          resultado.mensagem = "Prato não encontrado.";
-          resultados.push(resultado);
-          com_erro++;
-          continue;
-        }
-        if (pratoIds.length > 1) {
-          resultado.mensagem = "Nome de prato ambíguo.";
-          resultados.push(resultado);
-          com_erro++;
-          continue;
-        }
-        const pratoId = pratoIds[0];
-
-        // Resolve insumo
-        const insumoNorm = normalizeNameNFD(insumoNome);
-        const insumoIds = insumoNormMap.get(insumoNorm) || [];
-        if (insumoIds.length === 0) {
-          resultado.mensagem = "Insumo não encontrado.";
-          resultados.push(resultado);
-          com_erro++;
-          continue;
-        }
-        if (insumoIds.length > 1) {
-          resultado.mensagem = "Nome de insumo ambíguo.";
-          resultados.push(resultado);
-          com_erro++;
-          continue;
-        }
-        const insumoId = insumoIds[0];
-
-        const insumoObj = insumos.find(i => i.id === insumoId);
-        if (!insumoObj || insumoObj.ativo !== true) {
-          resultado.mensagem = "Insumo inativo.";
-          resultados.push(resultado);
-          com_erro++;
-          continue;
-        }
-
-        // Check unidade
-        const cadastradoUnit = insumoObj.unidade.toLowerCase();
-        if (unidadeStr !== cadastradoUnit) {
-          resultado.mensagem = `Unidade inválida. Cadastrada: ${insumoObj.unidade}`;
-          resultados.push(resultado);
-          com_erro++;
-          continue;
-        }
-
-        // Check for duplicates in file
-        const pair = linkKey(pratoId, insumoId);
-        if (seenPairs.has(pair)) {
-          resultado.mensagem = "Repetida no arquivo";
-          resultados.push(resultado);
-          com_erro++;
-          continue;
-        }
-        seenPairs.add(pair);
-
-        // Check for DB duplicate
-        const existing: any = linkMap.get(pair);
-        if (existing === null) {
-          resultado.mensagem = "Prato e insumo duplicados no banco de dados.";
-          resultados.push(resultado);
-          com_erro++;
-          continue;
-        }
-
-        // Determine status
-        if (existing) {
-          const existingQty = parseFloat(existing.quantidadeUsada);
-          if (Math.abs(existingQty - Number(qty)) < 1e-6) {
-            resultado.status = "sem_alteracao";
-            resultado.quantidade_atual = existingQty;
-            sem_alteracao++;
-          } else {
-            resultado.status = "atualiza";
-            resultado.quantidade_atual = existingQty;
-            resultado.quantidade_solicitada = Number(qty);
-            resultado.vinculo_id = existing.id;
-            atualizam++;
-          }
-        } else {
-          resultado.status = "nova";
-          resultado.quantidade_solicitada = Number(qty);
-          novas++;
-        }
-
-        resultados.push(resultado);
-      }
-
-      // Phase 2: Commit if confirmar and no errors (or ignorar_erros)
-      const hasErrors = com_erro > 0;
-      if (confirmar && hasErrors && !ignorar_erros) {
-        app.logger.info({ total: linhas.length, com_erro }, "Importação abortada: há erros");
+      // Phase 2: Confirmation with transaction
+      if (validacao.resumo.com_erro > 0 && !ignorar_erros) {
+        app.logger.info({ total: linhas.length, com_erro: validacao.resumo.com_erro }, "Importação abortada: há erros");
         return await reply.code(409).send({
-          resumo: { total: linhas.length, novas, atualizam, sem_alteracao, com_erro },
-          resultados,
-          mensagem: "Há linhas com erro. Corrija ou escolha ignorar as linhas com erro.",
+          conflito: true,
+          resumo: validacao.resumo,
+          resultados: validacao.resultados,
+          mensagem: "Há linhas com erro. Corrija ou escolha ignorar as linhas com erro."
         });
       }
 
-      let gravados = { criados: 0, atualizados: 0 };
+      let criados = 0, atualizados = 0;
 
-      if (confirmar) {
-        const result = await (db as any).transaction(async (tx: any) => {
-          // Re-lock and recheck within transaction
-          await tx.execute(sql`LOCK TABLE ${schema.pratoInsumos} IN SHARE ROW EXCLUSIVE MODE`);
+      await (db as any).transaction(async (tx: any) => {
+        // Advisory lock (transactional)
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${restauranteId})::bigint)`);
 
-          const recheckLinks: any = await tx.select({
-            pratoId: schema.pratoInsumos.pratoId,
-            insumoId: schema.pratoInsumos.insumoId,
-            quantidadeUsada: schema.pratoInsumos.quantidadeUsada,
-          })
-            .from(schema.pratoInsumos)
-            .where(eq(schema.pratoInsumos.restauranteId, restauranteId));
+        // Reload data within transaction for confirmation
+        const dadosTx = await carregarDados(tx, restauranteId);
 
-          if (!Array.isArray(recheckLinks)) throw new Error("Invalid recheck result");
+        // Revalidate with fresh data
+        const validacaoTx = validarEClassificar(linhas, dadosTx.pratos, dadosTx.insumos, dadosTx.vinculos, restauranteId);
 
-          const recheckMap = new Map<string, any>();
-          for (const link of recheckLinks as any[]) {
-            const key = linkKey((link as any).pratoId, (link as any).insumoId);
-            if (recheckMap.has(key)) {
-              recheckMap.set(key, null);
-            } else {
-              recheckMap.set(key, link);
+        // If errors and !ignorar_erros, abort transaction (writes nothing)
+        if (validacaoTx.resumo.com_erro > 0 && !ignorar_erros) {
+          throw new Error("ABORT_ON_ERRORS");
+        }
+
+        // Process valid operations only
+        for (const res of validacaoTx.resultados) {
+          if (res.status === "nova") {
+            const linha = linhas[res.linha - 1];
+            const pratoNorm = normalizeNameNFD(String(linha.prato).trim());
+            const insumoNorm = normalizeNameNFD(String(linha.insumo).trim());
+
+            const pratoId = dadosTx.pratos.find(p => normalizeNameNFD(p.nome) === pratoNorm)?.id;
+            const insumoId = dadosTx.insumos.find(i => normalizeNameNFD(i.nome) === insumoNorm)?.id;
+
+            if (!pratoId || !insumoId) continue;
+
+            const qtyValidation = validarQuantidade(linha.quantidade);
+            if (!qtyValidation.valid || qtyValidation.value === null) continue;
+
+            const qtyStr = qtyValidation.value.toFixed(3);
+            const [inserted] = await tx.insert(schema.pratoInsumos).values({
+              pratoId,
+              insumoId,
+              quantidadeUsada: qtyStr,
+              restauranteId,
+            }).returning();
+
+            if (!inserted || typeof inserted !== "object" || Array.isArray(inserted)) {
+              throw new Error("INSERT_UNEXPECTED");
             }
+            criados++;
+          } else if (res.status === "atualiza") {
+            const linha = linhas[res.linha - 1];
+            const qtyValidation = validarQuantidade(linha.quantidade);
+            if (!qtyValidation.valid || qtyValidation.value === null) continue;
+
+            const qtyStr = qtyValidation.value.toFixed(3);
+            const [updated] = await tx.update(schema.pratoInsumos).set({
+              quantidadeUsada: qtyStr,
+            }).where(
+              and(
+                eq(schema.pratoInsumos.id, res.vinculo_id),
+                eq(schema.pratoInsumos.restauranteId, restauranteId)
+              )
+            ).returning();
+
+            if (!updated || typeof updated !== "object" || Array.isArray(updated)) {
+              throw new Error("UPDATE_UNEXPECTED");
+            }
+            atualizados++;
           }
+        }
+      });
 
-          // Re-validate insumo ativo status
-          const recheckInsumos: any = await tx.select({ id: schema.insumos.id, ativo: schema.insumos.ativo })
-            .from(schema.insumos)
-            .where(eq(schema.insumos.restauranteId, restauranteId));
-
-          if (!Array.isArray(recheckInsumos)) throw new Error("Invalid insumo recheck");
-
-          const insumoAtivoMap = new Map((recheckInsumos as any[]).map((i: any) => [i.id, i.ativo]));
-
-          // Process each row
-          for (let idx = 0; idx < resultados.length; idx++) {
-            const res = resultados[idx];
-            if (res.status !== "nova" && res.status !== "atualiza") continue;
-
-            const linha = (linhas as any[])[res.linha - 1];
-            const pratoNorm = normalizeNameNFD(String((linha as any).prato).trim());
-            const insumoNorm = normalizeNameNFD(String((linha as any).insumo).trim());
-
-            const pratoId = pratoNormMap.get(pratoNorm)?.[0];
-            const insumoId = insumoNormMap.get(insumoNorm)?.[0];
-
-            if (!pratoId || !insumoId) {
-              res.status = "erro";
-              res.mensagem = "Prato ou insumo não encontrado no recheck.";
-              continue;
-            }
-
-            if (insumoAtivoMap.get(insumoId) !== true) {
-              res.status = "erro";
-              res.mensagem = "Insumo inativo no recheck.";
-              continue;
-            }
-
-            const pair = linkKey(pratoId, insumoId);
-            const recheckExisting = recheckMap.get(pair);
-
-            if (recheckExisting === null) {
-              res.status = "erro";
-              res.mensagem = "Prato e insumo duplicados no recheck.";
-              continue;
-            }
-
-            const qty = validarQuantidade((linha as any).quantidade as string | number);
-            if (qty === null) {
-              res.status = "erro";
-              res.mensagem = "Quantidade inválida no recheck.";
-              continue;
-            }
-
-            if (res.status === "nova" && !recheckExisting) {
-              const inserted = await tx.insert(schema.pratoInsumos).values({
-                pratoId,
-                insumoId,
-                quantidadeUsada: qty.toString(),
-                restauranteId,
-              }).returning();
-
-              if (!Array.isArray(inserted) || inserted.length !== 1) {
-                throw new Error("Insert failed");
-              }
-              gravados.criados++;
-            } else if (res.status === "atualiza" && recheckExisting) {
-              const updated = await tx.update(schema.pratoInsumos).set({
-                quantidadeUsada: qty.toString(),
-              }).where(
-                and(
-                  eq(schema.pratoInsumos.pratoId, pratoId),
-                  eq(schema.pratoInsumos.insumoId, insumoId),
-                  eq(schema.pratoInsumos.restauranteId, restauranteId)
-                )
-              ).returning();
-
-              if (!Array.isArray(updated) || updated.length !== 1) {
-                throw new Error("Update failed");
-              }
-              gravados.atualizados++;
-            }
-          }
-        });
-      }
-
-      app.logger.info({
-        total: (linhas as any[]).length,
-        novas,
-        atualizam,
-        sem_alteracao,
-        com_erro,
-        gravados_criados: gravados.criados,
-        gravados_atualizados: gravados.atualizados,
-      }, "Importação concluída");
+      app.logger.info({ criados, atualizados, total: linhas.length }, "Importação concluída com sucesso");
 
       return await reply.code(200).send({
-        resumo: { total: (linhas as any[]).length, novas, atualizam, sem_alteracao, com_erro },
-        resultados,
-        ...(confirmar && { gravados }),
+        resumo: validacao.resumo,
+        resultados: validacao.resultados
       });
     } catch (err: any) {
-      app.logger.error({}, "Erro na importação de ficha técnica");
+      app.logger.error({}, "Erro ao processar ficha técnica");
       return await reply.code(500).send({ error: "Não foi possível processar a ficha técnica." });
     }
   });
