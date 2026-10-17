@@ -14,7 +14,7 @@ export type ReportPeriod = 'hoje' | '7dias' | 'mes';
 const PERIODS: { key: ReportPeriod; label: string }[] = [
   { key: 'hoje', label: 'Hoje' }, { key: '7dias', label: '7 dias' }, { key: 'mes', label: 'Este mês' },
 ];
-export function useDetailedReport<T>(endpoint: string, validate: (value: T) => boolean) {
+export function useDetailedReport<T>(endpoint: string, validate: (value: T) => boolean, query?: string) {
   const { user, isLoading: authLoading } = useAuth();
   const params = useLocalSearchParams<{ periodo?: string | string[] }>();
   const initial = Array.isArray(params.periodo) ? params.periodo[0] : params.periodo;
@@ -33,7 +33,7 @@ export function useDetailedReport<T>(endpoint: string, validate: (value: T) => b
     setLoading(!refresh); setRefreshing(refresh); setError(''); setForbidden(false);
     if (!refresh) setData(null);
     try {
-      const result = await apiGet<T>(`${endpoint}?periodo=${periodo}`);
+      const result = await apiGet<T>(`${endpoint}?${query ?? `periodo=${periodo}`}`);
       if (request !== sequence.current) return;
       if (!validate(result)) throw new Error('O relatório recebido está incompleto. Tente novamente.');
       setData(result);
@@ -46,7 +46,7 @@ export function useDetailedReport<T>(endpoint: string, validate: (value: T) => b
     } finally {
       if (request === sequence.current) { setLoading(false); setRefreshing(false); }
     }
-  }, [allowed, authLoading, endpoint, periodo, validate]);
+  }, [allowed, authLoading, endpoint, periodo, query, validate]);
   useEffect(() => {
     void load();
     return () => { sequence.current += 1; };
@@ -61,7 +61,7 @@ export function useDetailedReport<T>(endpoint: string, validate: (value: T) => b
 }
 
 type FrameState = Omit<ReturnType<typeof useDetailedReport>, 'data' | 'periodLabel'>;
-export function DetailedReportFrame({ title, state, children }: { title: string; state: FrameState; children: React.ReactNode }) {
+export function DetailedReportFrame({ title, state, children, controls }: { title: string; state: FrameState; children: React.ReactNode; controls?: React.ReactNode }) {
   const colors = useColors();
   const router = useRouter();
   return <View style={{ flex: 1, backgroundColor: colors.background }}>
@@ -80,12 +80,12 @@ export function DetailedReportFrame({ title, state, children }: { title: string;
       <ScrollView contentContainerStyle={reportStyles.content} alwaysBounceVertical
         refreshControl={state.allowed && !state.restricted ? <RefreshControl refreshing={state.refreshing}
           onRefresh={() => void state.load(true)} tintColor={colors.primary} colors={[colors.primary]} /> : undefined}>
-        {!state.restricted && <View style={{ flexDirection: 'row', gap: 8 }}>{PERIODS.map(p => <AnimatedPressable key={p.key}
+        {!state.restricted && (controls ?? <View style={{ flexDirection: 'row', gap: 8 }}>{PERIODS.map(p => <AnimatedPressable key={p.key}
           accessibilityRole="button" accessibilityLabel={`Período: ${p.label}`} accessibilityState={{ selected: state.periodo === p.key }}
           onPress={() => state.changePeriod(p.key)}
           style={[reportStyles.chip, { backgroundColor: state.periodo === p.key ? colors.primary : colors.surface, borderColor: state.periodo === p.key ? colors.primary : colors.border }]}>
           <Text style={{ fontFamily: 'Outfit_600SemiBold', fontSize: 13, color: state.periodo === p.key ? '#fff' : colors.text }}>{p.label}</Text>
-        </AnimatedPressable>)}</View>}
+        </AnimatedPressable>)}</View>)}
         {state.restricted ? <ReportCard><View accessibilityRole="alert" style={reportStyles.state}>
           <Ionicons name="lock-closed-outline" size={32} color={colors.textSecondary} />
           <ReportTitle>Acesso restrito</ReportTitle><ReportNote center>Este relatório está disponível apenas para gerente e administrador.</ReportNote>
