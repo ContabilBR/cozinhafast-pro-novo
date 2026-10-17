@@ -3904,7 +3904,7 @@ LIMIT 5
           )
         `;
 
-        // Query 1: Sales totals with taxa
+        // Query 1: Sales totals with taxa and channel breakdown
         const vendidosResult = await (app.db as any).execute(
           sql`
             ${baseComandas}
@@ -3913,7 +3913,11 @@ LIMIT 5
               COALESCE(SUM(v.subtotal), 0)::double precision AS faturamento_itens,
               COALESCE(SUM(v.gorjeta), 0)::double precision AS gorjeta,
               COALESCE(SUM(epc.taxa_entrega), 0)::double precision AS taxa_entrega,
-              COALESCE(SUM(v.total), 0)::double precision AS total_recebido
+              COALESCE(SUM(v.total), 0)::double precision AS total_recebido,
+              COUNT(*) FILTER (WHERE COALESCE(v.tipo,'mesa') = 'mesa')::integer AS mesa_comandas,
+              COALESCE(SUM(v.total) FILTER (WHERE COALESCE(v.tipo,'mesa') = 'mesa'),0)::double precision AS mesa_total,
+              COUNT(*) FILTER (WHERE COALESCE(v.tipo,'mesa') = 'delivery')::integer AS delivery_comandas,
+              COALESCE(SUM(v.total) FILTER (WHERE COALESCE(v.tipo,'mesa') = 'delivery'),0)::double precision AS delivery_total
             FROM vendidas v
             LEFT JOIN entregas_por_comanda epc ON epc.comanda_id = v.id AND epc.restaurante_id = v.restaurante_id AND epc.restaurante_id = ${tenantId}
           `
@@ -3926,24 +3930,6 @@ LIMIT 5
         if (vendidosResult.length === 0) {
           app.logger.error({ tenantId }, "Query 1 (sales totals) returned empty array");
           return await reply.code(500).send({ error: "Falha na consulta de vendas: resultado vazio." });
-        }
-
-        // Query 2: Sales by channel (mesa/delivery)
-        const porCanalResult = await (app.db as any).execute(
-          sql`
-            ${baseComandas}
-            SELECT
-              COALESCE(v.tipo, 'mesa') AS canal,
-              COUNT(*)::integer AS comandas_fechadas,
-              COALESCE(SUM(v.total), 0)::double precision AS total_recebido
-            FROM vendidas v
-            GROUP BY COALESCE(v.tipo, 'mesa')
-          `
-        ) as any[];
-
-        if (!Array.isArray(porCanalResult)) {
-          app.logger.error({ tenantId, resultType: typeof porCanalResult }, "Query 2 (sales by channel) result is not an array");
-          return await reply.code(500).send({ error: "Falha na consulta de vendas por canal: resultado inválido." });
         }
 
         // Query 3: Confirmed payments
@@ -4066,18 +4052,16 @@ LIMIT 5
         const totalComandasFechadas = parseInt(String(vendidosRow.comandas_fechadas || 0)) || 0;
         const totalRecebido = parseFloat(String(vendidosRow.total_recebido || 0));
 
-        // Process channel data
+        // Process channel data from Query 1 columns
         const porCanalMap = new Map<string, { comandas: number; total: number }>();
-        porCanalMap.set("mesa", { comandas: 0, total: 0 });
-        porCanalMap.set("delivery", { comandas: 0, total: 0 });
-
-        for (const row of porCanalResult) {
-          const canal = row.canal || "mesa";
-          porCanalMap.set(canal, {
-            comandas: parseInt(String(row.comandas_fechadas || 0)) || 0,
-            total: parseFloat(String(row.total_recebido || 0)),
-          });
-        }
+        porCanalMap.set("mesa", {
+          comandas: parseInt(String(vendidosRow.mesa_comandas || 0)) || 0,
+          total: parseFloat(String(vendidosRow.mesa_total || 0)),
+        });
+        porCanalMap.set("delivery", {
+          comandas: parseInt(String(vendidosRow.delivery_comandas || 0)) || 0,
+          total: parseFloat(String(vendidosRow.delivery_total || 0)),
+        });
 
         // Process payments data
         const formasMap = new Map<string, { quantidade: number; valor_entregue: number; troco: number }>();
