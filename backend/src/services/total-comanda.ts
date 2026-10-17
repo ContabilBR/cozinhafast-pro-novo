@@ -62,3 +62,26 @@ export function calcularTotalComandaMesa(
 
   return { total, descontoEfetivo };
 }
+
+/**
+ * Calculate total bill with discount type and tip for table bills.
+ * Central decision point for discount type: cortesia (100% of subtotal) or fixed value.
+ * Delegates to calcularTotalComandaMesa for the actual calculation.
+ */
+export function calcularTotalComandaMesaComDesconto(
+  subtotal: number,
+  gorjeta: number,
+  descontoTipo: string | null | undefined,
+  descontoValor: string | number | null | undefined
+): { total: number; descontoEfetivo: number } {
+  let descontoParaCalculo = 0;
+  if (descontoTipo === "cortesia") {
+    descontoParaCalculo = subtotal;
+  } else {
+    descontoParaCalculo = Number(descontoValor);
+    if (!Number.isFinite(descontoParaCalculo)) {
+      descontoParaCalculo = 0;
+    }
+  }
+  return calcularTotalComandaMesa(subtotal, gorjeta, descontoParaCalculo);
+}

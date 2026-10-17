@@ -3,7 +3,7 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import type { App } from "../index.js";
 import * as schema from "../db/schema/schema.js";
 import { checkRateLimit } from "../utils/rate-limit.js";
-import { calcularTotalComandaMesa } from "../services/total-comanda.js";
+import { calcularTotalComandaMesa, calcularTotalComandaMesaComDesconto } from "../services/total-comanda.js";
 
 // Id do restaurante: CNPJ (14 dígitos) ou uuid (restaurantes antigos)
 const UUID_RE = /^(?:\d{14}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
@@ -260,22 +260,22 @@ init()
 
           const gorjeta = parseFloat(String(comandaResult[0]?.gorjeta || "0"));
           let newTotal: string;
+          let descontoEfetivo: number | undefined;
 
           if (comandaResult[0]?.tipo === "delivery") {
             newTotal = subtotal.toFixed(2);
           } else {
-            let desconto = 0;
-            if (comandaResult[0]?.descontoTipo === "cortesia") {
-              desconto = subtotal;
-            } else if (comandaResult[0]?.descontoValor) {
-              desconto = parseFloat(String(comandaResult[0]?.descontoValor || "0"));
-            }
-            const result = calcularTotalComandaMesa(subtotal, gorjeta, desconto);
+            const result = calcularTotalComandaMesaComDesconto(subtotal, gorjeta, comandaResult[0]?.descontoTipo, comandaResult[0]?.descontoValor);
             newTotal = result.total.toFixed(2);
+            descontoEfetivo = result.descontoEfetivo;
           }
 
           // Update comanda with calculated subtotal and total
-          await tx.update(schema.comandas).set({ subtotal: subtotal.toString(), total: newTotal }).where(eq(schema.comandas.id, comanda.id));
+          await tx.update(schema.comandas).set({
+            subtotal: subtotal.toString(),
+            total: newTotal,
+            ...(descontoEfetivo !== undefined && { descontoValor: descontoEfetivo.toFixed(2) })
+          }).where(eq(schema.comandas.id, comanda.id));
 
           return { comanda_id: comanda.id, mesa: mesa_numero, itens_adicionados: itensPedido.length };
         });

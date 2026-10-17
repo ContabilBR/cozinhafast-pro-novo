@@ -9,7 +9,7 @@ import { realtimeHub } from "../realtime/hub.js";
 import { fecharComanda } from "../services/fechamento-comanda.js";
 import { liberarMesaSeVazia } from "../services/liberar-mesa.js";
 import { abrirComandaNaMesa, TAMANHO_MAXIMO_NOME_COMANDA } from "../services/abrir-comanda.js";
-import { calcularTotalComandaMesa } from "../services/total-comanda.js";
+import { calcularTotalComandaMesa, calcularTotalComandaMesaComDesconto } from "../services/total-comanda.js";
 
 interface CreateComandaBody {
   mesaId?: string;
@@ -720,20 +720,17 @@ export function registerOrderRoutes(app: App) {
           .where(eq(schema.comandas.id, comandaId));
 
         const gorjeta = parseFloat(String(comandaResult[0]?.gorjeta || "0"));
-        let desconto = 0;
-        if (comandaResult[0]?.descontoTipo === "cortesia") {
-          desconto = subtotal;
-        } else if (comandaResult[0]?.descontoValor) {
-          desconto = parseFloat(String(comandaResult[0]?.descontoValor || "0"));
-        }
-
-        const { total: totalValue } = calcularTotalComandaMesa(subtotal, gorjeta, desconto);
+        const { total: totalValue, descontoEfetivo } = calcularTotalComandaMesaComDesconto(subtotal, gorjeta, comandaResult[0]?.descontoTipo, comandaResult[0]?.descontoValor);
         const total = totalValue.toFixed(2);
 
         // Update comanda subtotal and total
         await app.db
           .update(schema.comandas)
-          .set({ subtotal: subtotal.toString(), total })
+          .set({
+            subtotal: subtotal.toString(),
+            total,
+            ...(descontoEfetivo !== undefined && { descontoValor: descontoEfetivo.toFixed(2) })
+          })
           .where(and(eq(schema.comandas.id, comandaId), eq(schema.comandas.restauranteId, restauranteId)));
 
         app.logger.info(
@@ -806,16 +803,13 @@ export function registerOrderRoutes(app: App) {
         }
 
         const subtotal = parseFloat(comanda[0].subtotal ?? "0");
-        let desconto = 0;
-        if (comanda[0].descontoTipo === "cortesia") {
-          desconto = subtotal;
-        } else if (comanda[0].descontoValor) {
-          desconto = parseFloat(String(comanda[0].descontoValor || "0"));
-        }
-
-        const { total: novoTotal } = calcularTotalComandaMesa(subtotal, gorjetaValue, desconto);
-        await app.db.update(schema.comandas).set({ total: novoTotal.toString(), gorjeta: gorjetaValue.toString() }).where(and(eq(schema.comandas.id, request.params.id), eq(schema.comandas.restauranteId, restauranteId)));
-        return await reply.code(200).send({ subtotal, gorjeta: gorjetaValue, desconto_valor: desconto, total: novoTotal });
+        const { total: novoTotal, descontoEfetivo } = calcularTotalComandaMesaComDesconto(subtotal, gorjetaValue, comanda[0].descontoTipo, comanda[0].descontoValor);
+        await app.db.update(schema.comandas).set({
+          total: novoTotal.toString(),
+          gorjeta: gorjetaValue.toString(),
+          ...(descontoEfetivo !== undefined && { descontoValor: descontoEfetivo.toFixed(2) })
+        }).where(and(eq(schema.comandas.id, request.params.id), eq(schema.comandas.restauranteId, restauranteId)));
+        return await reply.code(200).send({ subtotal, gorjeta: gorjetaValue, desconto_valor: descontoEfetivo, total: novoTotal });
       } catch (err) {
         return await reply.code(500).send({ error: "Erro interno" });
       }

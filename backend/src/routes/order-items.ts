@@ -7,7 +7,7 @@ import { realtimeHub } from "../realtime/hub.js";
 import { cancelarPedido, MOTIVOS_CANCELAMENTO, ROLES_ATENDIMENTO } from "../services/cancelamento-pedido.js";
 import { liberarMesaSeVazia } from "../services/liberar-mesa.js";
 import { lancarItens } from "../services/lancamento-pedidos.js";
-import { subtotalDaComanda, totalDelivery, calcularTotalComandaMesa } from "../services/total-comanda.js";
+import { subtotalDaComanda, totalDelivery, calcularTotalComandaMesa, calcularTotalComandaMesaComDesconto } from "../services/total-comanda.js";
 import { avaliarTransicao, validarEdicao } from "../services/transicao-pedidos.js";
 
 // Recalcula e grava o subtotal e o total da comanda depois de mexer num item (item cancelado fica
@@ -24,19 +24,17 @@ async function regravarTotaisDaComanda(
     total = await totalDelivery(executor, comanda.id);
   } else {
     const gorjeta = parseFloat(String(comanda.gorjeta || "0"));
-    let desconto = 0;
-    if (comanda.descontoTipo === "cortesia") {
-      desconto = subtotal;
-    } else if (comanda.descontoValor) {
-      desconto = parseFloat(String(comanda.descontoValor || "0"));
-    }
-    const result = calcularTotalComandaMesa(subtotal, gorjeta, desconto);
+    const result = calcularTotalComandaMesaComDesconto(subtotal, gorjeta, comanda.descontoTipo, comanda.descontoValor);
     total = result.total;
     descontoEfetivo = result.descontoEfetivo;
   }
   await executor
     .update(schema.comandas)
-    .set({ subtotal: subtotal.toString(), total: total.toFixed(2) })
+    .set({
+      subtotal: subtotal.toString(),
+      total: total.toFixed(2),
+      ...(descontoEfetivo !== undefined && { descontoValor: descontoEfetivo.toFixed(2) })
+    })
     .where(eq(schema.comandas.id, comanda.id));
 
   if (comanda.tipo === "delivery") {
@@ -1138,22 +1136,20 @@ export function registerOrderItemRoutes(app: App) {
         let descontoEfetivo: number | undefined;
 
         if (comandaResult[0]?.tipo === "delivery") {
-          newTotal = (subtotal + 0).toFixed(2);
+          newTotal = subtotal.toFixed(2);
         } else {
-          let desconto = 0;
-          if (comandaResult[0]?.descontoTipo === "cortesia") {
-            desconto = subtotal;
-          } else if (comandaResult[0]?.descontoValor) {
-            desconto = parseFloat(String(comandaResult[0]?.descontoValor || "0"));
-          }
-          const result = calcularTotalComandaMesa(subtotal, gorjeta, desconto);
+          const result = calcularTotalComandaMesaComDesconto(subtotal, gorjeta, comandaResult[0]?.descontoTipo, comandaResult[0]?.descontoValor);
           newTotal = result.total.toFixed(2);
           descontoEfetivo = result.descontoEfetivo;
         }
 
         await app.db
           .update(schema.comandas)
-          .set({ subtotal: subtotal.toString(), total: newTotal })
+          .set({
+            subtotal: subtotal.toString(),
+            total: newTotal,
+            ...(descontoEfetivo !== undefined && { descontoValor: descontoEfetivo.toFixed(2) })
+          })
           .where(eq(schema.comandas.id, pedido.comandaId));
 
         const remainingPedidos = await app.db

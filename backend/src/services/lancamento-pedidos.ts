@@ -22,7 +22,7 @@ import * as schema from "../db/schema/schema.js";
 import type { App } from "../index.js";
 import { realtimeHub } from "../realtime/hub.js";
 import { ehGestor } from "./cancelamento-pedido.js";
-import { subtotalDaComanda, calcularTotalComandaMesa } from "./total-comanda.js";
+import { subtotalDaComanda, calcularTotalComandaMesa, calcularTotalComandaMesaComDesconto } from "./total-comanda.js";
 
 export const QUANTIDADE_MINIMA = 1;
 export const QUANTIDADE_MAXIMA = 99;
@@ -150,23 +150,23 @@ export async function lancarItens(
     const subtotal = await subtotalDaComanda(tx, comandaId);
     const gorjeta = parseFloat(String(comanda.gorjeta || "0"));
     let total: number;
+    let descontoEfetivo: number | undefined;
 
     if (comanda.tipo === "delivery") {
       total = subtotal;
     } else {
-      let desconto = 0;
-      if (comanda.descontoTipo === "cortesia") {
-        desconto = subtotal;
-      } else if (comanda.descontoValor) {
-        desconto = parseFloat(String(comanda.descontoValor || "0"));
-      }
-      const result = calcularTotalComandaMesa(subtotal, gorjeta, desconto);
+      const result = calcularTotalComandaMesaComDesconto(subtotal, gorjeta, comanda.descontoTipo, comanda.descontoValor);
       total = result.total;
+      descontoEfetivo = result.descontoEfetivo;
     }
 
     await tx
       .update(schema.comandas)
-      .set({ subtotal: subtotal.toString(), total: total.toFixed(2) })
+      .set({
+        subtotal: subtotal.toString(),
+        total: total.toFixed(2),
+        ...(descontoEfetivo !== undefined && { descontoValor: descontoEfetivo.toFixed(2) })
+      })
       .where(and(eq(schema.comandas.id, comandaId), eq(schema.comandas.restauranteId, restauranteId)));
 
     return {

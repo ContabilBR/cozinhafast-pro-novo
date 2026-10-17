@@ -39,7 +39,7 @@ import { and, eq } from "drizzle-orm";
 import * as schema from "../db/schema/schema.js";
 import type { App } from "../index.js";
 import { realtimeHub } from "../realtime/hub.js";
-import { subtotalDaComanda, calcularTotalComandaMesa } from "./total-comanda.js";
+import { subtotalDaComanda, calcularTotalComandaMesa, calcularTotalComandaMesaComDesconto } from "./total-comanda.js";
 import { liberarMesaSeVazia } from "./liberar-mesa.js";
 
 export interface QuemFechou {
@@ -158,14 +158,7 @@ export async function fecharComanda(
       app.logger.info({ comandaId, subtotalCalculated: subtotal }, "Subtotal dynamically calculated from pedidos");
 
       // Determine desconto (either type 'cortesia' at 100% of subtotal, or parse descontoValor)
-      let descontoParaCalculo = 0;
-      if (comanda.descontoTipo === "cortesia") {
-        descontoParaCalculo = subtotal;
-      } else if (comanda.descontoValor && comanda.descontoValor > 0) {
-        descontoParaCalculo = parseFloat(String(comanda.descontoValor));
-      }
-
-      const { total: totalFinal, descontoEfetivo } = calcularTotalComandaMesa(subtotal, gorjetaValue, descontoParaCalculo);
+      const { total: totalFinal, descontoEfetivo } = calcularTotalComandaMesaComDesconto(subtotal, gorjetaValue, comanda.descontoTipo, comanda.descontoValor);
 
       const createdAt: Date = comanda.createdAt;
       const closedAt = new Date();

@@ -17,7 +17,7 @@ import { and, eq, sql } from "drizzle-orm";
 import * as schema from "../db/schema/schema.js";
 import type { App } from "../index.js";
 import { realtimeHub } from "../realtime/hub.js";
-import { subtotalDaComanda, totalDelivery, calcularTotalComandaMesa } from "./total-comanda.js";
+import { subtotalDaComanda, totalDelivery, calcularTotalComandaMesa, calcularTotalComandaMesaComDesconto } from "./total-comanda.js";
 
 export const MOTIVOS_CANCELAMENTO = [
   "erro_lancamento",
@@ -145,19 +145,17 @@ export async function cancelarPedido(
       total = await totalDelivery(tx, comandaId);
     } else {
       const gorjeta = parseFloat(String(comanda.gorjeta || "0"));
-      let desconto = 0;
-      if (comanda.descontoTipo === "cortesia") {
-        desconto = subtotal;
-      } else if (comanda.descontoValor) {
-        desconto = parseFloat(String(comanda.descontoValor || "0"));
-      }
-      const result = calcularTotalComandaMesa(subtotal, gorjeta, desconto);
+      const result = calcularTotalComandaMesaComDesconto(subtotal, gorjeta, comanda.descontoTipo, comanda.descontoValor);
       total = result.total;
       descontoEfetivo = result.descontoEfetivo;
     }
     await tx
       .update(schema.comandas)
-      .set({ subtotal: subtotal.toString(), total: total.toFixed(2) })
+      .set({
+        subtotal: subtotal.toString(),
+        total: total.toFixed(2),
+        ...(descontoEfetivo !== undefined && { descontoValor: descontoEfetivo.toFixed(2) })
+      })
       .where(eq(schema.comandas.id, comandaId));
 
     // Bug 4: Se for delivery, atualizar o valor do pagamento pendente para refletir o novo total
