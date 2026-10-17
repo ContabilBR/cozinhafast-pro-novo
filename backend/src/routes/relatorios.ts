@@ -4255,6 +4255,15 @@ LIMIT 5
         const query = request.query as { periodo?: string; dataInicio?: string; dataFim?: string };
         const { inicio, fim } = resolvePeriodo(query.periodo, query.dataInicio, query.dataFim);
 
+        // Check period limit for personalizado
+        if (query.periodo === "personalizado") {
+          const msPerDay = 24 * 60 * 60 * 1000;
+          const daysDiff = Math.ceil((fim.getTime() - inicio.getTime()) / msPerDay);
+          if (daysDiff > 366) {
+            return await reply.code(400).send({ error: "O período personalizado não pode ultrapassar 366 dias." });
+          }
+        }
+
         const diaInicio = diaLocalDeInstante(inicio);
         const diaFim = diaLocalDeInstante(new Date(fim.getTime() - 1000));
 
@@ -4264,75 +4273,79 @@ LIMIT 5
         const result: any = await (app.db as any).execute(
           sql`
             WITH comandas_fontes AS (
-              SELECT c.id, c.restaurante_id, c.status::text, c.closed_at, 0 AS prioridade_fonte
+              SELECT c.id, c.restaurante_id, c.status::text, c.total, c.closed_at, 0 AS prioridade_fonte
               FROM ${schema.comandas} c
               WHERE c.restaurante_id = ${restauranteId}
               UNION ALL
-              SELECT ch.id, ch.restaurante_id, ch.status::text, ch.closed_at, 1 AS prioridade_fonte
+              SELECT ch.id, ch.restaurante_id, ch.status::text, ch.total, ch.closed_at, 1 AS prioridade_fonte
               FROM ${schema.comandasHistorico} ch
               WHERE ch.restaurante_id = ${restauranteId}
             ),
             comandas_unicas AS (
               SELECT DISTINCT ON (cf.restaurante_id, cf.id)
-                cf.id, cf.restaurante_id, cf.status, cf.closed_at, cf.prioridade_fonte
+                cf.id, cf.restaurante_id, cf.status, cf.total, cf.closed_at
               FROM comandas_fontes cf
               ORDER BY cf.restaurante_id, cf.id, cf.prioridade_fonte ASC
             ),
-            vendidas AS (
+            comandas_vendidas AS (
               SELECT cu.id
               FROM comandas_unicas cu
-              WHERE cu.status = 'fechada' AND cu.closed_at >= ${dataInicioStr}::date::timestamp AT TIME ZONE 'America/Sao_Paulo'
+              WHERE cu.status = 'fechada' AND cu.total > 0
+                AND cu.closed_at >= ${dataInicioStr}::date::timestamp AT TIME ZONE 'America/Sao_Paulo'
                 AND cu.closed_at < (${dataFimStr}::date + INTERVAL '1 day')::timestamp AT TIME ZONE 'America/Sao_Paulo'
             ),
-            pedidos_fontes AS (
-              SELECT p.id, p.comanda_id, p.prato_id, p.quantidade, p.preco_unitario, p.status::text, p.cancelado_em, p.restaurante_id, 0 AS prioridade_fonte
+            itens_fontes AS (
+              SELECT p.id, p.comanda_id, p.prato_id, p.quantidade, p.preco_unitario, p.status::text, p.cancelado_em, p.restaurante_id, NULL::text AS nome_prato, 0 AS prioridade_fonte
               FROM ${schema.pedidos} p
               WHERE p.restaurante_id = ${restauranteId}
               UNION ALL
-              SELECT ph.id, ph.comanda_id, ph.prato_id, ph.quantidade, ph.preco_unitario, ph.status::text, ph.cancelado_em, ph.restaurante_id, 1 AS prioridade_fonte
+              SELECT ph.id, ph.comanda_id, ph.prato_id, ph.quantidade, ph.preco_unitario, ph.status::text, ph.cancelado_em, ph.restaurante_id, ph.prato_nome AS nome_prato, 1 AS prioridade_fonte
               FROM ${schema.pedidosHistorico} ph
               WHERE ph.restaurante_id = ${restauranteId}
             ),
-            pedidos_unicas AS (
-              SELECT DISTINCT ON (pf.restaurante_id, pf.id)
-                pf.id, pf.comanda_id, pf.prato_id, pf.quantidade, pf.preco_unitario, pf.status, pf.cancelado_em, pf.restaurante_id
-              FROM pedidos_fontes pf
-              ORDER BY pf.restaurante_id, pf.id, pf.prioridade_fonte ASC
+            itens_unicos AS (
+              SELECT DISTINCT ON (ifo.restaurante_id, ifo.id)
+                ifo.id, ifo.comanda_id, ifo.prato_id, ifo.quantidade, ifo.preco_unitario, ifo.status, ifo.cancelado_em, ifo.restaurante_id, ifo.nome_prato
+              FROM itens_fontes ifo
+              ORDER BY ifo.restaurante_id, ifo.id, ifo.prioridade_fonte ASC
+            ),
+            itens_vendidos AS (
+              SELECT iu.prato_id, iu.nome_prato, iu.quantidade, iu.preco_unitario
+              FROM itens_unicos iu
+              INNER JOIN comandas_vendidas cv ON iu.comanda_id = cv.id
+              WHERE iu.status != 'cancelado' AND iu.cancelado_em IS NULL
             ),
             vendas_por_prato AS (
               SELECT
-                COALESCE(MAX(pu.prato_id::text), MAX(p.nome)) AS prato_key,
-                MAX(pu.prato_id::text) AS prato_id,
-                MAX(p.nome) AS prato_nome,
-                SUM(pu.quantidade) AS quantidade_vendida,
-                SUM(pu.quantidade * pu.preco_unitario) AS receita_total
-              FROM pedidos_unicas pu
-              INNER JOIN vendidas v ON pu.comanda_id = v.id
-              LEFT JOIN ${schema.pratos} p ON pu.prato_id = p.id AND p.restaurante_id = ${restauranteId}
-              WHERE pu.status = 'gravado' AND (pu.cancelado_em IS NULL AND pu.status != 'cancelado')
-              GROUP BY COALESCE(MAX(pu.prato_id::text), MAX(p.nome))
+                iv.prato_id,
+                COALESCE(NULLIF(TRIM(p.nome), ''), NULLIF(TRIM(iv.nome_prato), ''), 'Prato removido') AS prato_nome,
+                SUM(iv.quantidade) AS quantidade_vendida,
+                SUM(iv.quantidade * iv.preco_unitario) AS receita_total
+              FROM itens_vendidos iv
+              LEFT JOIN ${schema.pratos} p ON iv.prato_id = p.id AND p.restaurante_id = ${restauranteId}
+              GROUP BY iv.prato_id, COALESCE(NULLIF(TRIM(p.nome), ''), NULLIF(TRIM(iv.nome_prato), ''), 'Prato removido')
             ),
-            prato_insumos_custo AS (
+            ficha_custo AS (
               SELECT
-                pi.restaurante_id,
                 pi.prato_id,
-                SUM(pi.quantidade_usada * COALESCE(i.custo_unitario, 0)) AS custo_total_ficha,
-                ARRAY_AGG(DISTINCT CASE WHEN i.custo_unitario IS NULL OR i.custo_unitario <= 0 THEN i.nome ELSE NULL END) FILTER (WHERE i.custo_unitario IS NULL OR i.custo_unitario <= 0) AS insumos_sem_custo
+                COUNT(i.id) AS quantidade_insumos,
+                SUM(pi.quantidade_usada * COALESCE(i.custo_unitario, 0)) AS custo_ficha,
+                ARRAY_REMOVE(ARRAY_AGG(DISTINCT CASE WHEN i.custo_unitario IS NULL OR i.custo_unitario <= 0 THEN i.nome ELSE NULL END), NULL) AS insumos_sem_custo
               FROM ${schema.pratoInsumos} pi
               LEFT JOIN ${schema.insumos} i ON pi.insumo_id = i.id AND i.restaurante_id = pi.restaurante_id
               WHERE pi.restaurante_id = ${restauranteId}
-              GROUP BY pi.restaurante_id, pi.prato_id
+              GROUP BY pi.prato_id
             )
             SELECT
-              vpp.prato_key,
               vpp.prato_id,
               vpp.prato_nome,
               vpp.quantidade_vendida,
               vpp.receita_total,
-              COALESCE(pic.custo_total_ficha, 0)::numeric AS custo_ficha,
-              COALESCE(pic.insumos_sem_custo, ARRAY[]::text[]) AS insumos_sem_custo
+              COALESCE(fc.quantidade_insumos, 0)::integer AS quantidade_insumos,
+              COALESCE(fc.custo_ficha, 0)::numeric AS custo_ficha,
+              COALESCE(fc.insumos_sem_custo, ARRAY[]::text[]) AS insumos_sem_custo
             FROM vendas_por_prato vpp
-            LEFT JOIN prato_insumos_custo pic ON vpp.prato_id::uuid = pic.prato_id OR vpp.prato_name = pic.prato_id
+            LEFT JOIN ficha_custo fc ON vpp.prato_id = fc.prato_id
           `
         );
 
@@ -4351,22 +4364,49 @@ LIMIT 5
         let margemTotal = 0;
 
         for (const row of result) {
-          if (!row || typeof row !== "object") continue;
+          if (!row || typeof row !== "object" || Array.isArray(row)) throw new Error("Invalid row type");
 
-          const quantidadeVendida = Number(row.quantidade_vendida || 0);
-          const receitaTotal = Number(row.receita_total || 0);
-          const custoFicha = Number(row.custo_ficha || 0);
-          const insumosEmCusto = Array.isArray(row.insumos_sem_custo) ? row.insumos_sem_custo.filter((x: any) => x) : [];
+          const quantidadeVendida = (() => {
+            const v = row.quantidade_vendida;
+            const n = typeof v === "number" ? v : (typeof v === "string" && /^\d+(\.\d+)?$/.test(v) ? parseFloat(v) : null);
+            if (n === null || !Number.isFinite(n)) throw new Error("Invalid quantidade_vendida");
+            return n;
+          })();
 
-          if (!Number.isFinite(quantidadeVendida) || !Number.isFinite(receitaTotal) || !Number.isFinite(custoFicha)) {
-            continue;
-          }
+          const receitaTotal = (() => {
+            const v = row.receita_total;
+            const n = typeof v === "number" ? v : (typeof v === "string" && /^\d+(\.\d+)?$/.test(v) ? parseFloat(v) : null);
+            if (n === null || !Number.isFinite(n)) throw new Error("Invalid receita_total");
+            return n;
+          })();
+
+          const custoFicha = (() => {
+            const v = row.custo_ficha;
+            const n = typeof v === "number" ? v : (typeof v === "string" && /^\d+(\.\d+)?$/.test(v) ? parseFloat(v) : null);
+            if (n === null || !Number.isFinite(n)) throw new Error("Invalid custo_ficha");
+            return n;
+          })();
+
+          const quantidadeInsumos = row.quantidade_insumos;
+          if (typeof quantidadeInsumos !== "number" || !Number.isInteger(quantidadeInsumos) || quantidadeInsumos < 0) throw new Error("Invalid quantidade_insumos");
+
+          const insumosEmCusto = (() => {
+            if (!Array.isArray(row.insumos_sem_custo)) throw new Error("insumos_sem_custo not array");
+            return row.insumos_sem_custo.filter((x: any) => typeof x === "string" && x.length > 0);
+          })();
 
           receitaTotalGeral += receitaTotal;
           const pratoId = row.prato_id || null;
-          const pratoNome = row.prato_nome || "Prato removido";
+          const pratoNome = typeof row.prato_nome === "string" ? row.prato_nome : "Prato removido";
 
-          if (insumosEmCusto.length > 0) {
+          if (quantidadeInsumos === 0) {
+            semFicha.push({
+              id: pratoId,
+              nome: pratoNome,
+              quantidade_vendida: quantidadeVendida,
+              receita: Number(receitaTotal.toFixed(2)),
+            });
+          } else if (insumosEmCusto.length > 0) {
             custoIncompleto.push({
               id: pratoId,
               nome: pratoNome,
@@ -4374,17 +4414,13 @@ LIMIT 5
               receita: Number(receitaTotal.toFixed(2)),
               insumos_sem_custo: insumosEmCusto,
             });
-          } else if (custoFicha <= 0) {
-            semFicha.push({
-              id: pratoId,
-              nome: pratoNome,
-              quantidade_vendida: quantidadeVendida,
-              receita: Number(receitaTotal.toFixed(2)),
-            });
           } else {
             const custoTotalPrato = custoFicha * quantidadeVendida;
             const margemPrato = receitaTotal - custoTotalPrato;
-            const margemPercentualPrato = receitaTotal > 0 ? (100 * margemPrato) / receitaTotal : null;
+            const margemPercentualPrato = receitaTotal !== 0 ? (100 * margemPrato) / receitaTotal : null;
+
+            if (!Number.isFinite(custoTotalPrato) || !Number.isFinite(margemPrato)) throw new Error("Invalid margin calculations");
+            if (margemPercentualPrato !== null && !Number.isFinite(margemPercentualPrato)) throw new Error("Invalid margin percentage");
 
             comFicha.push({
               id: pratoId,
@@ -4401,6 +4437,10 @@ LIMIT 5
             custoTotal += custoTotalPrato;
             margemTotal += margemPrato;
           }
+        }
+
+        if (!Number.isFinite(margemTotal) || !Number.isFinite(custoTotal) || !Number.isFinite(receitaTotalGeral) || !Number.isFinite(receitaCoberta)) {
+          throw new Error("Invalid final totals");
         }
 
         comFicha.sort((a, b) => {
@@ -4424,9 +4464,8 @@ LIMIT 5
         const margemPercentualGeral = receitaCoberta > 0 ? (100 * margemTotal) / receitaCoberta : null;
         const coberturaPercentual = receitaTotalGeral > 0 ? (100 * receitaCoberta) / receitaTotalGeral : null;
 
-        if (!Number.isFinite(margemTotal) || !Number.isFinite(custoTotal) || (margemPercentualGeral !== null && !Number.isFinite(margemPercentualGeral)) || (coberturaPercentual !== null && !Number.isFinite(coberturaPercentual))) {
-          app.logger.error({}, "Invalid numeric values in final calculations");
-          return await reply.code(500).send({ error: "Não foi possível gerar o relatório de margem por prato." });
+        if ((margemPercentualGeral !== null && !Number.isFinite(margemPercentualGeral)) || (coberturaPercentual !== null && !Number.isFinite(coberturaPercentual))) {
+          throw new Error("Invalid percentage calculations");
         }
 
         app.logger.info(
