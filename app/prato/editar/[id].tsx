@@ -15,6 +15,7 @@ import { Image } from "expo-image";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useColors } from "@/hooks/useColors";
+import { useAuth } from "@/contexts/AuthContext";
 import { AnimatedPressable } from "@/components/AnimatedPressable";
 import { Prato, Categoria } from "@/types";
 import { apiGet, apiPut, BACKEND_URL, getBearerToken } from "@/utils/api";
@@ -49,6 +50,8 @@ export default function EditarPratoScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const COLORS = useColors();
   const router = useRouter();
+  const { user } = useAuth();
+  const canOpenFicha = user?.role === "gerente" || user?.role === "administrador";
 
   const [nome, setNome] = useState("");
   const [descricao, setDescricao] = useState("");
@@ -257,6 +260,10 @@ export default function EditarPratoScreen() {
         keyboardShouldPersistTaps="handled"
         contentContainerStyle={{ padding: 20, paddingBottom: 120, gap: 16 }}
       >
+        {canOpenFicha && <AnimatedPressable accessibilityRole="button" accessibilityLabel="Abrir ficha técnica do prato" onPress={() => router.push(`/prato/ficha-tecnica/${id}` as any)} style={{ minHeight: 48, borderRadius: 12, padding: 12, backgroundColor: COLORS.primaryMuted, flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <Ionicons name="clipboard-outline" size={20} color={COLORS.primary} />
+          <Text style={{ fontFamily: "Outfit_600SemiBold", fontSize: 15, color: COLORS.primary }}>Ficha técnica</Text>
+        </AnimatedPressable>}
         <FormField label="Nome *">
           <TextInput
             value={nome}

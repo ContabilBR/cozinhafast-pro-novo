@@ -18,6 +18,7 @@ import { useRouter } from "expo-router";
 import { useFocusEffect } from "@react-navigation/native";
 import { Ionicons } from "@expo/vector-icons";
 import { useColors } from "@/hooks/useColors";
+import { useAuth } from "@/contexts/AuthContext";
 import { AnimatedPressable } from "@/components/AnimatedPressable";
 import { CardSkeleton } from "@/components/SkeletonLoader";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -59,6 +60,8 @@ interface ApiCategoria {
 export default function GestaoPratos() {
   const COLORS = useColors();
   const router = useRouter();
+  const { user } = useAuth();
+  const canOpenFicha = user?.role === "gerente" || user?.role === "administrador";
   const insets = useSafeAreaInsets();
   const listPaddingBottom = insets.bottom + 96;
 
@@ -649,6 +652,9 @@ export default function GestaoPratos() {
                   </View>
                   {!selectMode && (
                     <View onStartShouldSetResponder={() => true} style={{ gap: 6 }}>
+                      {canOpenFicha && <TouchableOpacity accessibilityRole="button" accessibilityLabel={`Ficha técnica de ${item.nome}`} onPress={() => router.push(`/prato/ficha-tecnica/${item.id}` as any)} style={{ minHeight: 44, paddingHorizontal: 10, borderRadius: 7, backgroundColor: COLORS.primaryMuted, justifyContent: "center" }}>
+                        <Text style={{ fontFamily: "Outfit_600SemiBold", fontSize: 13, color: COLORS.primary }}>Ficha técnica</Text>
+                      </TouchableOpacity>}
                       <TouchableOpacity
                         onPress={() => {
                           console.log("[GestaoPratos] Editar pressionado:", item.id);
@@ -745,6 +751,10 @@ export default function GestaoPratos() {
                 keyboardShouldPersistTaps="handled"
                 showsVerticalScrollIndicator={false}
               >
+                {editingPrato && canOpenFicha && <AnimatedPressable accessibilityRole="button" accessibilityLabel={`Abrir ficha técnica de ${editingPrato.nome}`} onPress={() => { setShowModal(false); router.push(`/prato/ficha-tecnica/${editingPrato.id}` as any); }} style={{ minHeight: 48, borderRadius: 12, padding: 12, backgroundColor: COLORS.primaryMuted, flexDirection: "row", alignItems: "center", gap: 8 }}>
+                  <Ionicons name="clipboard-outline" size={20} color={COLORS.primary} />
+                  <Text style={{ fontFamily: "Outfit_600SemiBold", fontSize: 15, color: COLORS.primary }}>Ficha técnica</Text>
+                </AnimatedPressable>}
                 {/* URL da imagem */}
                 <View style={{ gap: 6 }}>
                   <Text style={{ fontFamily: "Outfit_600SemiBold", fontSize: 14, color: COLORS.text }}>
