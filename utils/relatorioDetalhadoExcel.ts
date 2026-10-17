@@ -49,6 +49,40 @@ interface Delivery {
     tempo_estimado_medio_min: NullableNumber; percentual_pedidos: number; percentual_total_recebido: number }[];
 }
 
+interface FechamentoDia {
+  data: string;
+  vendas: {
+    comandas_fechadas: number; faturamento_itens: number; gorjeta: number;
+    taxa_entrega: number; total_recebido: number; ticket_medio: number;
+    por_canal: Record<'mesa' | 'delivery', { comandas_fechadas: number; total_recebido: number }>;
+  };
+  pagamentos: {
+    formas: Record<'dinheiro' | 'pix' | 'cartao_debito' | 'cartao_credito', {
+      quantidade: number; valor_entregue: number; troco: number; valor_liquido: number;
+    }>;
+    total_liquido: number; dinheiro_em_caixa: number; comandas_sem_pagamento: number;
+    conciliacao: {
+      comandas_pago_menor: number; valor_faltante: number;
+      comandas_pago_maior: number; valor_excedente: number;
+    };
+  };
+  cancelamentos: { quantidade: number; valor: number; quantidade_perda: number; valor_perda: number };
+  pendencias: {
+    disponivel: boolean; total_comandas_abertas: number; valor_parcial_total: number; entregas_em_andamento: number;
+    comandas_abertas: {
+      comanda_id: string; tipo: 'mesa' | 'delivery'; mesa_numero: number | null; rotulo: string | null;
+      aberta_em: string; subtotal_parcial: number;
+    }[];
+  };
+}
+
+const PAYMENT_FORMS = [
+  { key: 'dinheiro', label: 'Dinheiro' },
+  { key: 'pix', label: 'Pix' },
+  { key: 'cartao_debito', label: 'Cartão de débito' },
+  { key: 'cartao_credito', label: 'Cartão de crédito' },
+] as const;
+
 type Cell = string | number | null | XLSX.CellObject;
 type Rows = Cell[][];
 type Sheet = { name: string; sheet: XLSX.WorkSheet };
@@ -171,10 +205,106 @@ function deliverySheets(data: Delivery): Sheet[] {
   ])];
 }
 
+function assertNumbers(value: unknown, keys: string[]): void {
+  if (!value || typeof value !== 'object' || keys.some(key => {
+    const number = (value as Record<string, unknown>)[key];
+    return typeof number !== 'number' || !Number.isFinite(number);
+  })) throw new Error('Resposta incompleta do fechamento do dia.');
+}
+function assertFechamento(data: FechamentoDia): void {
+  if (!data || typeof data.data !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(data.data)) {
+    throw new Error('Data inválida no fechamento do dia.');
+  }
+  const date = new Date(`${data.data}T12:00:00Z`);
+  if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== data.data) {
+    throw new Error('Data inválida no fechamento do dia.');
+  }
+  assertNumbers(data.vendas, ['comandas_fechadas', 'faturamento_itens', 'gorjeta', 'taxa_entrega', 'total_recebido', 'ticket_medio']);
+  for (const canal of ['mesa', 'delivery'] as const) {
+    assertNumbers(data.vendas?.por_canal?.[canal], ['comandas_fechadas', 'total_recebido']);
+  }
+  assertNumbers(data.pagamentos, ['total_liquido', 'dinheiro_em_caixa', 'comandas_sem_pagamento']);
+  PAYMENT_FORMS.forEach(({ key }) => {
+    assertNumbers(data.pagamentos?.formas?.[key], ['quantidade', 'valor_entregue', 'troco', 'valor_liquido']);
+  });
+  assertNumbers(data.pagamentos?.conciliacao, ['comandas_pago_menor', 'valor_faltante', 'comandas_pago_maior', 'valor_excedente']);
+  assertNumbers(data.cancelamentos, ['quantidade', 'valor', 'quantidade_perda', 'valor_perda']);
+  const pendencias = data.pendencias;
+  assertNumbers(pendencias, ['total_comandas_abertas', 'valor_parcial_total', 'entregas_em_andamento']);
+  if (typeof pendencias?.disponivel !== 'boolean' || !Array.isArray(pendencias.comandas_abertas)) {
+    throw new Error('Resposta incompleta das pendências do fechamento do dia.');
+  }
+  pendencias.comandas_abertas.forEach(row => {
+    assertNumbers(row, ['subtotal_parcial']);
+    if ((row.tipo !== 'mesa' && row.tipo !== 'delivery')
+      || (row.mesa_numero !== null && (typeof row.mesa_numero !== 'number' || !Number.isFinite(row.mesa_numero)))
+      || (row.rotulo !== null && typeof row.rotulo !== 'string')
+      || typeof row.aberta_em !== 'string' || !Number.isFinite(new Date(row.aberta_em).getTime())) {
+      throw new Error('Comanda inválida nas pendências do fechamento do dia.');
+    }
+  });
+}
+function fechamentoSheets(data: FechamentoDia): Sheet[] {
+  assertFechamento(data);
+  const { vendas, pagamentos, cancelamentos, pendencias } = data;
+  const conciliacao = pagamentos.conciliacao;
+  const conferido = [conciliacao.comandas_pago_menor, conciliacao.valor_faltante,
+    conciliacao.comandas_pago_maior, conciliacao.valor_excedente, pagamentos.comandas_sem_pagamento].every(value => value === 0);
+  const rows: Rows = [
+    ['Fechamento do dia'], ['Data', dateBR(data.data)], ['Horário de Brasília. Relatório somente de leitura.'],
+    [], ['VENDAS'],
+    ['Comandas fechadas', count(vendas.comandas_fechadas)],
+    ['Faturamento de itens', money(vendas.faturamento_itens)],
+    ['Gorjeta', money(vendas.gorjeta)], ['Taxa de entrega', money(vendas.taxa_entrega)],
+    ['Total recebido', money(vendas.total_recebido)], ['Ticket médio', money(vendas.ticket_medio)],
+    ['Canal', 'Comandas fechadas', 'Total recebido'],
+    ...(['mesa', 'delivery'] as const).map(canal => [channel(canal), count(vendas.por_canal[canal].comandas_fechadas), money(vendas.por_canal[canal].total_recebido)]),
+    [], ['FORMAS DE PAGAMENTO'], ['Forma', 'Quantidade', 'Valor entregue', 'Troco', 'Valor líquido'],
+    ...PAYMENT_FORMS.map(({ key, label }) => {
+      const forma = pagamentos.formas[key];
+      return [label, count(forma.quantidade), money(forma.valor_entregue), money(forma.troco), money(forma.valor_liquido)];
+    }),
+    ['Total líquido', null, null, null, money(pagamentos.total_liquido)],
+    ['Dinheiro em caixa', null, null, null, money(pagamentos.dinheiro_em_caixa)],
+    [], ['CONFERÊNCIA DE PAGAMENTOS'], ['Conferência', 'Comandas', 'Valor'],
+    ['Comandas pagas a menos / valor faltante', count(conciliacao.comandas_pago_menor), money(conciliacao.valor_faltante)],
+    ['Comandas pagas a mais / valor excedente', count(conciliacao.comandas_pago_maior), money(conciliacao.valor_excedente)],
+    ['Comandas sem pagamento', count(pagamentos.comandas_sem_pagamento)],
+    ['Situação', conferido ? 'Tudo conferido' : 'Há divergências nos pagamentos'],
+    ['Observação: comandas sem pagamento também contam como pagas a menos.'],
+    [], ['CANCELAMENTOS E PERDAS'], ['Classificação', 'Quantidade', 'Valor'],
+    ['Cancelamentos', count(cancelamentos.quantidade), money(cancelamentos.valor)],
+    ['Perdas', count(cancelamentos.quantidade_perda), money(cancelamentos.valor_perda)],
+    ['Observação: perdas são itens cancelados depois que o preparo começou e já estão incluídos nos cancelamentos.'],
+  ];
+  if (pendencias.disponivel) {
+    rows.push([], ['PENDÊNCIAS'],
+      ['Total de comandas abertas', count(pendencias.total_comandas_abertas)],
+      ['Valor parcial total', money(pendencias.valor_parcial_total)],
+      ['Entregas em andamento', count(pendencias.entregas_em_andamento)],
+      ['Comanda', 'Tipo', 'Aberta às', 'Subtotal parcial']);
+    if (pendencias.comandas_abertas.length === 0) rows.push(['Nenhuma comanda aberta']);
+    pendencias.comandas_abertas.slice(0, 50).forEach(row => {
+      const label = row.tipo === 'mesa' && row.mesa_numero !== null
+        ? `Mesa ${row.mesa_numero}` : row.rotulo?.trim() || (row.tipo === 'delivery' ? 'Delivery' : 'Mesa sem número');
+      const hora = new Date(row.aberta_em).toLocaleTimeString('pt-BR', {
+        timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit',
+      });
+      rows.push([label, channel(row.tipo), hora, money(row.subtotal_parcial)]);
+    });
+    rows.push(['Observação: lista limitada a 50 comandas. Horários de abertura no horário de Brasília.']);
+  }
+  return [sheet('Fechamento do dia', rows)];
+}
+
 /** Acrescenta apenas as abas novas. Não altera nenhuma célula ou formato das abas existentes. */
 export async function appendDetailedReportSheets(workbook: XLSX.WorkBook, periodo: string): Promise<void> {
   const query = `?periodo=${encodeURIComponent(periodo)}`;
   const sections = [
+    ...(periodo === 'hoje' ? [{
+      name: 'Fechamento do dia',
+      load: async () => fechamentoSheets(await apiGet<FechamentoDia>('/api/relatorios/fechamento-dia')),
+    }] : []),
     { name: 'Vendas e Vendas por dia', load: async () => vendasSheets(await apiGet<Vendas>(`/api/relatorios/vendas${query}`)) },
     { name: 'Cancelamentos', load: async () => cancelamentosSheets(await apiGet<Cancelamentos>(`/api/relatorios/cancelamentos${query}`)) },
     { name: 'Mix de pratos', load: async () => mixSheets(await apiGet<Mix>(`/api/relatorios/mix-pratos${query}`)) },
