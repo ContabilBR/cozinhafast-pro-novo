@@ -4358,6 +4358,11 @@ LIMIT 5
         const semFicha: any[] = [];
         const custoIncompleto: any[] = [];
 
+        // Internal auxiliary structures for raw sort values (not serialized)
+        const semFichaRawReceita: Map<any, number> = new Map();
+        const custoIncompletoRawReceita: Map<any, number> = new Map();
+        const comFichaRawMargem: Map<any, number> = new Map();
+
         let receitaTotalGeral = 0;
         let receitaCoberta = 0;
         let custoTotal = 0;
@@ -4400,20 +4405,24 @@ LIMIT 5
           const pratoNome = typeof row.prato_nome === "string" ? row.prato_nome : "Prato removido";
 
           if (quantidadeInsumos === 0) {
-            semFicha.push({
+            const item = {
               id: pratoId,
               nome: pratoNome,
               quantidade_vendida: quantidadeVendida,
               receita: Number(receitaTotal.toFixed(2)),
-            });
+            };
+            semFicha.push(item);
+            semFichaRawReceita.set(item, receitaTotal);
           } else if (insumosEmCusto.length > 0) {
-            custoIncompleto.push({
+            const item = {
               id: pratoId,
               nome: pratoNome,
               quantidade_vendida: quantidadeVendida,
               receita: Number(receitaTotal.toFixed(2)),
               insumos_sem_custo: insumosEmCusto,
-            });
+            };
+            custoIncompleto.push(item);
+            custoIncompletoRawReceita.set(item, receitaTotal);
           } else {
             const custoTotalPrato = custoFicha * quantidadeVendida;
             const margemPrato = receitaTotal - custoTotalPrato;
@@ -4422,7 +4431,7 @@ LIMIT 5
             if (!Number.isFinite(custoTotalPrato) || !Number.isFinite(margemPrato)) throw new Error("Invalid margin calculations");
             if (margemPercentualPrato !== null && !Number.isFinite(margemPercentualPrato)) throw new Error("Invalid margin percentage");
 
-            comFicha.push({
+            const item = {
               id: pratoId,
               nome: pratoNome,
               quantidade_vendida: quantidadeVendida,
@@ -4431,7 +4440,9 @@ LIMIT 5
               custo_total: Number(custoTotalPrato.toFixed(2)),
               margem: Number(margemPrato.toFixed(2)),
               margem_percentual: margemPercentualPrato !== null ? Number(margemPercentualPrato.toFixed(2)) : null,
-            });
+            };
+            comFicha.push(item);
+            comFichaRawMargem.set(item, margemPrato);
 
             receitaCoberta += receitaTotal;
             custoTotal += custoTotalPrato;
@@ -4444,19 +4455,25 @@ LIMIT 5
         }
 
         comFicha.sort((a, b) => {
-          const margem_cmp = b.margem - a.margem;
+          const rawMargemB = comFichaRawMargem.get(b) ?? 0;
+          const rawMargemA = comFichaRawMargem.get(a) ?? 0;
+          const margem_cmp = rawMargemB - rawMargemA;
           if (margem_cmp !== 0) return margem_cmp;
           return a.nome.localeCompare(b.nome, "pt-BR");
         });
 
         semFicha.sort((a, b) => {
-          const receita_cmp = b.receita - a.receita;
+          const rawReceitaB = semFichaRawReceita.get(b) ?? 0;
+          const rawReceitaA = semFichaRawReceita.get(a) ?? 0;
+          const receita_cmp = rawReceitaB - rawReceitaA;
           if (receita_cmp !== 0) return receita_cmp;
           return a.nome.localeCompare(b.nome, "pt-BR");
         });
 
         custoIncompleto.sort((a, b) => {
-          const receita_cmp = b.receita - a.receita;
+          const rawReceitaB = custoIncompletoRawReceita.get(b) ?? 0;
+          const rawReceitaA = custoIncompletoRawReceita.get(a) ?? 0;
+          const receita_cmp = rawReceitaB - rawReceitaA;
           if (receita_cmp !== 0) return receita_cmp;
           return a.nome.localeCompare(b.nome, "pt-BR");
         });
