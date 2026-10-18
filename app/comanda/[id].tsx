@@ -19,6 +19,8 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useColors } from '@/hooks/useColors';
 import { CancelarItemModal } from '@/components/CancelarItemModal';
 import { cancelarItem, permissaoCancelarItem, subtotalItensAtivos } from '@/utils/cancelamento';
+import { DescontoModal } from '@/components/DescontoModal';
+import { aplicarDesconto, removerDesconto, calcularTotalComDesconto, podeConcederDesconto, MOTIVOS_DESCONTO } from '@/utils/desconto';
 
 type Prato = {
   id: string;
@@ -57,6 +59,9 @@ type Comanda = {
   rotulo?: string | null;
   status: string;
   total: number | string;
+  desconto_valor: number;
+  desconto_tipo: string | null;
+  desconto_motivo: string | null;
 };
 
 // Brazilian currency formatter: 1234.5 → "R$ 1.234,50"
@@ -148,6 +153,7 @@ export default function ComandaDetailScreen() {
 
   const COLORS = useColors();
   const [comanda, setComanda] = useState<Comanda | null>(null);
+  const [descontoVisible, setDescontoVisible] = useState(false);
   const [pratos, setPratos] = useState<Prato[]>([]);
   const [pedidosEnviados, setPedidosEnviados] = useState<Pedido[]>([]);
   const [itemParaCancelar, setItemParaCancelar] = useState<{ id: string; nome: string; aposInicio: boolean } | null>(null);
@@ -225,7 +231,13 @@ export default function ComandaDetailScreen() {
       }
 
       const found: Comanda | null = raw
-        ? { ...raw, mesa_numero: resolvedMesaNumero }
+        ? {
+            ...raw,
+            mesa_numero: resolvedMesaNumero,
+            desconto_valor: raw.desconto_valor ?? 0,
+            desconto_tipo: raw.desconto_tipo ?? null,
+            desconto_motivo: raw.desconto_motivo ?? null,
+          }
         : null;
 
       console.log('[ComandaDetail] comanda loaded:', found?.id, 'mesa_numero:', found?.mesa_numero, '(raw mesa_numero:', raw?.mesa_numero, ', mesa.numero:', raw?.mesa?.numero, ', param:', mesaNumeroParam, ')');
@@ -321,6 +333,8 @@ export default function ComandaDetailScreen() {
         ? pedidosRes
         : pedidosRes?.pedidos ?? [];
       setPedidosEnviados(allPedidos.filter((p) => p.comanda_id === id));
+      // O servidor pode recalcular/limitar o desconto ao incluir novos itens.
+      await fetchData();
       Alert.alert('Sucesso', 'Pedido enviado para a cozinha!');
       setActiveTab('pedido');
     } catch (e: any) {
@@ -348,6 +362,56 @@ export default function ComandaDetailScreen() {
   // Item cancelado não é venda: fica fora do total
   const total = subtotalItensAtivos(pedidosEnviados);
   const totalDisplay = `R$ ${total.toFixed(2).replace(".", ",")}`;
+  const temDesconto = comanda?.desconto_tipo === 'desconto' || comanda?.desconto_tipo === 'cortesia';
+  const { descontoEfetivo, total: totalComDesconto } = calcularTotalComDesconto(total, comanda?.desconto_tipo, comanda?.desconto_valor);
+  const motivoDesconto = MOTIVOS_DESCONTO.find((m) => m.value === comanda?.desconto_motivo)?.label;
+  const podeAbrirDesconto = isManager && podeConcederDesconto(user?.role) && comanda?.status === 'aberta' && total > 0;
+  const [footerHeight, setFooterHeight] = useState(120);
+
+  const resumoDesconto = (
+    <View style={{ gap: 8, paddingVertical: 12 }}>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 12 }}>
+        <Text style={{ color: COLORS.textSecondary }}>Subtotal</Text>
+        <Text style={{ color: COLORS.text }}>{formatBRL(total)}</Text>
+      </View>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 12 }}>
+        <View style={{ flex: 1 }}>
+          <Text style={{ color: COLORS.text }}>Desconto</Text>
+          {motivoDesconto ? <Text style={{ fontSize: 12, color: COLORS.textSecondary, marginTop: 2 }}>{motivoDesconto}</Text> : null}
+        </View>
+        <Text style={{ color: COLORS.danger }}>− {formatBRL(descontoEfetivo)}</Text>
+      </View>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 12 }}>
+        <Text style={{ color: COLORS.text, fontSize: 16, fontWeight: '700' }}>Total</Text>
+        <Text style={{ color: COLORS.success, fontSize: 18, fontWeight: '700' }}>{formatBRL(totalComDesconto)}</Text>
+      </View>
+    </View>
+  );
+  const botaoDesconto = podeAbrirDesconto ? (
+    <Pressable onPress={() => setDescontoVisible(true)} accessibilityRole="button"
+      style={{ minHeight: 44, borderWidth: 1, borderColor: COLORS.primary, backgroundColor: COLORS.primaryMuted, borderRadius: 12, padding: 12, alignItems: 'center', marginBottom: 12 }}>
+      <Text style={{ color: COLORS.primary, fontFamily: 'Outfit_600SemiBold', fontSize: 14 }}>
+        {comanda?.desconto_tipo === 'cortesia' ? 'Cortesia' : temDesconto ? 'Desconto aplicado' : 'Desconto'}
+      </Text>
+    </Pressable>
+  ) : null;
+  const modalDesconto = (
+    <DescontoModal visible={descontoVisible} subtotal={total} descontoAtual={comanda}
+      onClose={() => setDescontoVisible(false)}
+      onApply={async (corpo) => {
+        if (!id) return;
+        await aplicarDesconto(id, corpo);
+        setDescontoVisible(false);
+        await fetchData();
+      }}
+      onRemove={async () => {
+        if (!id) return;
+        await removerDesconto(id);
+        setDescontoVisible(false);
+        await fetchData();
+      }}
+    />
+  );
   console.log("[ComandaDetail] total calculado:", totalDisplay, "— pedidos:", pedidosEnviados.length);
 
   const mesaNum = mesaNumero ?? '?';
@@ -552,6 +616,7 @@ export default function ComandaDetailScreen() {
       <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
         <NavBar title={headerTitle} />
         {modalCancelarItem}
+        {modalDesconto}
 
         <ScrollView contentContainerStyle={mgStyles.scrollContent}>
           {/* Header card */}
@@ -626,15 +691,18 @@ export default function ComandaDetailScreen() {
           )}
 
           {/* Spacer for fixed footer */}
-          <View style={{ height: 120 }} />
+          <View style={{ height: footerHeight }} />
         </ScrollView>
 
         {/* Fixed footer */}
-        <View style={mgStyles.footer}>
-          <View style={mgStyles.footerTotalRow}>
-            <Text style={mgStyles.footerTotalLabel}>Total da comanda</Text>
-            <Text style={mgStyles.footerTotalValue}>{totalDisplay}</Text>
-          </View>
+        <View onLayout={(event) => setFooterHeight(event.nativeEvent.layout.height)} style={[mgStyles.footer, temDesconto && { backgroundColor: COLORS.surface }]}>
+          {temDesconto ? resumoDesconto : (
+            <View style={mgStyles.footerTotalRow}>
+              <Text style={mgStyles.footerTotalLabel}>Total da comanda</Text>
+              <Text style={mgStyles.footerTotalValue}>{totalDisplay}</Text>
+            </View>
+          )}
+          {botaoDesconto}
 
           {semConsumo ? (
             <View style={{ paddingHorizontal: 0, marginBottom: 8 }}>
@@ -881,10 +949,12 @@ export default function ComandaDetailScreen() {
               })
             )}
 
-            <View style={styles.totalRow}>
-              <Text style={styles.totalLabel}>Total:</Text>
-              <Text style={styles.totalValue}>{totalDisplay}</Text>
-            </View>
+            {temDesconto ? resumoDesconto : (
+              <View style={styles.totalRow}>
+                <Text style={styles.totalLabel}>Total:</Text>
+                <Text style={styles.totalValue}>{totalDisplay}</Text>
+              </View>
+            )}
 
           </ScrollView>
         )}
