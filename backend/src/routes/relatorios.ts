@@ -1617,7 +1617,9 @@ LIMIT 5
                 closed_at,
                 subtotal,
                 gorjeta,
-                total
+                total,
+                desconto_valor,
+                desconto_tipo
               FROM comandas
               WHERE restaurante_id = ${tenantId}
                 AND status = 'fechada'
@@ -1634,7 +1636,9 @@ LIMIT 5
                 closed_at,
                 subtotal,
                 gorjeta,
-                total
+                total,
+                desconto_valor,
+                desconto_tipo
               FROM comandas_historico
               WHERE restaurante_id = ${tenantId}
                 AND status = 'fechada'
@@ -1659,7 +1663,9 @@ LIMIT 5
                 closed_at,
                 CAST(subtotal AS DECIMAL(10,2)) AS subtotal,
                 CAST(gorjeta AS DECIMAL(10,2)) AS gorjeta,
-                CAST(total AS DECIMAL(10,2)) AS total
+                CAST(total AS DECIMAL(10,2)) AS total,
+                desconto_valor,
+                desconto_tipo
               FROM todas_vendas
               ORDER BY restaurante_id, id, tipo DESC
             ),
@@ -1680,13 +1686,18 @@ LIMIT 5
                 d.subtotal,
                 d.gorjeta,
                 d.total,
-                COALESCE(e.taxa_entrega, 0) AS taxa_entrega
+                COALESCE(e.taxa_entrega, 0) AS taxa_entrega,
+                CASE
+                  WHEN d.desconto_tipo = 'cortesia' THEN d.subtotal
+                  WHEN d.desconto_tipo = 'desconto' THEN LEAST(COALESCE(d.desconto_valor,0),d.subtotal)
+                  ELSE 0
+                END AS desconto_efetivo
               FROM deduplicadas d
               LEFT JOIN entregas_por_comanda e ON d.id = e.comanda_id
             )
             SELECT COUNT(*)::integer AS inconsistent_count
-            FROM vendas_com_taxa
-            WHERE ABS((subtotal + gorjeta + taxa_entrega) - total) > 0.01
+            FROM vendas_com_taxa v
+            WHERE ABS((v.subtotal - v.desconto_efetivo + v.gorjeta + v.taxa_entrega) - v.total) > 0.01
           `
         ) as any[];
 
