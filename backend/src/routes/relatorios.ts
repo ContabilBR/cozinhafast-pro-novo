@@ -3722,19 +3722,20 @@ LIMIT 5
         response: {
           200: {
             type: "object",
-            required: ["data", "eh_hoje", "vendas", "pagamentos", "cancelamentos", "pendencias"],
+            required: ["data", "eh_hoje", "vendas", "pagamentos", "cancelamentos", "pendencias", "descontos", "cortesias"],
             properties: {
               data: { type: "string" },
               eh_hoje: { type: "boolean" },
               vendas: {
                 type: "object",
-                required: ["comandas_fechadas", "faturamento_itens", "gorjeta", "taxa_entrega", "total_recebido", "ticket_medio", "por_canal"],
+                required: ["comandas_fechadas", "faturamento_itens", "gorjeta", "taxa_entrega", "total_recebido", "ticket_medio", "por_canal", "desconto_aplicado"],
                 properties: {
                   comandas_fechadas: { type: "integer" },
                   faturamento_itens: { type: "number" },
                   gorjeta: { type: "number" },
                   taxa_entrega: { type: "number" },
                   total_recebido: { type: "number" },
+                  desconto_aplicado: { type: "number" },
                   ticket_medio: { type: "number" },
                   por_canal: {
                     type: "object",
@@ -3743,6 +3744,26 @@ LIMIT 5
                       delivery: { type: "object", properties: { comandas_fechadas: { type: "integer" }, total_recebido: { type: "number" } } },
                     },
                   },
+                },
+              },
+              descontos: {
+                type: "object",
+                required: ["quantidade", "valor", "por_motivo", "por_responsavel"],
+                properties: {
+                  quantidade: { type: "integer" },
+                  valor: { type: "number" },
+                  por_motivo: { type: "array", items: { type: "object", required: ["motivo", "quantidade", "valor"], properties: { motivo: { type: "string" }, quantidade: { type: "integer" }, valor: { type: "number" } } } },
+                  por_responsavel: { type: "array", items: { type: "object", required: ["nome", "quantidade", "valor"], properties: { nome: { type: "string" }, quantidade: { type: "integer" }, valor: { type: "number" } } } },
+                },
+              },
+              cortesias: {
+                type: "object",
+                required: ["quantidade", "valor", "por_motivo", "por_responsavel"],
+                properties: {
+                  quantidade: { type: "integer" },
+                  valor: { type: "number" },
+                  por_motivo: { type: "array", items: { type: "object", required: ["motivo", "quantidade", "valor"], properties: { motivo: { type: "string" }, quantidade: { type: "integer" }, valor: { type: "number" } } } },
+                  por_responsavel: { type: "array", items: { type: "object", required: ["nome", "quantidade", "valor"], properties: { nome: { type: "string" }, quantidade: { type: "integer" }, valor: { type: "number" } } } },
                 },
               },
               pagamentos: {
@@ -3875,22 +3896,22 @@ LIMIT 5
         // Common base for deduped sold comandas
         const baseComandas = sql`
           WITH comandas_fontes AS (
-            SELECT c.id AS id, c.restaurante_id AS restaurante_id, c.status::text AS status, c.tipo::text AS tipo, c.subtotal AS subtotal, c.gorjeta AS gorjeta, c.total AS total, c.closed_at AS closed_at, 0 AS prioridade_fonte
+            SELECT c.id AS id, c.restaurante_id AS restaurante_id, c.status::text AS status, c.tipo::text AS tipo, c.subtotal AS subtotal, c.gorjeta AS gorjeta, c.total AS total, c.closed_at AS closed_at, c.desconto_valor AS desconto_valor, c.desconto_tipo::text AS desconto_tipo, c.desconto_motivo::text AS desconto_motivo, c.desconto_por_nome::text AS desconto_por_nome, 0 AS prioridade_fonte
             FROM comandas c
             WHERE c.restaurante_id = ${tenantId}
             UNION ALL
-            SELECT ch.id AS id, ch.restaurante_id AS restaurante_id, ch.status::text AS status, NULL::text AS tipo, ch.subtotal AS subtotal, ch.gorjeta AS gorjeta, ch.total AS total, ch.closed_at AS closed_at, 1 AS prioridade_fonte
+            SELECT ch.id AS id, ch.restaurante_id AS restaurante_id, ch.status::text AS status, NULL::text AS tipo, ch.subtotal AS subtotal, ch.gorjeta AS gorjeta, ch.total AS total, ch.closed_at AS closed_at, ch.desconto_valor AS desconto_valor, ch.desconto_tipo::text AS desconto_tipo, ch.desconto_motivo::text AS desconto_motivo, ch.desconto_por_nome::text AS desconto_por_nome, 1 AS prioridade_fonte
             FROM comandas_historico ch
             WHERE ch.restaurante_id = ${tenantId}
           ),
           comandas_unicas AS (
             SELECT DISTINCT ON (cf.restaurante_id, cf.id)
-              cf.id, cf.restaurante_id, cf.status, cf.tipo, cf.subtotal, cf.gorjeta, cf.total, cf.closed_at, cf.prioridade_fonte
+              cf.id, cf.restaurante_id, cf.status, cf.tipo, cf.subtotal, cf.gorjeta, cf.total, cf.closed_at, cf.desconto_valor, cf.desconto_tipo, cf.desconto_motivo, cf.desconto_por_nome, cf.prioridade_fonte
             FROM comandas_fontes cf
             ORDER BY cf.restaurante_id, cf.id, cf.prioridade_fonte ASC
           ),
           vendidas AS (
-            SELECT cu.id, cu.restaurante_id, cu.status, cu.tipo, cu.subtotal, cu.gorjeta, cu.total, cu.closed_at, cu.prioridade_fonte
+            SELECT cu.id, cu.restaurante_id, cu.status, cu.tipo, cu.subtotal, cu.gorjeta, cu.total, cu.closed_at, cu.desconto_valor, cu.desconto_tipo, cu.desconto_motivo, cu.desconto_por_nome, cu.prioridade_fonte
             FROM comandas_unicas cu
             WHERE cu.status = 'fechada' AND cu.total > 0
               AND cu.closed_at >= ${inicio.toISOString()}::timestamptz
@@ -3914,6 +3935,7 @@ LIMIT 5
               COALESCE(SUM(v.gorjeta), 0)::double precision AS gorjeta,
               COALESCE(SUM(epc.taxa_entrega), 0)::double precision AS taxa_entrega,
               COALESCE(SUM(v.total), 0)::double precision AS total_recebido,
+              COALESCE(SUM(CASE WHEN v.desconto_tipo='cortesia' THEN COALESCE(v.subtotal,0) WHEN v.desconto_tipo='desconto' THEN LEAST(COALESCE(v.desconto_valor,0),COALESCE(v.subtotal,0)) ELSE 0 END),0)::double precision AS desconto_aplicado,
               COUNT(*) FILTER (WHERE COALESCE(v.tipo,'mesa') = 'mesa')::integer AS mesa_comandas,
               COALESCE(SUM(v.total) FILTER (WHERE COALESCE(v.tipo,'mesa') = 'mesa'),0)::double precision AS mesa_total,
               COUNT(*) FILTER (WHERE COALESCE(v.tipo,'mesa') = 'delivery')::integer AS delivery_comandas,
@@ -4131,6 +4153,99 @@ LIMIT 5
 
         const conciliacaoRow = conciliacaoResult[0] || { comandas_pago_menor: 0, valor_faltante: 0, comandas_pago_maior: 0, valor_excedente: 0, comandas_sem_pagamento: 0 };
 
+        // Base for discount queries
+        const baseDescontosDia = sql`
+          WITH comandas_fontes AS (
+            SELECT c.id AS id, c.restaurante_id AS restaurante_id, c.status::text AS status, c.subtotal AS subtotal, c.desconto_valor AS desconto_valor, c.desconto_tipo::text AS desconto_tipo, c.desconto_motivo::text AS desconto_motivo, c.desconto_por_nome::text AS desconto_por_nome, c.closed_at AS closed_at, 0 AS prioridade_fonte
+            FROM comandas c
+            WHERE c.restaurante_id = ${tenantId}
+            UNION ALL
+            SELECT ch.id AS id, ch.restaurante_id AS restaurante_id, ch.status::text AS status, ch.subtotal AS subtotal, ch.desconto_valor AS desconto_valor, ch.desconto_tipo::text AS desconto_tipo, ch.desconto_motivo::text AS desconto_motivo, ch.desconto_por_nome::text AS desconto_por_nome, ch.closed_at AS closed_at, 1 AS prioridade_fonte
+            FROM comandas_historico ch
+            WHERE ch.restaurante_id = ${tenantId}
+          ),
+          comandas_unicas AS (
+            SELECT DISTINCT ON (cf.restaurante_id, cf.id)
+              cf.id, cf.restaurante_id, cf.status, cf.subtotal, cf.desconto_valor, cf.desconto_tipo, cf.desconto_motivo, cf.desconto_por_nome, cf.closed_at
+            FROM comandas_fontes cf
+            ORDER BY cf.restaurante_id, cf.id, cf.prioridade_fonte ASC
+          ),
+          comandas_desconto_dia AS (
+            SELECT
+              cu.id, cu.restaurante_id, cu.desconto_tipo, COALESCE(cu.desconto_motivo::text,'nao_informado') AS motivo, COALESCE(NULLIF(cu.desconto_por_nome::text,''),'Não informado') AS nome,
+              CASE WHEN cu.desconto_tipo='cortesia' THEN COALESCE(cu.subtotal,0) WHEN cu.desconto_tipo='desconto' THEN LEAST(COALESCE(cu.desconto_valor,0),COALESCE(cu.subtotal,0)) ELSE 0 END AS desconto_efetivo
+            FROM comandas_unicas cu
+            WHERE cu.status = 'fechada'
+              AND cu.closed_at >= ${inicio.toISOString()}::timestamptz
+              AND cu.closed_at < ${fim.toISOString()}::timestamptz
+              AND CASE WHEN cu.desconto_tipo='cortesia' THEN COALESCE(cu.subtotal,0) WHEN cu.desconto_tipo='desconto' THEN LEAST(COALESCE(cu.desconto_valor,0),COALESCE(cu.subtotal,0)) ELSE 0 END > 0
+          )
+        `;
+
+        // Query 7: Discount/Courtesy totals
+        const descontosTotaisResult = await (app.db as any).execute(
+          sql`
+            ${baseDescontosDia}
+            SELECT
+              COUNT(*) FILTER (WHERE d.desconto_tipo='desconto')::integer AS quantidade_descontos,
+              COALESCE(SUM(d.desconto_efetivo) FILTER (WHERE d.desconto_tipo='desconto'), 0)::double precision AS valor_descontos,
+              COUNT(*) FILTER (WHERE d.desconto_tipo='cortesia')::integer AS quantidade_cortesias,
+              COALESCE(SUM(d.desconto_efetivo) FILTER (WHERE d.desconto_tipo='cortesia'), 0)::double precision AS valor_cortesias
+            FROM comandas_desconto_dia d
+          `
+        ) as any[];
+
+        if (!Array.isArray(descontosTotaisResult)) {
+          app.logger.error({ tenantId, resultType: typeof descontosTotaisResult }, "Query 7 (discount totals) result is not an array");
+          return await reply.code(500).send({ error: "Não foi possível gerar o relatório de fechamento do dia." });
+        }
+
+        // Query 8: Discounts by motive
+        const descontosPorMotivoResult = await (app.db as any).execute(
+          sql`
+            ${baseDescontosDia}
+            WITH motive_ranked AS (
+              SELECT
+                d.desconto_tipo, d.motivo, COUNT(*)::integer AS quantidade, SUM(d.desconto_efetivo)::numeric AS valor,
+                ROW_NUMBER() OVER (PARTITION BY d.desconto_tipo ORDER BY SUM(d.desconto_efetivo) DESC, d.motivo ASC) AS posicao
+              FROM comandas_desconto_dia d
+              GROUP BY d.desconto_tipo, d.motivo
+            )
+            SELECT desconto_tipo, motivo, quantidade, valor
+            FROM motive_ranked
+            WHERE posicao <= 20
+            ORDER BY desconto_tipo, valor DESC, motivo ASC
+          `
+        ) as any[];
+
+        if (!Array.isArray(descontosPorMotivoResult)) {
+          app.logger.error({ tenantId, resultType: typeof descontosPorMotivoResult }, "Query 8 (discounts by motive) result is not an array");
+          return await reply.code(500).send({ error: "Não foi possível gerar o relatório de fechamento do dia." });
+        }
+
+        // Query 9: Discounts by responsible
+        const descontosPorResponsavelResult = await (app.db as any).execute(
+          sql`
+            ${baseDescontosDia}
+            WITH responsible_ranked AS (
+              SELECT
+                d.desconto_tipo, d.nome, COUNT(*)::integer AS quantidade, SUM(d.desconto_efetivo)::numeric AS valor,
+                ROW_NUMBER() OVER (PARTITION BY d.desconto_tipo ORDER BY SUM(d.desconto_efetivo) DESC, d.nome ASC) AS posicao
+              FROM comandas_desconto_dia d
+              GROUP BY d.desconto_tipo, d.nome
+            )
+            SELECT desconto_tipo, nome, quantidade, valor
+            FROM responsible_ranked
+            WHERE posicao <= 20
+            ORDER BY desconto_tipo, valor DESC, nome ASC
+          `
+        ) as any[];
+
+        if (!Array.isArray(descontosPorResponsavelResult)) {
+          app.logger.error({ tenantId, resultType: typeof descontosPorResponsavelResult }, "Query 9 (discounts by responsible) result is not an array");
+          return await reply.code(500).send({ error: "Não foi possível gerar o relatório de fechamento do dia." });
+        }
+
         app.logger.info(
           {
             tenantId,
@@ -4141,6 +4256,41 @@ LIMIT 5
           "Fechamento-dia report retrieved successfully"
         );
 
+        // Process discount data
+        const descontosTotaisRow = descontosTotaisResult[0];
+        if (!descontosTotaisRow) {
+          app.logger.error({ tenantId }, "Query 7 (discount totals) returned null row");
+          return await reply.code(500).send({ error: "Não foi possível gerar o relatório de fechamento do dia." });
+        }
+
+        const descontosMotivoByType = new Map<string, any[]>();
+        descontosMotivoByType.set('desconto', []);
+        descontosMotivoByType.set('cortesia', []);
+        for (const row of descontosPorMotivoResult) {
+          const tipo = row.desconto_tipo || 'desconto';
+          const list = descontosMotivoByType.get(tipo) || [];
+          list.push({
+            motivo: row.motivo || "",
+            quantidade: parseInt(String(row.quantidade || 0)) || 0,
+            valor: Number(Number(parseFloat(String(row.valor || 0))).toFixed(2)),
+          });
+          descontosMotivoByType.set(tipo, list);
+        }
+
+        const descontosResponsavelByType = new Map<string, any[]>();
+        descontosResponsavelByType.set('desconto', []);
+        descontosResponsavelByType.set('cortesia', []);
+        for (const row of descontosPorResponsavelResult) {
+          const tipo = row.desconto_tipo || 'desconto';
+          const list = descontosResponsavelByType.get(tipo) || [];
+          list.push({
+            nome: row.nome || "",
+            quantidade: parseInt(String(row.quantidade || 0)) || 0,
+            valor: Number(Number(parseFloat(String(row.valor || 0))).toFixed(2)),
+          });
+          descontosResponsavelByType.set(tipo, list);
+        }
+
         return await reply.code(200).send({
           data: dateStr,
           eh_hoje: ehHoje,
@@ -4150,6 +4300,7 @@ LIMIT 5
             gorjeta: Number(Number(parseFloat(String(vendidosRow.gorjeta || 0))).toFixed(2)),
             taxa_entrega: Number(Number(parseFloat(String(vendidosRow.taxa_entrega || 0))).toFixed(2)),
             total_recebido: Number(Number(parseFloat(String(vendidosRow.total_recebido || 0))).toFixed(2)),
+            desconto_aplicado: Number(Number(parseFloat(String(vendidosRow.desconto_aplicado || 0))).toFixed(2)),
             ticket_medio: totalComandasFechadas > 0 ? Number(Number(totalRecebido / totalComandasFechadas).toFixed(2)) : 0,
             por_canal: {
               mesa: {
@@ -4161,6 +4312,18 @@ LIMIT 5
                 total_recebido: Number(Number((porCanalMap.get("delivery")?.total || 0)).toFixed(2)),
               },
             },
+          },
+          descontos: {
+            quantidade: parseInt(String(descontosTotaisRow.quantidade_descontos || 0)) || 0,
+            valor: Number(Number(parseFloat(String(descontosTotaisRow.valor_descontos || 0))).toFixed(2)),
+            por_motivo: descontosMotivoByType.get('desconto') || [],
+            por_responsavel: descontosResponsavelByType.get('desconto') || [],
+          },
+          cortesias: {
+            quantidade: parseInt(String(descontosTotaisRow.quantidade_cortesias || 0)) || 0,
+            valor: Number(Number(parseFloat(String(descontosTotaisRow.valor_cortesias || 0))).toFixed(2)),
+            por_motivo: descontosMotivoByType.get('cortesia') || [],
+            por_responsavel: descontosResponsavelByType.get('cortesia') || [],
           },
           pagamentos: {
             formas: {
