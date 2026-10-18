@@ -1204,9 +1204,11 @@ LIMIT 5
                   faturamento_itens: { type: "number" },
                   gorjeta: { type: "number" },
                   taxa_entrega: { type: "number" },
+                  desconto_aplicado: { type: "number" },
                   total_recebido: { type: "number" },
                   ticket_medio: { type: "number" },
                 },
+                required: ["desconto_aplicado"],
               },
               por_canal: {
                 type: "array",
@@ -1219,9 +1221,11 @@ LIMIT 5
                     faturamento_itens: { type: "number" },
                     gorjeta: { type: "number" },
                     taxa_entrega: { type: "number" },
+                    desconto_aplicado: { type: "number" },
                     total_recebido: { type: "number" },
                     ticket_medio: { type: "number" },
                   },
+                  required: ["desconto_aplicado"],
                 },
               },
               por_dia: {
@@ -1235,9 +1239,11 @@ LIMIT 5
                     faturamento_itens: { type: "number" },
                     gorjeta: { type: "number" },
                     taxa_entrega: { type: "number" },
+                    desconto_aplicado: { type: "number" },
                     total_recebido: { type: "number" },
                     ticket_medio: { type: "number" },
                   },
+                  required: ["desconto_aplicado"],
                 },
               },
               comparacao_anterior: {
@@ -1259,17 +1265,21 @@ LIMIT 5
                       faturamento_itens: { type: "number" },
                       gorjeta: { type: "number" },
                       taxa_entrega: { type: "number" },
+                      desconto_aplicado: { type: "number" },
                       total_recebido: { type: "number" },
                       ticket_medio: { type: "number" },
                     },
+                    required: ["desconto_aplicado"],
                   },
                   variacao_percentual: {
                     type: "object",
                     properties: {
                       faturamento_itens: { type: ["number", "null"] },
+                      desconto_aplicado: { type: ["number", "null"] },
                       total_recebido: { type: ["number", "null"] },
                       ticket_medio: { type: ["number", "null"] },
                     },
+                    required: ["desconto_aplicado"],
                   },
                 },
               },
@@ -1331,8 +1341,9 @@ LIMIT 5
                 subtotal,
                 gorjeta,
                 total,
-                NULL::uuid AS entrega_id,
-                NULL::numeric AS taxa_entrega
+                desconto_valor,
+                desconto_tipo,
+                0 AS prioridade_fonte
               FROM comandas
               WHERE restaurante_id = ${tenantId}
                 AND status = 'fechada'
@@ -1350,8 +1361,9 @@ LIMIT 5
                 subtotal,
                 gorjeta,
                 total,
-                NULL::uuid AS entrega_id,
-                NULL::numeric AS taxa_entrega
+                desconto_valor,
+                desconto_tipo,
+                1 AS prioridade_fonte
               FROM comandas_historico
               WHERE restaurante_id = ${tenantId}
                 AND status = 'fechada'
@@ -1361,9 +1373,9 @@ LIMIT 5
                 AND closed_at < ${fim.toISOString()}::timestamptz
             ),
             todas_vendas AS (
-              SELECT * FROM vendas_atuais
+              SELECT id, restaurante_id, tipo, closed_at, subtotal, gorjeta, total, desconto_valor, desconto_tipo, prioridade_fonte FROM vendas_atuais
               UNION ALL
-              SELECT * FROM vendas_historico
+              SELECT id, restaurante_id, tipo, closed_at, subtotal, gorjeta, total, desconto_valor, desconto_tipo, prioridade_fonte FROM vendas_historico
             ),
             deduplicadas AS (
               SELECT DISTINCT ON (restaurante_id, id)
@@ -1376,9 +1388,11 @@ LIMIT 5
                 closed_at,
                 CAST(subtotal AS DECIMAL(10,2)) AS subtotal,
                 CAST(gorjeta AS DECIMAL(10,2)) AS gorjeta,
-                CAST(total AS DECIMAL(10,2)) AS total
+                CAST(total AS DECIMAL(10,2)) AS total,
+                desconto_valor,
+                desconto_tipo
               FROM todas_vendas
-              ORDER BY restaurante_id, id, tipo DESC
+              ORDER BY restaurante_id, id, prioridade_fonte ASC
             ),
             entregas_por_comanda AS (
               SELECT DISTINCT ON (comanda_id)
@@ -1397,7 +1411,12 @@ LIMIT 5
                 d.subtotal,
                 d.gorjeta,
                 d.total,
-                COALESCE(e.taxa_entrega, 0) AS taxa_entrega
+                COALESCE(e.taxa_entrega, 0) AS taxa_entrega,
+                CASE
+                  WHEN d.desconto_tipo = 'cortesia' THEN d.subtotal
+                  WHEN d.desconto_tipo = 'desconto' THEN LEAST(COALESCE(d.desconto_valor,0),d.subtotal)
+                  ELSE 0
+                END AS desconto_efetivo
               FROM deduplicadas d
               LEFT JOIN entregas_por_comanda e ON d.id = e.comanda_id
             )
@@ -1407,6 +1426,7 @@ LIMIT 5
               CAST(SUM(gorjeta) AS DECIMAL(10,2)) AS gorjeta_total,
               CAST(SUM(taxa_entrega) AS DECIMAL(10,2)) AS taxa_entrega_total,
               CAST(SUM(total) AS DECIMAL(10,2)) AS total_recebido,
+              CAST(COALESCE(SUM(desconto_efetivo),0) AS DECIMAL(10,2)) AS desconto_aplicado,
               canal
             FROM vendas_com_taxa
             GROUP BY canal
@@ -1425,8 +1445,9 @@ LIMIT 5
                 subtotal,
                 gorjeta,
                 total,
-                NULL::uuid AS entrega_id,
-                NULL::numeric AS taxa_entrega
+                desconto_valor,
+                desconto_tipo,
+                0 AS prioridade_fonte
               FROM comandas
               WHERE restaurante_id = ${tenantId}
                 AND status = 'fechada'
@@ -1444,8 +1465,9 @@ LIMIT 5
                 subtotal,
                 gorjeta,
                 total,
-                NULL::uuid AS entrega_id,
-                NULL::numeric AS taxa_entrega
+                desconto_valor,
+                desconto_tipo,
+                1 AS prioridade_fonte
               FROM comandas_historico
               WHERE restaurante_id = ${tenantId}
                 AND status = 'fechada'
@@ -1455,9 +1477,9 @@ LIMIT 5
                 AND closed_at < ${periodoAnteriorFim.toISOString()}::timestamptz
             ),
             todas_vendas AS (
-              SELECT * FROM vendas_atuais
+              SELECT id, restaurante_id, tipo, closed_at, subtotal, gorjeta, total, desconto_valor, desconto_tipo, prioridade_fonte FROM vendas_atuais
               UNION ALL
-              SELECT * FROM vendas_historico
+              SELECT id, restaurante_id, tipo, closed_at, subtotal, gorjeta, total, desconto_valor, desconto_tipo, prioridade_fonte FROM vendas_historico
             ),
             deduplicadas AS (
               SELECT DISTINCT ON (restaurante_id, id)
@@ -1470,9 +1492,11 @@ LIMIT 5
                 closed_at,
                 CAST(subtotal AS DECIMAL(10,2)) AS subtotal,
                 CAST(gorjeta AS DECIMAL(10,2)) AS gorjeta,
-                CAST(total AS DECIMAL(10,2)) AS total
+                CAST(total AS DECIMAL(10,2)) AS total,
+                desconto_valor,
+                desconto_tipo
               FROM todas_vendas
-              ORDER BY restaurante_id, id, tipo DESC
+              ORDER BY restaurante_id, id, prioridade_fonte ASC
             ),
             entregas_por_comanda AS (
               SELECT DISTINCT ON (comanda_id)
@@ -1491,7 +1515,12 @@ LIMIT 5
                 d.subtotal,
                 d.gorjeta,
                 d.total,
-                COALESCE(e.taxa_entrega, 0) AS taxa_entrega
+                COALESCE(e.taxa_entrega, 0) AS taxa_entrega,
+                CASE
+                  WHEN d.desconto_tipo = 'cortesia' THEN d.subtotal
+                  WHEN d.desconto_tipo = 'desconto' THEN LEAST(COALESCE(d.desconto_valor,0),d.subtotal)
+                  ELSE 0
+                END AS desconto_efetivo
               FROM deduplicadas d
               LEFT JOIN entregas_por_comanda e ON d.id = e.comanda_id
             )
@@ -1500,7 +1529,8 @@ LIMIT 5
               CAST(SUM(subtotal) AS DECIMAL(10,2)) AS faturamento_itens,
               CAST(SUM(gorjeta) AS DECIMAL(10,2)) AS gorjeta_total,
               CAST(SUM(taxa_entrega) AS DECIMAL(10,2)) AS taxa_entrega_total,
-              CAST(SUM(total) AS DECIMAL(10,2)) AS total_recebido
+              CAST(SUM(total) AS DECIMAL(10,2)) AS total_recebido,
+              CAST(COALESCE(SUM(desconto_efetivo),0) AS DECIMAL(10,2)) AS desconto_aplicado
             FROM vendas_com_taxa
           `
         ) as any[];
@@ -1516,7 +1546,10 @@ LIMIT 5
                 closed_at,
                 subtotal,
                 gorjeta,
-                total
+                total,
+                desconto_valor,
+                desconto_tipo,
+                0 AS prioridade_fonte
               FROM comandas
               WHERE restaurante_id = ${tenantId}
                 AND status = 'fechada'
@@ -1533,7 +1566,10 @@ LIMIT 5
                 closed_at,
                 subtotal,
                 gorjeta,
-                total
+                total,
+                desconto_valor,
+                desconto_tipo,
+                1 AS prioridade_fonte
               FROM comandas_historico
               WHERE restaurante_id = ${tenantId}
                 AND status = 'fechada'
@@ -1543,9 +1579,9 @@ LIMIT 5
                 AND closed_at < ${fim.toISOString()}::timestamptz
             ),
             todas_vendas AS (
-              SELECT * FROM vendas_atuais
+              SELECT id, restaurante_id, tipo, closed_at, subtotal, gorjeta, total, desconto_valor, desconto_tipo, prioridade_fonte FROM vendas_atuais
               UNION ALL
-              SELECT * FROM vendas_historico
+              SELECT id, restaurante_id, tipo, closed_at, subtotal, gorjeta, total, desconto_valor, desconto_tipo, prioridade_fonte FROM vendas_historico
             ),
             deduplicadas AS (
               SELECT DISTINCT ON (restaurante_id, id)
@@ -1558,9 +1594,11 @@ LIMIT 5
                 closed_at,
                 CAST(subtotal AS DECIMAL(10,2)) AS subtotal,
                 CAST(gorjeta AS DECIMAL(10,2)) AS gorjeta,
-                CAST(total AS DECIMAL(10,2)) AS total
+                CAST(total AS DECIMAL(10,2)) AS total,
+                desconto_valor,
+                desconto_tipo
               FROM todas_vendas
-              ORDER BY restaurante_id, id, tipo DESC
+              ORDER BY restaurante_id, id, prioridade_fonte ASC
             ),
             entregas_por_comanda AS (
               SELECT DISTINCT ON (comanda_id)
@@ -1579,7 +1617,12 @@ LIMIT 5
                 d.subtotal,
                 d.gorjeta,
                 d.total,
-                COALESCE(e.taxa_entrega, 0) AS taxa_entrega
+                COALESCE(e.taxa_entrega, 0) AS taxa_entrega,
+                CASE
+                  WHEN d.desconto_tipo = 'cortesia' THEN d.subtotal
+                  WHEN d.desconto_tipo = 'desconto' THEN LEAST(COALESCE(d.desconto_valor,0),d.subtotal)
+                  ELSE 0
+                END AS desconto_efetivo
               FROM deduplicadas d
               LEFT JOIN entregas_por_comanda e ON d.id = e.comanda_id
             ),
@@ -1590,7 +1633,8 @@ LIMIT 5
                 CAST(SUM(subtotal) AS DECIMAL(10,2)) AS faturamento_itens,
                 CAST(SUM(gorjeta) AS DECIMAL(10,2)) AS gorjeta_total,
                 CAST(SUM(taxa_entrega) AS DECIMAL(10,2)) AS taxa_entrega_total,
-                CAST(SUM(total) AS DECIMAL(10,2)) AS total_recebido
+                CAST(SUM(total) AS DECIMAL(10,2)) AS total_recebido,
+                CAST(COALESCE(SUM(desconto_efetivo),0) AS DECIMAL(10,2)) AS desconto_aplicado
               FROM vendas_com_taxa
               GROUP BY (closed_at AT TIME ZONE 'America/Sao_Paulo')::date
             )
@@ -1600,6 +1644,7 @@ LIMIT 5
               faturamento_itens,
               gorjeta_total,
               taxa_entrega_total,
+              desconto_aplicado,
               total_recebido
             FROM por_data
             ORDER BY data_local
@@ -1707,6 +1752,7 @@ LIMIT 5
           faturamento_itens: number;
           gorjeta: number;
           taxa_entrega: number;
+          desconto_aplicado: number;
           total_recebido: number;
         }>();
 
@@ -1716,6 +1762,7 @@ LIMIT 5
           faturamento_itens: 0,
           gorjeta: 0,
           taxa_entrega: 0,
+          desconto_aplicado: 0,
           total_recebido: 0,
         });
         canalMap.set("delivery", {
@@ -1723,6 +1770,7 @@ LIMIT 5
           faturamento_itens: 0,
           gorjeta: 0,
           taxa_entrega: 0,
+          desconto_aplicado: 0,
           total_recebido: 0,
         });
 
@@ -1735,6 +1783,7 @@ LIMIT 5
               faturamento_itens: 0,
               gorjeta: 0,
               taxa_entrega: 0,
+              desconto_aplicado: 0,
               total_recebido: 0,
             };
             canalMap.set(canal, {
@@ -1742,6 +1791,7 @@ LIMIT 5
               faturamento_itens: existing.faturamento_itens + (parseFloat(String(row.faturamento_itens)) || 0),
               gorjeta: existing.gorjeta + (parseFloat(String(row.gorjeta_total)) || 0),
               taxa_entrega: existing.taxa_entrega + (parseFloat(String(row.taxa_entrega_total)) || 0),
+              desconto_aplicado: existing.desconto_aplicado + (parseFloat(String(row.desconto_aplicado)) || 0),
               total_recebido: existing.total_recebido + (parseFloat(String(row.total_recebido)) || 0),
             });
           }
@@ -1753,6 +1803,7 @@ LIMIT 5
           faturamento_itens: 0,
           gorjeta: 0,
           taxa_entrega: 0,
+          desconto_aplicado: 0,
           total_recebido: 0,
         };
 
@@ -1763,6 +1814,7 @@ LIMIT 5
             faturamento_itens: parseFloat(String(row.faturamento_itens)) || 0,
             gorjeta: parseFloat(String(row.gorjeta_total)) || 0,
             taxa_entrega: parseFloat(String(row.taxa_entrega_total)) || 0,
+            desconto_aplicado: parseFloat(String(row.desconto_aplicado)) || 0,
             total_recebido: parseFloat(String(row.total_recebido)) || 0,
           };
         }
@@ -1773,6 +1825,7 @@ LIMIT 5
           faturamento_itens: 0,
           gorjeta: 0,
           taxa_entrega: 0,
+          desconto_aplicado: 0,
           total_recebido: 0,
         };
 
@@ -1781,6 +1834,7 @@ LIMIT 5
           totalAtual.faturamento_itens += metrics.faturamento_itens;
           totalAtual.gorjeta += metrics.gorjeta;
           totalAtual.taxa_entrega += metrics.taxa_entrega;
+          totalAtual.desconto_aplicado += metrics.desconto_aplicado;
           totalAtual.total_recebido += metrics.total_recebido;
         }
 
@@ -1788,11 +1842,13 @@ LIMIT 5
         totalAtual.faturamento_itens = Math.round(totalAtual.faturamento_itens * 100) / 100;
         totalAtual.gorjeta = Math.round(totalAtual.gorjeta * 100) / 100;
         totalAtual.taxa_entrega = Math.round(totalAtual.taxa_entrega * 100) / 100;
+        totalAtual.desconto_aplicado = Math.round(totalAtual.desconto_aplicado * 100) / 100;
         totalAtual.total_recebido = Math.round(totalAtual.total_recebido * 100) / 100;
 
         anteriorMetricas.faturamento_itens = Math.round(anteriorMetricas.faturamento_itens * 100) / 100;
         anteriorMetricas.gorjeta = Math.round(anteriorMetricas.gorjeta * 100) / 100;
         anteriorMetricas.taxa_entrega = Math.round(anteriorMetricas.taxa_entrega * 100) / 100;
+        anteriorMetricas.desconto_aplicado = Math.round(anteriorMetricas.desconto_aplicado * 100) / 100;
         anteriorMetricas.total_recebido = Math.round(anteriorMetricas.total_recebido * 100) / 100;
 
         const ticketMedioAtual = totalAtual.comandas_fechadas > 0 ? totalAtual.faturamento_itens / totalAtual.comandas_fechadas : 0;
@@ -1804,6 +1860,7 @@ LIMIT 5
           faturamento_itens: number;
           gorjeta: number;
           taxa_entrega: number;
+          desconto_aplicado: number;
           total_recebido: number;
           ticket_medio: number;
         }>();
@@ -1820,6 +1877,7 @@ LIMIT 5
               faturamento_itens: Math.round(faturamento * 100) / 100,
               gorjeta: Math.round((parseFloat(String(row.gorjeta_total)) || 0) * 100) / 100,
               taxa_entrega: Math.round((parseFloat(String(row.taxa_entrega_total)) || 0) * 100) / 100,
+              desconto_aplicado: Math.round((parseFloat(String(row.desconto_aplicado)) || 0) * 100) / 100,
               total_recebido: Math.round((parseFloat(String(row.total_recebido)) || 0) * 100) / 100,
               ticket_medio: Math.round(ticket * 100) / 100,
             });
@@ -1840,6 +1898,7 @@ LIMIT 5
               faturamento_itens: 0,
               gorjeta: 0,
               taxa_entrega: 0,
+              desconto_aplicado: 0,
               total_recebido: 0,
               ticket_medio: 0,
             });
@@ -1864,6 +1923,7 @@ LIMIT 5
 
         const variacaoPercentual = {
           faturamento_itens: calcularVariacao(totalAtual.faturamento_itens, anteriorMetricas.faturamento_itens),
+          desconto_aplicado: calcularVariacao(totalAtual.desconto_aplicado, anteriorMetricas.desconto_aplicado),
           total_recebido: calcularVariacao(totalAtual.total_recebido, anteriorMetricas.total_recebido),
           ticket_medio: calcularVariacao(ticketMedioAtual, ticketMedioAnterior),
         };
