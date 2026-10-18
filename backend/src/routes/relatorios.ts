@@ -4155,21 +4155,7 @@ LIMIT 5
 
         // Base for discount queries
         const baseDescontosDia = sql`
-          WITH comandas_fontes AS (
-            SELECT c.id AS id, c.restaurante_id AS restaurante_id, c.status::text AS status, c.subtotal AS subtotal, c.desconto_valor AS desconto_valor, c.desconto_tipo::text AS desconto_tipo, c.desconto_motivo::text AS desconto_motivo, c.desconto_por_nome::text AS desconto_por_nome, c.closed_at AS closed_at, 0 AS prioridade_fonte
-            FROM comandas c
-            WHERE c.restaurante_id = ${tenantId}
-            UNION ALL
-            SELECT ch.id AS id, ch.restaurante_id AS restaurante_id, ch.status::text AS status, ch.subtotal AS subtotal, ch.desconto_valor AS desconto_valor, ch.desconto_tipo::text AS desconto_tipo, ch.desconto_motivo::text AS desconto_motivo, ch.desconto_por_nome::text AS desconto_por_nome, ch.closed_at AS closed_at, 1 AS prioridade_fonte
-            FROM comandas_historico ch
-            WHERE ch.restaurante_id = ${tenantId}
-          ),
-          comandas_unicas AS (
-            SELECT DISTINCT ON (cf.restaurante_id, cf.id)
-              cf.id, cf.restaurante_id, cf.status, cf.subtotal, cf.desconto_valor, cf.desconto_tipo, cf.desconto_motivo, cf.desconto_por_nome, cf.closed_at
-            FROM comandas_fontes cf
-            ORDER BY cf.restaurante_id, cf.id, cf.prioridade_fonte ASC
-          ),
+          ${baseComandas},
           comandas_desconto_dia AS (
             SELECT
               cu.id, cu.restaurante_id, cu.desconto_tipo, COALESCE(cu.desconto_motivo::text,'nao_informado') AS motivo, COALESCE(NULLIF(cu.desconto_por_nome::text,''),'Não informado') AS nome,
@@ -4195,26 +4181,28 @@ LIMIT 5
           `
         ) as any[];
 
-        if (!Array.isArray(descontosTotaisResult)) {
-          app.logger.error({ tenantId, resultType: typeof descontosTotaisResult }, "Query 7 (discount totals) result is not an array");
+        if (!Array.isArray(descontosTotaisResult) || descontosTotaisResult.length !== 1 || !descontosTotaisResult[0]) {
+          app.logger.error({ tenantId, resultType: typeof descontosTotaisResult }, "Query 7 (discount totals) returned invalid result");
           return await reply.code(500).send({ error: "Não foi possível gerar o relatório de fechamento do dia." });
         }
+
+        const descontosTotaisRow = descontosTotaisResult[0];
 
         // Query 8: Discounts by motive
         const descontosPorMotivoResult = await (app.db as any).execute(
           sql`
-            ${baseDescontosDia}
-            WITH motive_ranked AS (
+            ${baseDescontosDia},
+            motive_ranked AS (
               SELECT
                 d.desconto_tipo, d.motivo, COUNT(*)::integer AS quantidade, SUM(d.desconto_efetivo)::numeric AS valor,
                 ROW_NUMBER() OVER (PARTITION BY d.desconto_tipo ORDER BY SUM(d.desconto_efetivo) DESC, d.motivo ASC) AS posicao
               FROM comandas_desconto_dia d
               GROUP BY d.desconto_tipo, d.motivo
             )
-            SELECT desconto_tipo, motivo, quantidade, valor
-            FROM motive_ranked
-            WHERE posicao <= 20
-            ORDER BY desconto_tipo, valor DESC, motivo ASC
+            SELECT mr.desconto_tipo, mr.motivo, mr.quantidade, mr.valor
+            FROM motive_ranked mr
+            WHERE mr.posicao <= 20
+            ORDER BY mr.desconto_tipo, mr.valor DESC, mr.motivo ASC
           `
         ) as any[];
 
@@ -4226,18 +4214,18 @@ LIMIT 5
         // Query 9: Discounts by responsible
         const descontosPorResponsavelResult = await (app.db as any).execute(
           sql`
-            ${baseDescontosDia}
-            WITH responsible_ranked AS (
+            ${baseDescontosDia},
+            responsible_ranked AS (
               SELECT
                 d.desconto_tipo, d.nome, COUNT(*)::integer AS quantidade, SUM(d.desconto_efetivo)::numeric AS valor,
                 ROW_NUMBER() OVER (PARTITION BY d.desconto_tipo ORDER BY SUM(d.desconto_efetivo) DESC, d.nome ASC) AS posicao
               FROM comandas_desconto_dia d
               GROUP BY d.desconto_tipo, d.nome
             )
-            SELECT desconto_tipo, nome, quantidade, valor
-            FROM responsible_ranked
-            WHERE posicao <= 20
-            ORDER BY desconto_tipo, valor DESC, nome ASC
+            SELECT rr.desconto_tipo, rr.nome, rr.quantidade, rr.valor
+            FROM responsible_ranked rr
+            WHERE rr.posicao <= 20
+            ORDER BY rr.desconto_tipo, rr.valor DESC, rr.nome ASC
           `
         ) as any[];
 
@@ -4257,12 +4245,6 @@ LIMIT 5
         );
 
         // Process discount data
-        const descontosTotaisRow = descontosTotaisResult[0];
-        if (!descontosTotaisRow) {
-          app.logger.error({ tenantId }, "Query 7 (discount totals) returned null row");
-          return await reply.code(500).send({ error: "Não foi possível gerar o relatório de fechamento do dia." });
-        }
-
         const descontosMotivoByType = new Map<string, any[]>();
         descontosMotivoByType.set('desconto', []);
         descontosMotivoByType.set('cortesia', []);
