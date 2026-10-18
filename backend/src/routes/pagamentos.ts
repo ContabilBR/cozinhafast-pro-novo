@@ -40,64 +40,71 @@ export function registerPagamentoRoutes(app: App) {
         if (!(await requireRole(authUser, ["garcom", "gerente", "administrador", "admin"], reply))) return;
         const restauranteId = requireTenant(authUser);
 
-        // Verificar se comanda existe e pertence ao tenant
-        const comanda = await db.select({ id: schema.comandas.id, status: schema.comandas.status, total: schema.comandas.total, tipo: schema.comandas.tipo, descontoTipo: schema.comandas.descontoTipo, descontoValor: schema.comandas.descontoValor }).from(schema.comandas).where(and(eq(schema.comandas.id, request.params.id), eq(schema.comandas.restauranteId, restauranteId)));
-        if (!comanda.length) return await reply.code(404).send({ error: "Comanda não encontrada" });
-        if (comanda[0].tipo === 'delivery') return await reply.code(400).send({ error: "Este é um pedido de delivery. Use a tela de Delivery." });
-        if (comanda[0].status !== "aberta") return await reply.code(400).send({ error: "Comanda não está aberta" });
+        const result = await db.transaction(async (tx: any) => {
+          // Verificar se comanda existe e pertence ao tenant
+          const comanda = await tx.select({ id: schema.comandas.id, status: schema.comandas.status, total: schema.comandas.total, tipo: schema.comandas.tipo, descontoTipo: schema.comandas.descontoTipo, descontoValor: schema.comandas.descontoValor }).from(schema.comandas).where(and(eq(schema.comandas.id, request.params.id), eq(schema.comandas.restauranteId, restauranteId))).for("update");
+          if (!comanda.length) return { status: 404, body: { error: "Comanda não encontrada" } };
+          if (comanda[0].tipo === 'delivery') return { status: 400, body: { error: "Este é um pedido de delivery. Use a tela de Delivery." } };
+          if (comanda[0].status !== "aberta") return { status: 400, body: { error: "Comanda não está aberta" } };
 
-        const { forma_pagamento, valor, troco, referencia } = request.body;
+          const { forma_pagamento, valor, troco, referencia } = request.body;
 
-        if (!isFinite(valor) || valor <= 0) {
-          return await reply.code(400).send({ error: "O valor do pagamento deve ser um número maior que zero." });
-        }
-        if (troco !== undefined && (!isFinite(troco) || troco < 0)) {
-          return await reply.code(400).send({ error: "O troco deve ser um número maior ou igual a zero." });
-        }
-        const _gorjetaCheck = (request.body as any).gorjeta;
-        if (_gorjetaCheck !== undefined && (!isFinite(_gorjetaCheck) || _gorjetaCheck < 0)) {
-          return await reply.code(400).send({ error: "A gorjeta deve ser um número maior ou igual a zero." });
-        }
+          if (!isFinite(valor) || valor <= 0) {
+            return { status: 400, body: { error: "O valor do pagamento deve ser um número maior que zero." } };
+          }
+          if (troco !== undefined && (!isFinite(troco) || troco < 0)) {
+            return { status: 400, body: { error: "O troco deve ser um número maior ou igual a zero." } };
+          }
+          const _gorjetaCheck = (request.body as any).gorjeta;
+          if (_gorjetaCheck !== undefined && (!isFinite(_gorjetaCheck) || _gorjetaCheck < 0)) {
+            return { status: 400, body: { error: "A gorjeta deve ser um número maior ou igual a zero." } };
+          }
 
-        // Calcular total já pago
-        const pagamentosExistentes = await db.select({ valor: schema.pagamentos.valor }).from(schema.pagamentos).where(and(eq(schema.pagamentos.comandaId, request.params.id), eq(schema.pagamentos.status, "confirmado")));
-        const totalPago = pagamentosExistentes.reduce((sum: number, p: any) => sum + parseFloat(p.valor), 0);
-        const totalComanda = await subtotalDaComanda(db, request.params.id);
-        const restante = totalComanda - totalPago;
+          // Calcular total já pago
+          const pagamentosExistentes = await tx.select({ valor: schema.pagamentos.valor }).from(schema.pagamentos).where(and(eq(schema.pagamentos.comandaId, request.params.id), eq(schema.pagamentos.status, "confirmado")));
+          const totalPago = pagamentosExistentes.reduce((sum: number, p: any) => sum + parseFloat(p.valor), 0);
+          const totalComanda = await subtotalDaComanda(tx, request.params.id);
+          const restante = totalComanda - totalPago;
 
-        // Considerar a gorjeta no cálculo do valor devido, sem persistir no total
-        // da comanda. Quem soma a gorjeta ao total, uma única vez, é o /fechar —
-        // gravar aqui inflava o total a cada pagamento (e compunha ainda mais em
-        // contas divididas entre várias pessoas).
-        const gorjetaBody = (request.body as any).gorjeta || 0;
-        const { total: totalComandaFinal, descontoEfetivo } = calcularTotalComandaMesaComDesconto(totalComanda, gorjetaBody, comanda[0].descontoTipo, comanda[0].descontoValor);
+          // Considerar a gorjeta no cálculo do valor devido, sem persistir no total
+          // da comanda. Quem soma a gorjeta ao total, uma única vez, é o /fechar —
+          // gravar aqui inflava o total a cada pagamento (e compunha ainda mais em
+          // contas divididas entre várias pessoas).
+          const gorjetaBody = (request.body as any).gorjeta || 0;
+          const { total: totalComandaFinal, descontoEfetivo } = calcularTotalComandaMesaComDesconto(totalComanda, gorjetaBody, comanda[0].descontoTipo, comanda[0].descontoValor);
 
-        // Only validate overpayment if comanda has a total
-        const restanteFinal = totalComandaFinal - totalPago;
-        if (totalComandaFinal > 0 && valor > restanteFinal + 0.01) {
-          return await reply.code(400).send({ error: `Valor excede o restante da comanda. Restante: R$ ${restanteFinal.toFixed(2)}` });
-        }
+          // Only validate overpayment if comanda has a total
+          const restanteFinal = totalComandaFinal - totalPago;
+          if (totalComandaFinal > 0 && valor > restanteFinal + 0.01) {
+            return { status: 400, body: { error: `Valor excede o restante da comanda. Restante: R$ ${restanteFinal.toFixed(2)}` } };
+          }
 
-        // Todas as formas de pagamento (dinheiro, cartão, Pix) são reconciliação manual
-        // do garçom e confirmam imediatamente — não há integração de gateway aqui.
-        const statusPagamento = "confirmado";
-        const confirmadoEm = new Date();
+          // Todas as formas de pagamento (dinheiro, cartão, Pix) são reconciliação manual
+          // do garçom e confirmam imediatamente — não há integração de gateway aqui.
+          const statusPagamento = "confirmado";
+          const confirmadoEm = new Date();
 
-        const [pagamento] = await db.insert(schema.pagamentos).values({
-          comandaId: request.params.id,
-          formaPagamento: forma_pagamento,
-          status: statusPagamento,
-          valor: valor.toString(),
-          troco: (troco || 0).toString(),
-          referencia: referencia || null,
-          confirmadoEm,
-          restauranteId,
-        }).returning();
+          const [pagamento] = await tx.insert(schema.pagamentos).values({
+            comandaId: request.params.id,
+            formaPagamento: forma_pagamento,
+            status: statusPagamento,
+            valor: valor.toString(),
+            troco: (troco || 0).toString(),
+            referencia: referencia || null,
+            confirmadoEm,
+            restauranteId,
+          }).returning();
 
-        return await reply.code(201).send({
-          pagamento,
-          resumo: { total_comanda: totalComandaFinal, desconto_valor: descontoEfetivo, total_pago: totalPago + (statusPagamento === "confirmado" ? valor : 0), restante: restanteFinal - (statusPagamento === "confirmado" ? valor : 0) },
+          return {
+            status: 201,
+            body: {
+              pagamento,
+              resumo: { total_comanda: totalComandaFinal, desconto_valor: descontoEfetivo, total_pago: totalPago + (statusPagamento === "confirmado" ? valor : 0), restante: restanteFinal - (statusPagamento === "confirmado" ? valor : 0) },
+            },
+          };
         });
+
+        return await reply.code(result.status).send(result.body);
       } catch (err) {
         app.logger.error({ error: (err as any).message }, "Erro ao registrar pagamento");
         return await reply.code(500).send({ error: "Erro interno do servidor" });
