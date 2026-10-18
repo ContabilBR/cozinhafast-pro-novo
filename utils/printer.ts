@@ -31,7 +31,7 @@ export async function printBluetooth(payload: string): Promise<boolean> {
   }
 }
 
-export function formatReceipt(params: { restaurante?: string; mesa?: number | string; itens: { quantidade: number; nome: string; preco: number }[]; subtotal: number; gorjeta: number; total: number; }): string {
+export function formatReceipt(params: { restaurante?: string; mesa?: number | string; itens: { quantidade: number; nome: string; preco: number }[]; subtotal: number; desconto?: number; gorjeta: number; total: number; }): string {
   const lines: string[] = [];
   const w = RECEIPT_COLUMNS;
   const center = (text: string) => { const pad = Math.max(0, Math.floor((w - text.length) / 2)); return " ".repeat(pad) + text; };
@@ -49,6 +49,7 @@ export function formatReceipt(params: { restaurante?: string; mesa?: number | st
 
   lines.push(line());
   lines.push(row("Subtotal:", "R$ " + params.subtotal.toFixed(2)));
+  if (params.desconto && params.desconto > 0) lines.push(row("Desconto:", "- R$ " + params.desconto.toFixed(2)));
   if (params.gorjeta > 0) lines.push(row("Gorjeta:", "R$ " + params.gorjeta.toFixed(2)));
   lines.push(row("TOTAL:", "R$ " + params.total.toFixed(2)));
   lines.push(line());

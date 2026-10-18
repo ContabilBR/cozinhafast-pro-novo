@@ -9,6 +9,7 @@ import { formatCurrency } from "@/utils/helpers";
 import { CampoMoeda } from "@/components/CampoMoeda";
 import { formatReceipt } from "@/utils/printer";
 import { useReceiptPreview } from "@/components/ReceiptPreview";
+import { calcularTotalComDesconto } from "@/utils/desconto";
 
 const ETAPAS = ["resumo", "gorjeta", "divisao", "pagamento"] as const;
 type Etapa = typeof ETAPAS[number];
@@ -62,7 +63,10 @@ export default function FecharContaScreen() {
     .filter((p: any) => p.status !== "cancelado")
     .reduce((s: number, p: any) => s + parseFloat(p.precoUnitario || p.preco_unitario || "0") * (p.quantidade || 1), 0);
   const gorjetaValue = gorjetaMode === "10" ? subtotal * 0.1 : gorjetaMode === "custom" ? subtotal * (Math.max(0, parseFloat(gorjetaInput.replace(",", ".")) || 0) / 100) : 0;
-  const totalFinal = subtotal + gorjetaValue;
+  const { descontoEfetivo } = calcularTotalComDesconto(subtotal, comanda?.desconto_tipo, comanda?.desconto_valor);
+  const temDesconto = comanda?.desconto_tipo === "desconto" || comanda?.desconto_tipo === "cortesia";
+  const totalFinal = subtotal - descontoEfetivo + gorjetaValue;
+  const semCobranca = totalFinal < 0.01;
   const restante = totalFinal - totalPago;
   const valorPorPessoa = dividir && numPessoas > 1 ? Math.ceil(restante / numPessoas * 100) / 100 : restante;
   const valorPessoaAtual = dividir && divisaoResult?.divisao ? (divisaoResult.divisao[pessoaAtual]?.total_a_pagar || divisaoResult.divisao[pessoaAtual]?.valor || valorPorPessoa) : restante;
@@ -118,11 +122,58 @@ export default function FecharContaScreen() {
     }
   };
 
+  // Mesmo fechamento sem pagamento usado quando todos os itens estão cancelados.
+  const encerrarSemCobranca = async () => {
+    setSaving(true);
+    try {
+      await apiPost('/api/comandas/' + id + '/fechar', { gorjeta: 0 });
+      Alert.alert('Comanda encerrada', 'A comanda foi encerrada sem cobrança.', [
+        { text: 'OK', onPress: () => router.dismissAll() },
+      ]);
+    } catch (err: any) {
+      Alert.alert('Erro', err?.message || 'Não foi possível encerrar a comanda. Tente novamente.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const etapaAnterior = () => { const idx = ETAPAS.indexOf(etapa); if (idx > 0) setEtapa(ETAPAS[idx - 1]); else router.back(); };
 
   const cardStyle = { backgroundColor: COLORS.surface, borderRadius: 12, padding: 14, borderWidth: 0.5, borderColor: COLORS.surfaceSecondary, marginBottom: 12 };
   const labelStyle = { fontSize: 12, fontWeight: "600" as const, color: COLORS.primary, marginBottom: 8, textTransform: "uppercase" as const, letterSpacing: 0.5 };
   const btnPrimary = { backgroundColor: COLORS.primary, borderRadius: 12, padding: 16, alignItems: "center" as const };
+
+  const linhaDesconto = temDesconto ? (
+    <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 12, marginVertical: 6 }}>
+      <Text style={{ fontSize: 13, color: COLORS.danger }}>{comanda?.desconto_tipo === "cortesia" ? "Cortesia" : "Desconto"}</Text>
+      <Text style={{ fontSize: 13, color: COLORS.danger }}>- {formatCurrency(descontoEfetivo)}</Text>
+    </View>
+  ) : null;
+  const resumoComDesconto = (
+    <View style={cardStyle}>
+      <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+        <Text style={{ fontSize: 13, color: COLORS.textSecondary }}>Subtotal</Text>
+        <Text style={{ fontSize: 13, color: COLORS.text }}>{formatCurrency(subtotal)}</Text>
+      </View>
+      {linhaDesconto}
+      {gorjetaValue > 0 && <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 6 }}>
+        <Text style={{ fontSize: 13, color: COLORS.textSecondary }}>Gorjeta</Text>
+        <Text style={{ fontSize: 13, color: COLORS.text }}>{formatCurrency(gorjetaValue)}</Text>
+      </View>}
+      <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+        <Text style={{ fontSize: 18, fontWeight: "600", color: COLORS.text }}>Total</Text>
+        <Text style={{ fontSize: 18, fontWeight: "700", color: COLORS.primary }}>{formatCurrency(totalFinal)}</Text>
+      </View>
+    </View>
+  );
+  const avisoSemCobranca = (
+    <View style={cardStyle}>
+      <Text style={{ fontSize: 15, color: COLORS.text, textAlign: "center", marginBottom: 14 }}>Conta sem valor a cobrar (desconto ou cortesia)</Text>
+      <Pressable onPress={encerrarSemCobranca} disabled={saving} style={{ ...btnPrimary, opacity: saving ? 0.6 : 1 }}>
+        {saving ? <ActivityIndicator color="white" /> : <Text style={{ color: "white", fontSize: 16, fontWeight: "600" }}>Encerrar conta sem cobrança</Text>}
+      </Pressable>
+    </View>
+  );
 
   if (loading) return <View style={{ flex: 1, backgroundColor: COLORS.background, justifyContent: "center", alignItems: "center" }}><ActivityIndicator size="large" color={COLORS.primary} /></View>;
 
@@ -144,18 +195,8 @@ export default function FecharContaScreen() {
           <Pressable
             onPress={async () => {
               console.log('[FecharConta] Encerrar sem consumo pressed', { comandaId: id });
-              setSaving(true);
-              try {
-                console.log('[FecharConta] POST /api/comandas/' + id + '/fechar (sem consumo)');
-                await apiPost('/api/comandas/' + id + '/fechar', { gorjeta: 0 });
-                Alert.alert('Comanda encerrada', 'A comanda foi encerrada sem cobrança.', [
-                  { text: 'OK', onPress: () => router.dismissAll() },
-                ]);
-              } catch (err: any) {
-                Alert.alert('Erro', err?.message || 'Não foi possível encerrar a comanda. Tente novamente.');
-              } finally {
-                setSaving(false);
-              }
+              console.log('[FecharConta] POST /api/comandas/' + id + '/fechar (sem consumo)');
+              await encerrarSemCobranca();
             }}
             disabled={saving}
             style={{ backgroundColor: COLORS.primary, borderRadius: 12, padding: 16, alignItems: 'center', width: '100%', opacity: saving ? 0.6 : 1 }}
@@ -208,10 +249,12 @@ export default function FecharContaScreen() {
               );
             })}
           </View>
-          <View style={{ ...cardStyle, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-            <Text style={{ fontSize: 18, fontWeight: "600", color: COLORS.text }}>Subtotal</Text>
-            <Text style={{ fontSize: 18, fontWeight: "700", color: COLORS.primary }}>{formatCurrency(subtotal)}</Text>
-          </View>
+          {temDesconto ? resumoComDesconto : (
+            <View style={{ ...cardStyle, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+              <Text style={{ fontSize: 18, fontWeight: "600", color: COLORS.text }}>Subtotal</Text>
+              <Text style={{ fontSize: 18, fontWeight: "700", color: COLORS.primary }}>{formatCurrency(subtotal)}</Text>
+            </View>
+          )}
           <Pressable onPress={() => setEtapa("gorjeta")} style={btnPrimary}><Text style={{ color: "white", fontSize: 16, fontWeight: "600" }}>Próximo: Gorjeta</Text></Pressable>
         </>)}
 
@@ -220,6 +263,7 @@ export default function FecharContaScreen() {
             <Text style={{ fontSize: 13, color: COLORS.textSecondary }}>Subtotal</Text>
             <Text style={{ fontSize: 24, fontWeight: "700", color: COLORS.text }}>{formatCurrency(subtotal)}</Text>
           </View>
+          {temDesconto && <View style={cardStyle}>{linhaDesconto}</View>}
           <Text style={labelStyle}>Gorjeta</Text>
           <View style={{ flexDirection: "row", gap: 8, marginBottom: 16 }}>
             {[{ mode: "none" as const, label: "Sem gorjeta" }, { mode: "10" as const, label: "10%" }, { mode: "custom" as const, label: "Outro" }].map((opt) => (
@@ -255,20 +299,23 @@ export default function FecharContaScreen() {
               nome: p.pratoNome || p.prato_nome || p.prato?.nome || "Item",
               preco: parseFloat(p.precoUnitario || p.preco_unitario || "0") * (p.quantidade || 1),
             }));
-            const texto = formatReceipt({ restaurante: comanda?.restaurante_nome, mesa: comanda?.mesa_numero, itens: itensRecibo, subtotal, gorjeta: gorjetaValue, total: totalFinal });
+            const texto = formatReceipt({ restaurante: comanda?.restaurante_nome, mesa: comanda?.mesa_numero, itens: itensRecibo, subtotal, desconto: descontoEfetivo, gorjeta: gorjetaValue, total: totalFinal });
             await previewReceipt(texto, "Conferência de conta da mesa");
           }} style={{ borderWidth: 1, borderColor: COLORS.primary, borderRadius: 12, padding: 14, alignItems: "center", flexDirection: "row", justifyContent: "center", gap: 8, marginBottom: 10 }}>
             <Ionicons name="print-outline" size={20} color={COLORS.primary} />
             <Text style={{ color: COLORS.primary, fontSize: 15, fontWeight: "600" }}>Imprimir conferência</Text>
           </Pressable>
-          <Pressable onPress={() => setEtapa("divisao")} style={btnPrimary}><Text style={{ color: "white", fontSize: 16, fontWeight: "600" }}>Próximo: Divisão</Text></Pressable>
+          {semCobranca ? avisoSemCobranca : <Pressable onPress={() => setEtapa("divisao")} style={btnPrimary}><Text style={{ color: "white", fontSize: 16, fontWeight: "600" }}>Próximo: Divisão</Text></Pressable>}
         </>)}
 
         {etapa === "divisao" && (<>
-          <View style={{ ...cardStyle, alignItems: "center" }}>
-            <Text style={{ fontSize: 13, color: COLORS.textSecondary }}>Total a pagar</Text>
-            <Text style={{ fontSize: 24, fontWeight: "700", color: COLORS.primary }}>{formatCurrency(totalFinal)}</Text>
-          </View>
+          {temDesconto ? resumoComDesconto : (
+            <View style={{ ...cardStyle, alignItems: "center" }}>
+              <Text style={{ fontSize: 13, color: COLORS.textSecondary }}>Total a pagar</Text>
+              <Text style={{ fontSize: 24, fontWeight: "700", color: COLORS.primary }}>{formatCurrency(totalFinal)}</Text>
+            </View>
+          )}
+          {semCobranca ? avisoSemCobranca : (<>
           <Text style={labelStyle}>Dividir a conta?</Text>
           <View style={{ flexDirection: "row", gap: 8, marginBottom: 16 }}>
             <Pressable onPress={() => { setDividir(false); setDivisaoResult(null); }} style={{ flex: 1, backgroundColor: !dividir ? COLORS.primary : COLORS.surface, borderRadius: 12, padding: 14, alignItems: "center", borderWidth: 0.5, borderColor: !dividir ? COLORS.primary : COLORS.surfaceSecondary }}>
@@ -289,23 +336,32 @@ export default function FecharContaScreen() {
             </View>
             <View style={{ ...cardStyle, alignItems: "center" }}>
               <Text style={{ fontSize: 13, color: COLORS.textSecondary }}>Valor por pessoa</Text>
-              <Text style={{ fontSize: 28, fontWeight: "700", color: COLORS.primary }}>{formatCurrency(Math.ceil(totalFinal / numPessoas * 100) / 100)}</Text>
+              <Text style={{ fontSize: 28, fontWeight: "700", color: COLORS.primary }}>{formatCurrency(valorPorPessoa)}</Text>
             </View>
           </>)}
           <Pressable onPress={() => { if (dividir) calcularDivisao(); setEtapa("pagamento"); }} style={btnPrimary}><Text style={{ color: "white", fontSize: 16, fontWeight: "600" }}>Próximo: Pagamento</Text></Pressable>
+          </>)}
         </>)}
 
         {etapa === "pagamento" && (<>
           <View style={cardStyle}>
-            <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 4 }}><Text style={{ fontSize: 13, color: COLORS.textSecondary }}>Total da comanda</Text><Text style={{ fontSize: 13, color: COLORS.text }}>{formatCurrency(totalFinal)}</Text></View>
-            {gorjetaValue > 0 && <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 4 }}><Text style={{ fontSize: 13, color: COLORS.textSecondary }}>Gorjeta (no fechamento)</Text><Text style={{ fontSize: 13, color: COLORS.textSecondary }}>{formatCurrency(gorjetaValue)}</Text></View>}
-            {gorjetaValue > 0 && <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 4 }}><Text style={{ fontSize: 13, color: COLORS.textSecondary }}>Gorjeta</Text><Text style={{ fontSize: 13, color: COLORS.text }}>{formatCurrency(gorjetaValue)}</Text></View>}
+            {temDesconto ? (<>
+              <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 4 }}><Text style={{ fontSize: 13, color: COLORS.textSecondary }}>Subtotal</Text><Text style={{ fontSize: 13, color: COLORS.text }}>{formatCurrency(subtotal)}</Text></View>
+              {linhaDesconto}
+              {gorjetaValue > 0 && <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 4 }}><Text style={{ fontSize: 13, color: COLORS.textSecondary }}>Gorjeta</Text><Text style={{ fontSize: 13, color: COLORS.text }}>{formatCurrency(gorjetaValue)}</Text></View>}
+              <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 4 }}><Text style={{ fontSize: 13, color: COLORS.textSecondary }}>Total da comanda</Text><Text style={{ fontSize: 13, color: COLORS.text }}>{formatCurrency(totalFinal)}</Text></View>
+            </>) : (<>
+              <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 4 }}><Text style={{ fontSize: 13, color: COLORS.textSecondary }}>Total da comanda</Text><Text style={{ fontSize: 13, color: COLORS.text }}>{formatCurrency(totalFinal)}</Text></View>
+              {gorjetaValue > 0 && <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 4 }}><Text style={{ fontSize: 13, color: COLORS.textSecondary }}>Gorjeta (no fechamento)</Text><Text style={{ fontSize: 13, color: COLORS.textSecondary }}>{formatCurrency(gorjetaValue)}</Text></View>}
+              {gorjetaValue > 0 && <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 4 }}><Text style={{ fontSize: 13, color: COLORS.textSecondary }}>Gorjeta</Text><Text style={{ fontSize: 13, color: COLORS.text }}>{formatCurrency(gorjetaValue)}</Text></View>}
+            </>)}
             {totalPago > 0 && <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 4 }}><Text style={{ fontSize: 13, color: "#22C55E" }}>Já pago</Text><Text style={{ fontSize: 13, color: "#22C55E" }}>{formatCurrency(totalPago)}</Text></View>}
             <View style={{ flexDirection: "row", justifyContent: "space-between", paddingTop: 8, borderTopWidth: 0.5, borderTopColor: COLORS.surfaceSecondary }}>
               <Text style={{ fontSize: 16, fontWeight: "600", color: COLORS.text }}>{dividir ? "Pessoa " + (pessoaAtual + 1) + "/" + numPessoas : "Restante"}</Text>
               <Text style={{ fontSize: 18, fontWeight: "700", color: COLORS.primary }}>{formatCurrency(dividir ? valorPessoaAtual : restante)}</Text>
             </View>
           </View>
+          {semCobranca ? avisoSemCobranca : (<>
           <Text style={labelStyle}>Forma de pagamento</Text>
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
             {FORMAS.map((f) => (
@@ -321,6 +377,7 @@ export default function FecharContaScreen() {
             {saving ? <ActivityIndicator color="white" /> : <Text style={{ color: "white", fontSize: 16, fontWeight: "600" }}>{restante <= 0 ? "Tudo pago" : "Pagar " + formatCurrency(dividir ? valorPessoaAtual : restante)}</Text>}
           </Pressable>
           {restante <= 0 && <Pressable onPress={fecharComanda} style={{ ...btnPrimary, marginTop: 10, backgroundColor: "#22C55E" }}><Text style={{ color: "white", fontSize: 16, fontWeight: "600" }}>Fechar comanda</Text></Pressable>}
+          </>)}
         </>)}
       </ScrollView>
     </View>
