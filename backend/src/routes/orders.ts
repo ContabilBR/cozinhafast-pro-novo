@@ -10,6 +10,8 @@ import { fecharComanda } from "../services/fechamento-comanda.js";
 import { liberarMesaSeVazia } from "../services/liberar-mesa.js";
 import { abrirComandaNaMesa, TAMANHO_MAXIMO_NOME_COMANDA } from "../services/abrir-comanda.js";
 import { calcularTotalComandaMesa, calcularTotalComandaMesaComDesconto, subtotalDaComanda } from "../services/total-comanda.js";
+import { compare } from "bcryptjs";
+import { increment, getCount, resetKey } from "../utils/rate-limit.js";
 
 interface CreateComandaBody {
   mesaId?: string;
@@ -39,6 +41,96 @@ interface CreatePedidosBody {
 interface FecharComandaBody {
   gorjeta?: number;
   num_pessoas?: number;
+}
+
+// Helper for manager authorization (garcom requesting discount/cortesia via manager credentials)
+async function validateManagerAuthorization(
+  app: App,
+  db: any,
+  restauranteId: string,
+  sessionId: string,
+  sessionEmail: string,
+  autorizacao: any
+): Promise<{ valid: boolean; managerName?: string; error?: string }> {
+  // Rate limit check - shared between PUT and DELETE
+  const rateLimitKey = `desconto-auth:${restauranteId}:${sessionId}`;
+  const windowMs = 15 * 60 * 1000; // 15 minutes
+  const maxAttempts = 5;
+
+  const currentCount = getCount(rateLimitKey);
+  if (currentCount >= maxAttempts) {
+    return { valid: false, error: "rate-limited" };
+  }
+
+  // Validate autorizacao structure - must be plain object with email and senha strings
+  if (!autorizacao || typeof autorizacao !== "object" || Array.isArray(autorizacao)) {
+    increment(rateLimitKey, windowMs);
+    return { valid: false, error: "invalid-format" };
+  }
+
+  const { email: managerEmail, senha: senhaRaw } = autorizacao;
+
+  if (typeof managerEmail !== "string" || typeof senhaRaw !== "string") {
+    increment(rateLimitKey, windowMs);
+    return { valid: false, error: "invalid-format" };
+  }
+
+  // Trim email and check length; check password length (bytes)
+  const emailTrimmed = managerEmail.trim();
+  const passwordBytes = Buffer.byteLength(senhaRaw, "utf8");
+
+  if (emailTrimmed.length === 0 || emailTrimmed.length > 254 || passwordBytes > 200) {
+    increment(rateLimitKey, windowMs);
+    return { valid: false, error: "invalid-format" };
+  }
+
+  // Normalize email and check against session email to prevent self-authorization
+  const emailNormalized = emailTrimmed.toLowerCase();
+  if (emailNormalized === sessionEmail.toLowerCase()) {
+    increment(rateLimitKey, windowMs);
+    return { valid: false, error: "unauthorized" };
+  }
+
+  // Query usuario table with normalized email (using SQL lower/trim for case-insensitive comparison)
+  const managers = await db
+    .select({
+      id: schema.usuarios.id,
+      nome: schema.usuarios.nome,
+      senhaHash: schema.usuarios.senhaHash,
+      role: schema.usuarios.role,
+      ativo: schema.usuarios.ativo,
+    })
+    .from(schema.usuarios)
+    .where(
+      and(
+        eq(schema.usuarios.restauranteId, restauranteId),
+        sql`LOWER(TRIM(${schema.usuarios.email})) = ${emailNormalized}`
+      )
+    )
+    .limit(1);
+
+  // Always perform bcrypt compare, even if user not found (timing-safe)
+  // Use a realistic dummy hash if user not found
+  const manager = managers.length > 0 ? managers[0] : null;
+  const hashToCompare = manager?.senhaHash || "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcg7b3XeKeUxWdeS86E36DvDPyE";
+
+  const passwordValid = await compare(senhaRaw, hashToCompare);
+
+  // Verify manager eligibility (only if password matched, for early exit)
+  if (passwordValid) {
+    if (!manager || !manager.ativo || !["gerente", "administrador", "admin"].includes(manager.role?.toLowerCase() ?? "")) {
+      increment(rateLimitKey, windowMs);
+      return { valid: false, error: "unauthorized" };
+    }
+
+    // Reset rate limit on success
+    resetKey(rateLimitKey);
+    return { valid: true, managerName: manager.nome };
+  }
+
+  // Password mismatch or user not eligible
+  increment(rateLimitKey, windowMs);
+  return { valid: false, error: "unauthorized" };
 }
 
 export function registerOrderRoutes(app: App) {
@@ -835,7 +927,7 @@ export function registerOrderRoutes(app: App) {
   );
 
   // PUT /api/comandas/:id/desconto - Apply or update discount/courtesy for a comanda
-  app.fastify.put<{ Params: { id: string }; Body: { tipo: string; valor?: number | string; percentual?: number; motivo: string; detalhe?: string } }>(
+  app.fastify.put<{ Params: { id: string }; Body: { tipo: string; valor?: number | string; percentual?: number; motivo: string; detalhe?: string; autorizacao?: any } }>(
     "/api/comandas/:id/desconto",
     {
       attachValidation: true,
@@ -856,6 +948,7 @@ export function registerOrderRoutes(app: App) {
             percentual: {},
             motivo: { type: "string", enum: ["cliente", "erro_atendimento", "promocao", "funcionario", "outro"] },
             detalhe: {},
+            autorizacao: {},
           },
         },
         response: {
@@ -868,6 +961,8 @@ export function registerOrderRoutes(app: App) {
               desconto_valor: { type: "number" },
               desconto_tipo: { type: "string" },
               desconto_motivo: { type: "string" },
+              desconto_por_nome: { type: ["string", "null"] },
+              desconto_aplicado_por_nome: { type: ["string", "null"] },
               total: { type: "number" },
             },
           },
@@ -875,22 +970,52 @@ export function registerOrderRoutes(app: App) {
           403: { type: "object", properties: { error: { type: "string" } } },
           404: { type: "object", properties: { error: { type: "string" } } },
           409: { type: "object", properties: { error: { type: "string" } } },
+          429: { type: "object", properties: { error: { type: "string" } } },
         },
       },
     },
     async (
-      request: FastifyRequest<{ Params: { id: string }; Body: { tipo: string; valor?: number | string; percentual?: number; motivo: string; detalhe?: string } }>,
+      request: FastifyRequest<{ Params: { id: string }; Body: { tipo: string; valor?: number | string; percentual?: number; motivo: string; detalhe?: string; autorizacao?: any } }>,
       reply: FastifyReply
     ) => {
       try {
         const session = await customRequireAuth(app, request, reply);
         if (!session) return;
 
-        // Role check: only gerente, administrador, admin
+        // Role check
         const userRole = session.role?.toLowerCase() ?? "";
-        if (!["gerente", "administrador", "admin"].includes(userRole)) {
+        let authorizerName: string | null = null;
+
+        if (userRole === "garcom") {
+          // Garcom must provide valid autorizacao
+          const { autorizacao } = request.body as any;
+          if (!autorizacao) {
+            return await reply.code(403).send({ error: "Autorização inválida" });
+          }
+
+          // Validate authorization before DB operations
+          const authResult = await validateManagerAuthorization(
+            app,
+            app.db as any,
+            requireTenant(session),
+            session.id,
+            session.email ?? "",
+            autorizacao
+          );
+
+          if (authResult.error === "rate-limited") {
+            return await reply.code(429).send({ error: "Muitas tentativas. Tente novamente em 15 minutos." });
+          }
+
+          if (!authResult.valid) {
+            return await reply.code(403).send({ error: "Autorização inválida" });
+          }
+
+          authorizerName = authResult.managerName ?? null;
+        } else if (!["gerente", "administrador", "admin"].includes(userRole)) {
           return await reply.code(403).send({ error: "Sem permissão para alterar descontos." });
         }
+        // else: manager/admin/administrador - ignore autorizacao field completely
 
         const restauranteId = requireTenant(session);
         const comandaId = request.params.id;
@@ -1064,6 +1189,11 @@ export function registerOrderRoutes(app: App) {
           const { total: novoTotal, descontoEfetivo } = calcularTotalComandaMesaComDesconto(subtotal, gorjetaNum, tipo, valorCalculado);
 
           // Update comanda
+          // For garcom: descontoPorNome is manager name, descontoAplicadoPorNome is garcom name
+          // For manager: both are session.name
+          const descontoPorNomeValue = userRole === "garcom" ? authorizerName : session.name;
+          const descontoAplicadoPorNomeValue = session.name;
+
           await tx
             .update(schema.comandas)
             .set({
@@ -1073,7 +1203,8 @@ export function registerOrderRoutes(app: App) {
               descontoMotivo: motivo,
               descontoMotivoDetalhe: detalhe,
               descontoPorId: session.id,
-              descontoPorNome: session.name,
+              descontoPorNome: descontoPorNomeValue,
+              descontoAplicadoPorNome: descontoAplicadoPorNomeValue,
               descontoEm: new Date(),
               total: novoTotal.toFixed(2),
             })
@@ -1085,6 +1216,8 @@ export function registerOrderRoutes(app: App) {
             desconto_valor: descontoEfetivo,
             desconto_tipo: tipo,
             desconto_motivo: motivo,
+            desconto_por_nome: descontoPorNomeValue,
+            desconto_aplicado_por_nome: descontoAplicadoPorNomeValue,
             total: novoTotal,
           };
         });
@@ -1103,7 +1236,7 @@ export function registerOrderRoutes(app: App) {
   );
 
   // DELETE /api/comandas/:id/desconto - Remove discount from a comanda
-  app.fastify.delete<{ Params: { id: string } }>(
+  app.fastify.delete<{ Params: { id: string }; Body?: { autorizacao?: any } }>(
     "/api/comandas/:id/desconto",
     {
       attachValidation: true,
@@ -1115,6 +1248,12 @@ export function registerOrderRoutes(app: App) {
           required: ["id"],
           properties: { id: { type: "string", format: "uuid" } },
         },
+        body: {
+          type: "object",
+          properties: {
+            autorizacao: {},
+          },
+        },
         response: {
           200: {
             description: "Discount removed successfully",
@@ -1125,25 +1264,60 @@ export function registerOrderRoutes(app: App) {
               desconto_valor: { type: "number" },
               desconto_tipo: { type: ["string", "null"] },
               desconto_motivo: { type: ["string", "null"] },
+              desconto_por_nome: { type: ["string", "null"] },
+              desconto_aplicado_por_nome: { type: ["string", "null"] },
               total: { type: "number" },
             },
           },
+          400: { type: "object", properties: { error: { type: "string" } } },
           403: { type: "object", properties: { error: { type: "string" } } },
           404: { type: "object", properties: { error: { type: "string" } } },
           409: { type: "object", properties: { error: { type: "string" } } },
+          429: { type: "object", properties: { error: { type: "string" } } },
         },
       },
     },
-    async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+    async (request: FastifyRequest<{ Params: { id: string }; Body?: { autorizacao?: any } }>, reply: FastifyReply) => {
       try {
         const session = await customRequireAuth(app, request, reply);
         if (!session) return;
 
-        // Role check: only gerente, administrador, admin
+        // Role check
         const userRole = session.role?.toLowerCase() ?? "";
-        if (!["gerente", "administrador", "admin"].includes(userRole)) {
+        let authorizerName: string | null = null;
+
+        if (userRole === "garcom") {
+          // Garcom must provide valid autorizacao
+          const bodyContent = request.body as any;
+          const autorizacao = bodyContent?.autorizacao;
+
+          if (!autorizacao) {
+            return await reply.code(403).send({ error: "Autorização inválida" });
+          }
+
+          // Validate authorization before DB operations
+          const authResult = await validateManagerAuthorization(
+            app,
+            app.db as any,
+            requireTenant(session),
+            session.id,
+            session.email ?? "",
+            autorizacao
+          );
+
+          if (authResult.error === "rate-limited") {
+            return await reply.code(429).send({ error: "Muitas tentativas. Tente novamente em 15 minutos." });
+          }
+
+          if (!authResult.valid) {
+            return await reply.code(403).send({ error: "Autorização inválida" });
+          }
+
+          authorizerName = authResult.managerName ?? null;
+        } else if (!["gerente", "administrador", "admin"].includes(userRole)) {
           return await reply.code(403).send({ error: "Sem permissão para remover descontos." });
         }
+        // else: manager/admin/administrador - ignore autorizacao field completely
 
         const restauranteId = requireTenant(session);
         const comandaId = request.params.id;
@@ -1224,6 +1398,7 @@ export function registerOrderRoutes(app: App) {
               descontoMotivoDetalhe: null,
               descontoPorId: null,
               descontoPorNome: null,
+              descontoAplicadoPorNome: null,
               descontoEm: null,
               total: novoTotal.toFixed(2),
             })
@@ -1235,6 +1410,8 @@ export function registerOrderRoutes(app: App) {
             desconto_valor: 0,
             desconto_tipo: null,
             desconto_motivo: null,
+            desconto_por_nome: null,
+            desconto_aplicado_por_nome: null,
             total: novoTotal,
           };
         });

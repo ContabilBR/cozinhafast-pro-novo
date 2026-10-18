@@ -1177,6 +1177,7 @@ export function registerOrderItemRoutes(app: App) {
               descontoMotivoDetalhe: schema.comandas.descontoMotivoDetalhe,
               descontoPorId: schema.comandas.descontoPorId,
               descontoPorNome: schema.comandas.descontoPorNome,
+              descontoAplicadoPorNome: schema.comandas.descontoAplicadoPorNome,
               descontoEm: schema.comandas.descontoEm,
             })
             .from(schema.comandas)
@@ -1202,6 +1203,7 @@ export function registerOrderItemRoutes(app: App) {
                 descontoMotivoDetalhe: comanda.descontoMotivoDetalhe ?? null,
                 descontoPorId: comanda.descontoPorId ?? null,
                 descontoPorNome: comanda.descontoPorNome ?? null,
+                descontoAplicadoPorNome: comanda.descontoAplicadoPorNome ?? null,
                 descontoEm: comanda.descontoEm ?? null,
                 createdAt: comanda.createdAt,
                 closedAt: comanda.closedAt,
