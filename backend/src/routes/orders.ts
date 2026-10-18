@@ -51,7 +51,7 @@ async function validateManagerAuthorization(
   sessionId: string,
   sessionEmail: string,
   autorizacao: any
-): Promise<{ valid: boolean; managerName?: string; error?: string }> {
+): Promise<{ valid: boolean; managerName?: string; managerId?: string; error?: string }> {
   // Rate limit check - shared between PUT and DELETE
   const rateLimitKey = `desconto-auth:${restauranteId}:${sessionId}`;
   const windowMs = 15 * 60 * 1000; // 15 minutes
@@ -125,7 +125,7 @@ async function validateManagerAuthorization(
 
     // Reset rate limit on success
     resetKey(rateLimitKey);
-    return { valid: true, managerName: manager.nome };
+    return { valid: true, managerName: manager.nome, managerId: manager.id };
   }
 
   // Password mismatch or user not eligible
@@ -985,6 +985,7 @@ export function registerOrderRoutes(app: App) {
         // Role check
         const userRole = session.role?.toLowerCase() ?? "";
         let authorizerName: string | null = null;
+        let authorizerId: string | null = null;
 
         if (userRole === "garcom") {
           // Garcom must provide valid autorizacao
@@ -1012,6 +1013,7 @@ export function registerOrderRoutes(app: App) {
           }
 
           authorizerName = authResult.managerName ?? null;
+          authorizerId = authResult.managerId ?? null;
         } else if (!["gerente", "administrador", "admin"].includes(userRole)) {
           return await reply.code(403).send({ error: "Sem permissão para alterar descontos." });
         }
@@ -1189,8 +1191,9 @@ export function registerOrderRoutes(app: App) {
           const { total: novoTotal, descontoEfetivo } = calcularTotalComandaMesaComDesconto(subtotal, gorjetaNum, tipo, valorCalculado);
 
           // Update comanda
-          // For garcom: descontoPorNome is manager name, descontoAplicadoPorNome is garcom name
-          // For manager: both are session.name
+          // For garcom: descontoPorId is manager id, descontoPorNome is manager name, descontoAplicadoPorNome is garcom name
+          // For manager: descontoPorId is session id, descontoPorNome is session name, descontoAplicadoPorNome is session name
+          const descontoPorIdValue = userRole === "garcom" ? authorizerId : session.id;
           const descontoPorNomeValue = userRole === "garcom" ? authorizerName : session.name;
           const descontoAplicadoPorNomeValue = session.name;
 
@@ -1202,7 +1205,7 @@ export function registerOrderRoutes(app: App) {
               descontoTipo: tipo,
               descontoMotivo: motivo,
               descontoMotivoDetalhe: detalhe,
-              descontoPorId: session.id,
+              descontoPorId: descontoPorIdValue,
               descontoPorNome: descontoPorNomeValue,
               descontoAplicadoPorNome: descontoAplicadoPorNomeValue,
               descontoEm: new Date(),
@@ -1285,6 +1288,7 @@ export function registerOrderRoutes(app: App) {
         // Role check
         const userRole = session.role?.toLowerCase() ?? "";
         let authorizerName: string | null = null;
+        let authorizerId: string | null = null;
 
         if (userRole === "garcom") {
           // Garcom must provide valid autorizacao
@@ -1314,6 +1318,7 @@ export function registerOrderRoutes(app: App) {
           }
 
           authorizerName = authResult.managerName ?? null;
+          authorizerId = authResult.managerId ?? null;
         } else if (!["gerente", "administrador", "admin"].includes(userRole)) {
           return await reply.code(403).send({ error: "Sem permissão para remover descontos." });
         }
