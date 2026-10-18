@@ -20,7 +20,7 @@ import { useColors } from '@/hooks/useColors';
 import { CancelarItemModal } from '@/components/CancelarItemModal';
 import { cancelarItem, permissaoCancelarItem, subtotalItensAtivos } from '@/utils/cancelamento';
 import { DescontoModal } from '@/components/DescontoModal';
-import { aplicarDesconto, removerDesconto, calcularTotalComDesconto, podeConcederDesconto, MOTIVOS_DESCONTO } from '@/utils/desconto';
+import { aplicarDesconto, removerDesconto, calcularTotalComDesconto, podeAbrirFluxoDesconto, exigeAutorizacaoGerente, MOTIVOS_DESCONTO } from '@/utils/desconto';
 
 type Prato = {
   id: string;
@@ -365,7 +365,7 @@ export default function ComandaDetailScreen() {
   const temDesconto = comanda?.desconto_tipo === 'desconto' || comanda?.desconto_tipo === 'cortesia';
   const { descontoEfetivo, total: totalComDesconto } = calcularTotalComDesconto(total, comanda?.desconto_tipo, comanda?.desconto_valor);
   const motivoDesconto = MOTIVOS_DESCONTO.find((m) => m.value === comanda?.desconto_motivo)?.label;
-  const podeAbrirDesconto = isManager && podeConcederDesconto(user?.role) && comanda?.status === 'aberta' && total > 0;
+  const podeAbrirDesconto = podeAbrirFluxoDesconto(user?.role) && comanda?.status === 'aberta' && total > 0;
   const [footerHeight, setFooterHeight] = useState(120);
 
   const resumoDesconto = (
@@ -397,16 +397,17 @@ export default function ComandaDetailScreen() {
   ) : null;
   const modalDesconto = (
     <DescontoModal visible={descontoVisible} subtotal={total} descontoAtual={comanda}
+      exigeAutorizacao={exigeAutorizacaoGerente(user?.role)}
       onClose={() => setDescontoVisible(false)}
-      onApply={async (corpo) => {
+      onApply={async (corpo, autorizacao) => {
         if (!id) return;
-        await aplicarDesconto(id, corpo);
+        await aplicarDesconto(id, corpo, autorizacao);
         setDescontoVisible(false);
         await fetchData();
       }}
-      onRemove={async () => {
+      onRemove={async (autorizacao) => {
         if (!id) return;
-        await removerDesconto(id);
+        await removerDesconto(id, autorizacao);
         setDescontoVisible(false);
         await fetchData();
       }}
@@ -742,12 +743,13 @@ export default function ComandaDetailScreen() {
     );
   }
 
-  // ─── Waiter view (unchanged) ───────────────────────────────────────────────
+  // ─── Waiter view ───────────────────────────────────────────────────────────
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <NavBar title={headerTitle} />
       {modalCancelarItem}
+      {modalDesconto}
 
       {/* Tab bar */}
       <View style={styles.tabBar}>
@@ -955,6 +957,7 @@ export default function ComandaDetailScreen() {
                 <Text style={styles.totalValue}>{totalDisplay}</Text>
               </View>
             )}
+            {botaoDesconto}
 
           </ScrollView>
         )}

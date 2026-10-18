@@ -6,7 +6,7 @@ import {
 import { useColors } from '@/hooks/useColors';
 import { CampoMoeda } from '@/components/CampoMoeda';
 import {
-  AplicarDescontoCorpo, DescontoAtual, MotivoDesconto,
+  AplicarDescontoCorpo, AutorizacaoGerente, DescontoAtual, MotivoDesconto,
   MOTIVOS_DESCONTO, calcularTotalComDesconto,
 } from '@/utils/desconto';
 
@@ -14,8 +14,9 @@ type Props = {
   visible: boolean;
   subtotal: number;
   descontoAtual?: DescontoAtual | null;
-  onApply: (corpo: AplicarDescontoCorpo) => Promise<void>;
-  onRemove: () => Promise<void>;
+  exigeAutorizacao: boolean;
+  onApply: (corpo: AplicarDescontoCorpo, autorizacao?: AutorizacaoGerente) => Promise<void>;
+  onRemove: (autorizacao?: AutorizacaoGerente) => Promise<void>;
   onClose: () => void;
 };
 
@@ -27,7 +28,7 @@ const TIPOS: { value: OpcaoTipo; label: string }[] = [
 ];
 const moeda = (valor: number) => `R$ ${valor.toFixed(2).replace('.', ',')}`;
 
-export function DescontoModal({ visible, subtotal, descontoAtual, onApply, onRemove, onClose }: Props) {
+export function DescontoModal({ visible, subtotal, descontoAtual, exigeAutorizacao, onApply, onRemove, onClose }: Props) {
   const COLORS = useColors();
   const [tipo, setTipo] = useState<OpcaoTipo>('reais');
   const [valorTexto, setValorTexto] = useState('');
@@ -37,7 +38,16 @@ export function DescontoModal({ visible, subtotal, descontoAtual, onApply, onRem
   const [detalhe, setDetalhe] = useState('');
   const [enviando, setEnviando] = useState(false);
   const [erro, setErro] = useState('');
+  const [emailGerente, setEmailGerente] = useState('');
+  const [senhaGerente, setSenhaGerente] = useState('');
+  const autorizacaoValida = !exigeAutorizacao || (/^[^\s@]+@[^\s@]+$/.test(emailGerente.trim()) && senhaGerente.trim().length > 0);
+  const acaoDesabilitada = enviando || !autorizacaoValida;
   const emEnvio = useRef(false);
+
+  useEffect(() => {
+    setSenhaGerente('');
+    setEmailGerente('');
+  }, [visible, exigeAutorizacao]);
   const temDesconto = descontoAtual?.desconto_tipo === 'desconto' || descontoAtual?.desconto_tipo === 'cortesia';
 
   useEffect(() => {
@@ -67,13 +77,18 @@ export function DescontoModal({ visible, subtotal, descontoAtual, onApply, onRem
     } catch (e: any) {
       setErro(e?.message || 'Não foi possível atualizar o desconto. Tente novamente.');
     } finally {
+      setSenhaGerente('');
       emEnvio.current = false;
       setEnviando(false);
     }
   };
 
+  const autorizacaoAtual = (): AutorizacaoGerente | undefined => exigeAutorizacao
+    ? { email: emailGerente.trim(), senha: senhaGerente }
+    : undefined;
+
   const aplicar = () => {
-    if (emEnvio.current) return;
+    if (emEnvio.current || !autorizacaoValida) return;
     if (tipo === 'reais' && (!Number.isFinite(valor) || valor <= 0)) {
       setErro('Informe um valor maior que zero.'); return;
     }
@@ -96,22 +111,27 @@ export function DescontoModal({ visible, subtotal, descontoAtual, onApply, onRem
     if (tipo === 'cortesia') {
       Alert.alert('Confirmar cortesia', `O valor integral dos itens (${moeda(subtotal)}) será abatido. Deseja aplicar a cortesia?`, [
         { text: 'Cancelar', style: 'cancel' },
-        { text: 'Confirmar cortesia', style: 'destructive', onPress: () => { void enviar(() => onApply(corpo)); } },
+        { text: 'Confirmar cortesia', style: 'destructive', onPress: () => { void enviar(() => onApply(corpo, autorizacaoAtual())); } },
       ]);
     } else {
-      void enviar(() => onApply(corpo));
+      void enviar(() => onApply(corpo, autorizacaoAtual()));
     }
   };
 
   const remover = () => {
-    if (emEnvio.current) return;
+    if (emEnvio.current || !autorizacaoValida) return;
     Alert.alert('Remover desconto', 'O desconto ou a cortesia será removido e os itens voltarão a ser cobrados integralmente. Deseja continuar?', [
       { text: 'Cancelar', style: 'cancel' },
-      { text: 'Remover desconto', style: 'destructive', onPress: () => { void enviar(onRemove); } },
+      { text: 'Remover desconto', style: 'destructive', onPress: () => { void enviar(() => onRemove(autorizacaoAtual())); } },
     ]);
   };
 
-  const fechar = () => { if (!emEnvio.current) onClose(); };
+  const fechar = () => {
+    if (!emEnvio.current) {
+      setSenhaGerente('');
+      onClose();
+    }
+  };
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={fechar}>
       <KeyboardAvoidingView style={s.overlay} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
@@ -167,10 +187,33 @@ export function DescontoModal({ visible, subtotal, descontoAtual, onApply, onRem
               <View style={s.row}><Text style={{ color: COLORS.textSecondary }}>Desconto</Text><Text style={{ color: COLORS.danger }}>− {moeda(previa.descontoEfetivo)}</Text></View>
               <View style={s.row}><Text style={[s.bold, { color: COLORS.text }]}>Novo total</Text><Text style={[s.bold, { color: COLORS.text }]}>{moeda(previa.total)}</Text></View>
             </View>
+            {exigeAutorizacao && (
+              <View style={{ marginTop: 16, gap: 8 }}>
+                <Text style={[s.label, { color: COLORS.text }]}>Autorização do gerente</Text>
+                <Text style={[s.optionText, { color: COLORS.textSecondary }]}>
+                  Um gerente precisa informar e-mail e senha para liberar o desconto ou a cortesia.
+                </Text>
+                <Text style={[s.label, { color: COLORS.textSecondary }]}>E-mail do gerente</Text>
+                <TextInput value={emailGerente} onChangeText={setEmailGerente} editable={!enviando}
+                  keyboardType="email-address" autoCapitalize="none" autoCorrect={false}
+                  autoComplete="off" textContentType="none" importantForAutofill="no"
+                  accessibilityLabel="E-mail do gerente" placeholder="E-mail do gerente"
+                  placeholderTextColor={COLORS.textTertiary}
+                  style={[s.input, { color: COLORS.text, borderColor: COLORS.border, backgroundColor: COLORS.surfaceSecondary }]} />
+                <Text style={[s.label, { color: COLORS.textSecondary }]}>Senha do gerente</Text>
+                <TextInput value={senhaGerente} onChangeText={setSenhaGerente} editable={!enviando}
+                  secureTextEntry autoCapitalize="none" autoCorrect={false} spellCheck={false}
+                  autoComplete="off" textContentType="none" importantForAutofill="noExcludeDescendants"
+                  accessibilityLabel="Senha do gerente" placeholder="Senha do gerente"
+                  placeholderTextColor={COLORS.textTertiary}
+                  style={[s.input, { color: COLORS.text, borderColor: COLORS.border, backgroundColor: COLORS.surfaceSecondary }]} />
+              </View>
+            )}
           </ScrollView>
           {erro ? <Text accessibilityRole="alert" style={[s.error, { color: COLORS.danger }]}>{erro}</Text> : null}
           {temDesconto && (
-            <Pressable onPress={remover} disabled={enviando} style={[s.remove, { opacity: enviando ? 0.5 : 1 }]}>
+            <Pressable onPress={remover} disabled={acaoDesabilitada} accessibilityRole="button"
+              accessibilityState={{ disabled: acaoDesabilitada }} style={[s.remove, { opacity: acaoDesabilitada ? 0.5 : 1 }]}>
               <Text style={[s.btnText, { color: COLORS.danger }]}>Remover desconto</Text>
             </Pressable>
           )}
@@ -178,7 +221,8 @@ export function DescontoModal({ visible, subtotal, descontoAtual, onApply, onRem
             <Pressable disabled={enviando} onPress={fechar} style={[s.btn, { borderWidth: 1, borderColor: COLORS.border, opacity: enviando ? 0.5 : 1 }]}>
               <Text style={[s.btnText, { color: COLORS.textSecondary }]}>Cancelar</Text>
             </Pressable>
-            <Pressable disabled={enviando} onPress={aplicar} style={[s.btn, { backgroundColor: COLORS.primary, opacity: enviando ? 0.6 : 1 }]}>
+            <Pressable disabled={acaoDesabilitada} onPress={aplicar} accessibilityRole="button"
+              accessibilityState={{ disabled: acaoDesabilitada }} style={[s.btn, { backgroundColor: COLORS.primary, opacity: acaoDesabilitada ? 0.6 : 1 }]}>
               {enviando ? <ActivityIndicator color="#fff" size="small" /> : <Text style={[s.btnText, { color: '#fff' }]}>Aplicar</Text>}
             </Pressable>
           </View>

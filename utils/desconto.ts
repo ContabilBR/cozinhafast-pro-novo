@@ -16,6 +16,19 @@ export function podeConcederDesconto(role: string | null | undefined): boolean {
   return ["gerente", "administrador", "admin"].includes((role ?? "").toLowerCase());
 }
 
+export function podeAbrirFluxoDesconto(role: string | null | undefined): boolean {
+  return podeConcederDesconto(role) || exigeAutorizacaoGerente(role);
+}
+
+export function exigeAutorizacaoGerente(role: string | null | undefined): boolean {
+  return (role ?? "").toLowerCase() === "garcom";
+}
+
+export interface AutorizacaoGerente {
+  email: string;
+  senha: string;
+}
+
 function numeroNaoNegativo(valor: unknown): number {
   if (typeof valor !== "number" && typeof valor !== "string") return 0;
   const numero = Number(valor);
@@ -49,11 +62,13 @@ export interface RespostaDesconto {
   desconto_valor: number;
   desconto_tipo: string | null;
   desconto_motivo: string | null;
+  desconto_por_nome: string | null;
+  desconto_aplicado_por_nome: string | null;
   total: number;
 }
 
 /** Erros mantêm a mensagem do servidor através do mesmo cliente usado no cancelamento. */
-export function aplicarDesconto(comandaId: string, corpo: AplicarDescontoCorpo): Promise<RespostaDesconto> {
+export function aplicarDesconto(comandaId: string, corpo: AplicarDescontoCorpo, autorizacao?: AutorizacaoGerente): Promise<RespostaDesconto> {
   const { motivo, detalhe } = corpo;
   const dados = {
     motivo,
@@ -64,9 +79,16 @@ export function aplicarDesconto(comandaId: string, corpo: AplicarDescontoCorpo):
     : "valor" in corpo && corpo.valor !== undefined
       ? { ...dados, tipo: "desconto", valor: corpo.valor }
       : { ...dados, tipo: "desconto", percentual: corpo.percentual };
-  return apiPut<RespostaDesconto>(`/api/comandas/${comandaId}/desconto`, payload);
+  return apiPut<RespostaDesconto>(`/api/comandas/${comandaId}/desconto`, autorizacao
+    ? { ...payload, autorizacao: { email: autorizacao.email.trim(), senha: autorizacao.senha } }
+    : payload);
 }
 
-export function removerDesconto(comandaId: string): Promise<RespostaDesconto> {
+export function removerDesconto(comandaId: string, autorizacao?: AutorizacaoGerente): Promise<RespostaDesconto> {
+  if (autorizacao) {
+    return apiDelete<RespostaDesconto>(`/api/comandas/${comandaId}/desconto`, {
+      autorizacao: { email: autorizacao.email.trim(), senha: autorizacao.senha },
+    });
+  }
   return apiDelete<RespostaDesconto>(`/api/comandas/${comandaId}/desconto`);
 }
