@@ -4,7 +4,7 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import type { App } from "../index.js";
 import { requireAuth as customRequireAuth, requireTenant, requireRole } from "../utils/auth.js";
 import * as schema from "../db/schema/schema.js";
-import { subtotalDaComanda } from "../services/total-comanda.js";
+import { subtotalDaComanda, calcularTotalComandaMesaComDesconto } from "../services/total-comanda.js";
 
 // Pagamento de comanda (dinheiro, cartão, Pix) é sempre reconciliado manualmente pelo
 // garçom — o restaurante usa a própria maquininha/chave Pix e o app só registra qual
@@ -41,7 +41,7 @@ export function registerPagamentoRoutes(app: App) {
         const restauranteId = requireTenant(authUser);
 
         // Verificar se comanda existe e pertence ao tenant
-        const comanda = await db.select({ id: schema.comandas.id, status: schema.comandas.status, total: schema.comandas.total, tipo: schema.comandas.tipo }).from(schema.comandas).where(and(eq(schema.comandas.id, request.params.id), eq(schema.comandas.restauranteId, restauranteId)));
+        const comanda = await db.select({ id: schema.comandas.id, status: schema.comandas.status, total: schema.comandas.total, tipo: schema.comandas.tipo, descontoTipo: schema.comandas.descontoTipo, descontoValor: schema.comandas.descontoValor }).from(schema.comandas).where(and(eq(schema.comandas.id, request.params.id), eq(schema.comandas.restauranteId, restauranteId)));
         if (!comanda.length) return await reply.code(404).send({ error: "Comanda não encontrada" });
         if (comanda[0].tipo === 'delivery') return await reply.code(400).send({ error: "Este é um pedido de delivery. Use a tela de Delivery." });
         if (comanda[0].status !== "aberta") return await reply.code(400).send({ error: "Comanda não está aberta" });
@@ -70,7 +70,7 @@ export function registerPagamentoRoutes(app: App) {
         // gravar aqui inflava o total a cada pagamento (e compunha ainda mais em
         // contas divididas entre várias pessoas).
         const gorjetaBody = (request.body as any).gorjeta || 0;
-        const totalComandaFinal = totalComanda + gorjetaBody;
+        const { total: totalComandaFinal, descontoEfetivo } = calcularTotalComandaMesaComDesconto(totalComanda, gorjetaBody, comanda[0].descontoTipo, comanda[0].descontoValor);
 
         // Only validate overpayment if comanda has a total
         const restanteFinal = totalComandaFinal - totalPago;
@@ -96,7 +96,7 @@ export function registerPagamentoRoutes(app: App) {
 
         return await reply.code(201).send({
           pagamento,
-          resumo: { total_comanda: totalComandaFinal, total_pago: totalPago + (statusPagamento === "confirmado" ? valor : 0), restante: restanteFinal - (statusPagamento === "confirmado" ? valor : 0) },
+          resumo: { total_comanda: totalComandaFinal, desconto_valor: descontoEfetivo, total_pago: totalPago + (statusPagamento === "confirmado" ? valor : 0), restante: restanteFinal - (statusPagamento === "confirmado" ? valor : 0) },
         });
       } catch (err) {
         app.logger.error({ error: (err as any).message }, "Erro ao registrar pagamento");
@@ -189,18 +189,21 @@ export function registerPagamentoRoutes(app: App) {
         const restauranteId = requireTenant(authUser);
 
         // Verificar comanda
-        const comanda = await db.select({ id: schema.comandas.id, status: schema.comandas.status, total: schema.comandas.total, tipo: schema.comandas.tipo }).from(schema.comandas).where(and(eq(schema.comandas.id, request.params.id), eq(schema.comandas.restauranteId, restauranteId)));
+        const comanda = await db.select({ id: schema.comandas.id, status: schema.comandas.status, total: schema.comandas.total, tipo: schema.comandas.tipo, descontoTipo: schema.comandas.descontoTipo, descontoValor: schema.comandas.descontoValor }).from(schema.comandas).where(and(eq(schema.comandas.id, request.params.id), eq(schema.comandas.restauranteId, restauranteId)));
         if (!comanda.length) return await reply.code(404).send({ error: "Comanda não encontrada" });
         if (comanda[0].tipo === 'delivery') return await reply.code(400).send({ error: "Este é um pedido de delivery. Use a tela de Delivery." });
 
         const totalComanda = await subtotalDaComanda(db, request.params.id);
         const gorjeta = request.body.gorjeta || 0;
-        const totalComGorjeta = totalComanda + gorjeta;
+        const { total: totalComGorjeta, descontoEfetivo } = calcularTotalComandaMesaComDesconto(totalComanda, gorjeta, comanda[0].descontoTipo, comanda[0].descontoValor);
 
         // Buscar pagamentos já feitos
         const pagamentosExistentes = await db.select({ valor: schema.pagamentos.valor }).from(schema.pagamentos).where(and(eq(schema.pagamentos.comandaId, request.params.id), eq(schema.pagamentos.status, "confirmado")));
         const totalPago = pagamentosExistentes.reduce((sum: number, p: any) => sum + parseFloat(p.valor), 0);
         const restante = totalComGorjeta - totalPago;
+
+        // Check if total due is less than 0.01 (effectively free or cortesia)
+        const totalSemCobranca = totalComGorjeta < 0.01;
 
         // Buscar todos os pedidos da comanda
         const pedidosDaComanda = await db.select({
@@ -221,21 +224,31 @@ export function registerPagamentoRoutes(app: App) {
           const numPessoas = request.body.num_pessoas || 2;
           if (numPessoas < 2) return await reply.code(400).send({ error: "Número de pessoas deve ser pelo menos 2" });
 
-          const valorPorPessoa = Math.ceil(restante / numPessoas * 100) / 100;
-          const ajuste = Math.round((valorPorPessoa * numPessoas - restante) * 100) / 100;
+          let divisao: any[];
+          if (totalSemCobranca) {
+            // Total é zero ou muito pequeno — sem cobrança
+            divisao = Array.from({ length: numPessoas }, (_, i) => ({
+              pessoa: i + 1,
+              valor: 0,
+            }));
+          } else {
+            const valorPorPessoa = Math.ceil(restante / numPessoas * 100) / 100;
+            const ajuste = Math.round((valorPorPessoa * numPessoas - restante) * 100) / 100;
 
-          const divisao = Array.from({ length: numPessoas }, (_, i) => ({
-            pessoa: i + 1,
-            valor: i === numPessoas - 1 ? Math.round((valorPorPessoa - ajuste) * 100) / 100 : valorPorPessoa,
-          }));
+            divisao = Array.from({ length: numPessoas }, (_, i) => ({
+              pessoa: i + 1,
+              valor: i === numPessoas - 1 ? Math.round((valorPorPessoa - ajuste) * 100) / 100 : valorPorPessoa,
+            }));
+          }
 
           return await reply.code(200).send({
             tipo: "igual",
             total_comanda: totalComanda,
+            desconto_valor: descontoEfetivo,
             gorjeta,
             total_com_gorjeta: totalComGorjeta,
             total_pago: totalPago,
-            restante,
+            restante: totalSemCobranca ? 0 : restante,
             num_pessoas: numPessoas,
             divisao,
           });
@@ -265,7 +278,7 @@ export function registerPagamentoRoutes(app: App) {
             return { nome: pessoa.nome, itens, subtotal };
           });
 
-          // Distribuir gorjeta proporcionalmente
+          // Distribuir gorjeta e desconto proporcionalmente
           const totalItensAtribuidos = divisao.reduce((sum: number, d: any) => sum + d.subtotal, 0);
           const itensNaoAtribuidos = totalComanda - totalItensAtribuidos;
 
@@ -273,23 +286,34 @@ export function registerPagamentoRoutes(app: App) {
             const proporcao = totalItensAtribuidos > 0 ? d.subtotal / totalItensAtribuidos : 1 / divisao.length;
             const gorjetaProporcional = Math.round(gorjeta * proporcao * 100) / 100;
             const rateiNaoAtribuido = Math.round(itensNaoAtribuidos * proporcao * 100) / 100;
+            const descontoProporcional = Math.round(descontoEfetivo * proporcao * 100) / 100;
+
+            let totalAPagar = 0;
+            if (totalSemCobranca) {
+              totalAPagar = 0;
+            } else {
+              totalAPagar = Math.round((d.subtotal + gorjetaProporcional + rateiNaoAtribuido - descontoProporcional) * 100) / 100;
+            }
+
             return {
               nome: d.nome,
               itens: d.itens,
               subtotal_itens: d.subtotal,
               rateio_itens_nao_atribuidos: rateiNaoAtribuido,
               gorjeta_proporcional: gorjetaProporcional,
-              total_a_pagar: Math.round((d.subtotal + gorjetaProporcional + rateiNaoAtribuido) * 100) / 100,
+              desconto_proporcional: descontoProporcional,
+              total_a_pagar: totalAPagar,
             };
           });
 
           return await reply.code(200).send({
             tipo: "por_itens",
             total_comanda: totalComanda,
+            desconto_valor: descontoEfetivo,
             gorjeta,
             total_com_gorjeta: totalComGorjeta,
             total_pago: totalPago,
-            restante,
+            restante: totalSemCobranca ? 0 : restante,
             itens_nao_atribuidos: itensNaoAtribuidos,
             num_pessoas: pessoas.length,
             divisao: divisaoFinal,
