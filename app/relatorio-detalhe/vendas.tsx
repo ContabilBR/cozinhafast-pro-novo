@@ -17,6 +17,7 @@ interface TotaisVendas {
   faturamento_itens: number;
   gorjeta: number;
   taxa_entrega: number;
+  desconto_aplicado: number;
   total_recebido: number;
   ticket_medio: number;
 }
@@ -30,6 +31,7 @@ interface VendasReport {
     totais: TotaisVendas;
     variacao_percentual: {
       faturamento_itens: number | null;
+      desconto_aplicado: number | null;
       total_recebido: number | null;
       ticket_medio: number | null;
     };
@@ -82,6 +84,15 @@ export default function VendasDetalhadasScreen() {
       if (!result?.totais || !Array.isArray(result.por_canal) || !Array.isArray(result.por_dia)) {
         throw new Error('O relatório recebido está incompleto. Tente novamente.');
       }
+      const hasDiscount = (row: TotaisVendas | null | undefined) =>
+        typeof row?.desconto_aplicado === 'number' && Number.isFinite(row.desconto_aplicado) && row.desconto_aplicado >= 0;
+      const previous = result.comparacao_anterior;
+      const discountVariation = previous?.variacao_percentual?.desconto_aplicado;
+      if (![result.totais, ...result.por_canal, ...result.por_dia].every(hasDiscount)
+        || (previous != null && (!hasDiscount(previous.totais)
+          || (discountVariation !== null && (typeof discountVariation !== 'number' || !Number.isFinite(discountVariation)))))) {
+        throw new Error('O relatório recebido está incompleto. Tente novamente.');
+      }
       setData(result);
     } catch (err: unknown) {
       if (current !== sequence.current) return;
@@ -123,10 +134,11 @@ export default function VendasDetalhadasScreen() {
   const channelTotal = channels.reduce((sum, item) => sum + Math.max(0, item.values?.total_recebido ?? 0), 0);
   const days = [...(data?.por_dia ?? [])].sort((a, b) => a.data.localeCompare(b.data));
   const maxDay = Math.max(0, ...days.map(day => day.total_recebido));
-  const metrics = data ? [
+  const metrics: { label: string; value: string; danger?: boolean }[] = data ? [
     { label: 'Faturamento de itens', value: formatCurrency(data.totais.faturamento_itens) },
     { label: 'Gorjeta', value: formatCurrency(data.totais.gorjeta) },
     { label: 'Taxa de entrega', value: formatCurrency(data.totais.taxa_entrega) },
+    ...(data.totais.desconto_aplicado > 0 ? [{ label: 'Descontos e cortesias', value: `-${formatCurrency(data.totais.desconto_aplicado)}`, danger: true }] : []),
     { label: 'Ticket médio', value: formatCurrency(data.totais.ticket_medio) },
     { label: 'Comandas fechadas', value: String(data.totais.comandas_fechadas) },
   ] : [];
@@ -190,10 +202,12 @@ export default function VendasDetalhadasScreen() {
                 </View>
                 {comparison && <Text style={muted}>Período anterior: {comparison.periodo.nome}</Text>}
               </View>
-              <Text style={[muted, { lineHeight: 20 }]}>Total recebido é itens mais gorjeta mais taxa de entrega.</Text>
+              <Text style={[muted, { lineHeight: 20 }]}>{data.totais.desconto_aplicado > 0
+                ? 'O faturamento de itens é bruto. O total recebido inclui gorjeta e taxa de entrega e já considera os descontos e cortesias.'
+                : 'Total recebido é itens mais gorjeta mais taxa de entrega.'}</Text>
               {empty && <View style={[card, styles.state]}><Ionicons name="receipt-outline" size={30} color={COLORS.textSecondary} /><Text style={title}>Nenhuma venda no período</Text><Text style={[muted, styles.center]}>Selecione outro período ou puxe para atualizar.</Text></View>}
               <View style={styles.grid}>
-                {metrics.map(metric => <View key={metric.label} style={[card, styles.tile]}><Text style={muted}>{metric.label}</Text><Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.45} style={[number, { fontSize: 22 }]}>{metric.value}</Text></View>)}
+                {metrics.map(metric => <View key={metric.label} style={[card, styles.tile]}><Text style={[muted, metric.danger && { color: COLORS.danger }]}>{metric.label}</Text><Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.45} style={[number, { fontSize: 22 }, metric.danger && { color: COLORS.danger }]}>{metric.value}</Text></View>)}
               </View>
               <View style={card}>
                 <Text accessibilityRole="header" style={title}>Por canal</Text>

@@ -6,14 +6,14 @@ type NullableNumber = number | null;
 interface PeriodoAPI { nome: string; inicio: string; fim: string }
 interface TotaisVendas {
   comandas_fechadas: number; comandas_com_consumo: number; faturamento_itens: number;
-  gorjeta: number; taxa_entrega: number; total_recebido: number; ticket_medio: number;
+  gorjeta: number; taxa_entrega: number; desconto_aplicado: number; total_recebido: number; ticket_medio: number;
 }
 interface Vendas {
   periodo: PeriodoAPI; totais: TotaisVendas;
   por_canal: (TotaisVendas & { canal: string })[];
   por_dia: (TotaisVendas & { data: string })[];
   comparacao_anterior?: { periodo: PeriodoAPI; totais: TotaisVendas;
-    variacao_percentual: { faturamento_itens: NullableNumber; total_recebido: NullableNumber; ticket_medio: NullableNumber } } | null;
+    variacao_percentual: { faturamento_itens: NullableNumber; desconto_aplicado: NullableNumber; total_recebido: NullableNumber; ticket_medio: NullableNumber } } | null;
   comandas_inconsistentes: number;
 }
 interface ValorCancelado { quantidade: number; valor: number; valor_perda: number }
@@ -151,13 +151,21 @@ function sheet(name: string, rows: Rows): Sheet {
 function periodRows(value: PeriodoAPI): Rows {
   return [['Período', value.nome], ['Início', dateBR(value.inicio)], ['Fim (exclusivo)', dateBR(value.fim)]];
 }
-const salesHeaders = ['Comandas fechadas', 'Comandas com consumo', 'Faturamento de itens', 'Gorjeta', 'Taxa de entrega', 'Total recebido', 'Ticket médio'];
+const salesHeaders = ['Comandas fechadas', 'Comandas com consumo', 'Faturamento de itens', 'Gorjeta', 'Taxa de entrega', 'Descontos e cortesias', 'Total recebido', 'Ticket médio'];
 function salesRow(value: TotaisVendas): Cell[] {
   return [count(value.comandas_fechadas), count(value.comandas_com_consumo), money(value.faturamento_itens),
-    money(value.gorjeta), money(value.taxa_entrega), money(value.total_recebido), money(value.ticket_medio)];
+    money(value.gorjeta), money(value.taxa_entrega), money(value.desconto_aplicado), money(value.total_recebido), money(value.ticket_medio)];
 }
 function vendasSheets(data: Vendas): Sheet[] {
   assertReport(data, ['por_canal', 'por_dia']);
+  const hasDiscount = (row: TotaisVendas | null | undefined) =>
+    typeof row?.desconto_aplicado === 'number' && Number.isFinite(row.desconto_aplicado) && row.desconto_aplicado >= 0;
+  const previousDiscount = data.comparacao_anterior?.variacao_percentual?.desconto_aplicado;
+  if (![data.totais, ...data.por_canal, ...data.por_dia].every(hasDiscount)
+    || (data.comparacao_anterior != null && (!hasDiscount(data.comparacao_anterior.totais)
+      || (previousDiscount !== null && (typeof previousDiscount !== 'number' || !Number.isFinite(previousDiscount)))))) {
+    throw new Error('Resposta incompleta do relatório de vendas.');
+  }
   const rows: Rows = [['VENDAS'], ...periodRows(data.periodo), [], ['TOTAIS'], salesHeaders, salesRow(data.totais),
     [], ['POR CANAL'], ['Canal', ...salesHeaders], ...data.por_canal.map(row => [channel(row.canal), ...salesRow(row)]),
     [], ['Comandas inconsistentes', count(data.comandas_inconsistentes)]];
@@ -166,6 +174,7 @@ function vendasSheets(data: Vendas): Sheet[] {
     rows.push([], ['COMPARAÇÃO COM O PERÍODO ANTERIOR'], ...periodRows(previous.periodo), salesHeaders, salesRow(previous.totais),
       [], ['Métrica', 'Variação em relação ao período anterior'],
       ['Faturamento de itens', percentage(previous.variacao_percentual.faturamento_itens)],
+      ['Descontos e cortesias', percentage(previous.variacao_percentual.desconto_aplicado)],
       ['Total recebido', percentage(previous.variacao_percentual.total_recebido)],
       ['Ticket médio', percentage(previous.variacao_percentual.ticket_medio)]);
   }
