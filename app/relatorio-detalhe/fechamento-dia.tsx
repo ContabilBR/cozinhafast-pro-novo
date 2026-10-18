@@ -8,18 +8,26 @@ import {
 } from '@/components/DetailedReport';
 import { useColors } from '@/hooks/useColors';
 import { formatCurrency } from '@/utils/helpers';
+import { MOTIVOS_DESCONTO } from '@/utils/desconto';
 
 const TIME_ZONE = 'America/Sao_Paulo';
 type Canal = { comandas_fechadas: number; total_recebido: number };
 type Forma = { quantidade: number; valor_entregue: number; troco: number; valor_liquido: number };
+type BlocoDesconto = {
+  quantidade: number; valor: number;
+  por_motivo: { motivo: string; quantidade: number; valor: number }[];
+  por_responsavel: { nome: string; quantidade: number; valor: number }[];
+};
 interface FechamentoDia {
   data: string;
   eh_hoje: boolean;
   vendas: {
     comandas_fechadas: number; faturamento_itens: number; gorjeta: number;
-    taxa_entrega: number; total_recebido: number; ticket_medio: number;
+    taxa_entrega: number; desconto_aplicado: number; total_recebido: number; ticket_medio: number;
     por_canal: { mesa: Canal; delivery: Canal };
   };
+  descontos: BlocoDesconto;
+  cortesias: BlocoDesconto;
   pagamentos: {
     formas: { dinheiro: Forma; pix: Forma; cartao_debito: Forma; cartao_credito: Forma };
     total_liquido: number; dinheiro_em_caixa: number;
@@ -73,12 +81,15 @@ function horaBrasilia(value: string) {
 const contagem = (value: number, singular: string, plural: string) =>
   `${value.toLocaleString('pt-BR')} ${value === 1 ? singular : plural}`;
 
-function Linha({ label, value, note }: { label: string; value: string; note?: string }) {
+const motivoLabel = (motivo: string) => motivo === 'nao_informado' ? 'Não informado'
+  : MOTIVOS_DESCONTO.find(item => item.value === motivo)?.label ?? motivo;
+
+function Linha({ label, value, note, danger = false }: { label: string; value: string; note?: string; danger?: boolean }) {
   const colors = useColors();
   return <View style={[reportStyles.row, { borderBottomColor: colors.border }]}>
     <View style={styles.values}>
       <Text style={[reportStyles.label, { color: colors.text, flex: 1 }]}>{label}</Text>
-      <ReportNumber style={{ fontSize: 17, flexShrink: 1, maxWidth: '55%', textAlign: 'right' }}>{value}</ReportNumber>
+      <ReportNumber style={{ fontSize: 17, flexShrink: 1, maxWidth: '55%', textAlign: 'right', color: danger ? colors.danger : colors.text }}>{value}</ReportNumber>
     </View>
     {!!note && <ReportNote>{note}</ReportNote>}
   </View>;
@@ -98,10 +109,20 @@ export default function FechamentoDiaScreen() {
   const validate = useCallback((value: FechamentoDia) => {
     const number = (n: unknown) => typeof n === 'number' && Number.isFinite(n);
     return value?.data === selecionada && typeof value.eh_hoje === 'boolean'
-      && !!value.vendas && ['comandas_fechadas', 'faturamento_itens', 'gorjeta', 'taxa_entrega', 'total_recebido', 'ticket_medio']
+      && !!value.vendas && ['comandas_fechadas', 'faturamento_itens', 'gorjeta', 'taxa_entrega', 'desconto_aplicado', 'total_recebido', 'ticket_medio']
         .every(key => number(value.vendas[key as keyof Omit<FechamentoDia['vendas'], 'por_canal'>]))
       && (['mesa', 'delivery'] as const).every(key => number(value.vendas.por_canal?.[key]?.comandas_fechadas)
         && number(value.vendas.por_canal?.[key]?.total_recebido))
+      && (['descontos', 'cortesias'] as const).every(key => {
+        const bloco = value[key];
+        return !!bloco && [bloco.quantidade, bloco.valor].every(number)
+          && Array.isArray(bloco.por_motivo)
+          && bloco.por_motivo.every(row => !!row && typeof row.motivo === 'string'
+            && [row.quantidade, row.valor].every(number))
+          && Array.isArray(bloco.por_responsavel)
+          && bloco.por_responsavel.every(row => !!row && typeof row.nome === 'string'
+            && [row.quantidade, row.valor].every(number));
+      })
       && !!value.pagamentos && FORMAS.every(({ key }) => {
         const forma = value.pagamentos.formas?.[key];
         return !!forma && [forma.quantidade, forma.valor_liquido, forma.troco].every(number);
@@ -157,12 +178,33 @@ export default function FechamentoDiaScreen() {
         <Linha label="Faturamento de itens" value={formatCurrency(data.vendas.faturamento_itens)} />
         <Linha label="Gorjeta" value={formatCurrency(data.vendas.gorjeta)} />
         <Linha label="Taxa de entrega" value={formatCurrency(data.vendas.taxa_entrega)} />
+        {data.vendas.desconto_aplicado > 0 && <Linha label="Descontos e cortesias nas vendas"
+          value={`-${formatCurrency(data.vendas.desconto_aplicado)}`} danger />}
         <ReportLabel>Total recebido</ReportLabel><ReportMoney value={data.vendas.total_recebido} large />
         <Linha label="Ticket médio" value={formatCurrency(data.vendas.ticket_medio)} />
         {(['mesa', 'delivery'] as const).map(canal => <Linha key={canal} label={canal === 'mesa' ? 'Mesa' : 'Delivery'}
           value={formatCurrency(data.vendas.por_canal[canal].total_recebido)}
           note={contagem(data.vendas.por_canal[canal].comandas_fechadas, 'comanda fechada', 'comandas fechadas')} />)}
       </ReportCard>
+      {data.descontos.quantidade + data.cortesias.quantidade > 0 && <ReportCard>
+        <ReportTitle>Descontos e cortesias</ReportTitle>
+        <Linha label="Descontos" value={formatCurrency(data.descontos.valor)}
+          note={contagem(data.descontos.quantidade, 'comanda com desconto', 'comandas com desconto')} />
+        <Linha label="Cortesias" value={formatCurrency(data.cortesias.valor)}
+          note={contagem(data.cortesias.quantidade, 'comanda com cortesia', 'comandas com cortesia')} />
+        {[
+          { titulo: 'Descontos', bloco: data.descontos },
+          { titulo: 'Cortesias', bloco: data.cortesias },
+        ].map(({ titulo, bloco }) => bloco.quantidade > 0 && <React.Fragment key={titulo}>
+          <ReportLabel>{titulo} por motivo</ReportLabel>
+          {bloco.por_motivo.map(row => <Linha key={row.motivo} label={motivoLabel(row.motivo)}
+            value={formatCurrency(row.valor)} note={contagem(row.quantidade, 'comanda', 'comandas')} />)}
+          <ReportLabel>{titulo} por responsável</ReportLabel>
+          {bloco.por_responsavel.map(row => <Linha key={row.nome} label={row.nome}
+            value={formatCurrency(row.valor)} note={contagem(row.quantidade, 'comanda', 'comandas')} />)}
+        </React.Fragment>)}
+        <ReportNote>Cortesias e descontos totais sem gorjeta têm total zero e não entram nas vendas; por isso o valor deste card pode ser maior que a linha de descontos do card de Vendas.</ReportNote>
+      </ReportCard>}
       <ReportCard>
         <ReportTitle>Formas de pagamento</ReportTitle>
         {FORMAS.map(({ key, label }) => {
