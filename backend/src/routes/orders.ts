@@ -852,10 +852,10 @@ export function registerOrderRoutes(app: App) {
           required: ["tipo", "motivo"],
           properties: {
             tipo: { type: "string", enum: ["desconto", "cortesia"] },
-            valor: { type: ["number", "string"] },
-            percentual: { type: "number" },
+            valor: {},
+            percentual: {},
             motivo: { type: "string", enum: ["cliente", "erro_atendimento", "promocao", "funcionario", "outro"] },
-            detalhe: { type: "string" },
+            detalhe: {},
           },
         },
         response: {
@@ -1009,6 +1009,10 @@ export function registerOrderRoutes(app: App) {
             }
 
             if (temValor) {
+              // Validate valor type: must be number or string
+              if (typeof valor !== "number" && typeof valor !== "string") {
+                return { error: "Valor deve ser um número ou texto.", status: 400 };
+              }
               // Parse valor (number or numeric string)
               let valorNum = 0;
               if (typeof valor === "number") {
@@ -1037,6 +1041,9 @@ export function registerOrderRoutes(app: App) {
               }
             } else {
               // percentual
+              if (typeof percentual !== "number") {
+                return { error: "Percentual deve ser um número.", status: 400 };
+              }
               let percentualNum = percentual;
               if (!Number.isFinite(percentualNum) || percentualNum <= 0 || percentualNum > 100) {
                 return { error: "Percentual deve ser um número entre 0 (excluído) e 100.", status: 400 };
@@ -1054,13 +1061,14 @@ export function registerOrderRoutes(app: App) {
 
           // Calculate total with helper
           const gorjetaNum = Number(comanda.gorjeta) || 0;
-          const { total: novoTotal } = calcularTotalComandaMesaComDesconto(subtotal, gorjetaNum, tipo, valorCalculado);
+          const { total: novoTotal, descontoEfetivo } = calcularTotalComandaMesaComDesconto(subtotal, gorjetaNum, tipo, valorCalculado);
 
           // Update comanda
           await tx
             .update(schema.comandas)
             .set({
-              descontoValor: valorCalculado.toFixed(2),
+              subtotal: subtotal.toFixed(2),
+              descontoValor: descontoEfetivo.toFixed(2),
               descontoTipo: tipo,
               descontoMotivo: motivo,
               descontoMotivoDetalhe: detalhe,
@@ -1074,7 +1082,7 @@ export function registerOrderRoutes(app: App) {
           return {
             subtotal,
             gorjeta: gorjetaNum,
-            desconto_valor: valorCalculado,
+            desconto_valor: descontoEfetivo,
             desconto_tipo: tipo,
             desconto_motivo: motivo,
             total: novoTotal,
@@ -1209,6 +1217,7 @@ export function registerOrderRoutes(app: App) {
           await tx
             .update(schema.comandas)
             .set({
+              subtotal: subtotal.toFixed(2),
               descontoValor: "0.00",
               descontoTipo: null,
               descontoMotivo: null,
