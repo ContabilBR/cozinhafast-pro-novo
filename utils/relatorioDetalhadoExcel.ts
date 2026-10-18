@@ -1,5 +1,6 @@
 import * as XLSX from 'xlsx';
 import { apiGet } from '@/utils/api';
+import { MOTIVOS_DESCONTO } from '@/utils/desconto';
 
 type NullableNumber = number | null;
 interface PeriodoAPI { nome: string; inicio: string; fim: string }
@@ -70,9 +71,15 @@ interface FechamentoDia {
   data: string;
   vendas: {
     comandas_fechadas: number; faturamento_itens: number; gorjeta: number;
-    taxa_entrega: number; total_recebido: number; ticket_medio: number;
+    taxa_entrega: number; desconto_aplicado: number; total_recebido: number; ticket_medio: number;
     por_canal: Record<'mesa' | 'delivery', { comandas_fechadas: number; total_recebido: number }>;
   };
+  descontos: {
+    quantidade: number; valor: number;
+    por_motivo: { motivo: string; quantidade: number; valor: number }[];
+    por_responsavel: { nome: string; quantidade: number; valor: number }[];
+  };
+  cortesias: FechamentoDia['descontos'];
   pagamentos: {
     formas: Record<'dinheiro' | 'pix' | 'cartao_debito' | 'cartao_credito', {
       quantidade: number; valor_entregue: number; troco: number; valor_liquido: number;
@@ -301,9 +308,23 @@ function assertFechamento(data: FechamentoDia): void {
   if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== data.data) {
     throw new Error('Data inválida no fechamento do dia.');
   }
-  assertNumbers(data.vendas, ['comandas_fechadas', 'faturamento_itens', 'gorjeta', 'taxa_entrega', 'total_recebido', 'ticket_medio']);
+  assertNumbers(data.vendas, ['comandas_fechadas', 'faturamento_itens', 'gorjeta', 'taxa_entrega', 'desconto_aplicado', 'total_recebido', 'ticket_medio']);
   for (const canal of ['mesa', 'delivery'] as const) {
     assertNumbers(data.vendas?.por_canal?.[canal], ['comandas_fechadas', 'total_recebido']);
+  }
+  for (const bloco of [data.descontos, data.cortesias]) {
+    assertNumbers(bloco, ['quantidade', 'valor']);
+    if (!Array.isArray(bloco.por_motivo) || !Array.isArray(bloco.por_responsavel)) {
+      throw new Error('Resposta incompleta do fechamento do dia.');
+    }
+    bloco.por_motivo.forEach(row => {
+      assertNumbers(row, ['quantidade', 'valor']);
+      if (typeof row.motivo !== 'string') throw new Error('Resposta incompleta do fechamento do dia.');
+    });
+    bloco.por_responsavel.forEach(row => {
+      assertNumbers(row, ['quantidade', 'valor']);
+      if (typeof row.nome !== 'string') throw new Error('Resposta incompleta do fechamento do dia.');
+    });
   }
   assertNumbers(data.pagamentos, ['total_liquido', 'dinheiro_em_caixa', 'comandas_sem_pagamento']);
   PAYMENT_FORMS.forEach(({ key }) => {
@@ -328,7 +349,7 @@ function assertFechamento(data: FechamentoDia): void {
 }
 function fechamentoSheets(data: FechamentoDia): Sheet[] {
   assertFechamento(data);
-  const { vendas, pagamentos, cancelamentos, pendencias } = data;
+  const { vendas, pagamentos, cancelamentos, descontos, cortesias, pendencias } = data;
   const conciliacao = pagamentos.conciliacao;
   const conferido = [conciliacao.comandas_pago_menor, conciliacao.valor_faltante,
     conciliacao.comandas_pago_maior, conciliacao.valor_excedente, pagamentos.comandas_sem_pagamento].every(value => value === 0);
@@ -338,6 +359,7 @@ function fechamentoSheets(data: FechamentoDia): Sheet[] {
     ['Comandas fechadas', count(vendas.comandas_fechadas)],
     ['Faturamento de itens', money(vendas.faturamento_itens)],
     ['Gorjeta', money(vendas.gorjeta)], ['Taxa de entrega', money(vendas.taxa_entrega)],
+    ...(vendas.desconto_aplicado > 0 ? [['Descontos e cortesias nas vendas', money(-vendas.desconto_aplicado)]] : []),
     ['Total recebido', money(vendas.total_recebido)], ['Ticket médio', money(vendas.ticket_medio)],
     ['Canal', 'Comandas fechadas', 'Total recebido'],
     ...(['mesa', 'delivery'] as const).map(canal => [channel(canal), count(vendas.por_canal[canal].comandas_fechadas), money(vendas.por_canal[canal].total_recebido)]),
@@ -359,6 +381,24 @@ function fechamentoSheets(data: FechamentoDia): Sheet[] {
     ['Perdas', count(cancelamentos.quantidade_perda), money(cancelamentos.valor_perda)],
     ['Observação: perdas são itens cancelados depois que o preparo começou e já estão incluídos nos cancelamentos.'],
   ];
+  if (descontos.quantidade + cortesias.quantidade > 0) {
+    const blocos = [{ tipo: 'Descontos', bloco: descontos }, { tipo: 'Cortesias', bloco: cortesias }];
+    const motivoLabel = (motivo: string) => motivo === 'nao_informado' ? 'Não informado'
+      : MOTIVOS_DESCONTO.find(item => item.value === motivo)?.label ?? motivo;
+    rows.push([], ['DESCONTOS E CORTESIAS'], ['Tipo', 'Comandas', 'Valor'],
+      ...blocos.map(({ tipo, bloco }) => [tipo, count(bloco.quantidade), money(bloco.valor)]));
+    const porMotivo: Rows = blocos.flatMap(({ tipo, bloco }) => bloco.por_motivo.map(row =>
+      [tipo, motivoLabel(row.motivo), count(row.quantidade), money(row.valor)]));
+    if (porMotivo.length > 0) {
+      rows.push([], ['POR MOTIVO'], ['Tipo', 'Motivo', 'Comandas', 'Valor'], ...porMotivo);
+    }
+    const porResponsavel: Rows = blocos.flatMap(({ tipo, bloco }) => bloco.por_responsavel.map(row =>
+      [tipo, row.nome, count(row.quantidade), money(row.valor)]));
+    if (porResponsavel.length > 0) {
+      rows.push([], ['POR RESPONSÁVEL'], ['Tipo', 'Responsável', 'Comandas', 'Valor'], ...porResponsavel);
+    }
+    rows.push([], ['Observação: Cortesias e descontos totais sem gorjeta têm total zero e não entram nas vendas; por isso o valor desta seção pode ser maior que a linha de descontos da seção de vendas.']);
+  }
   if (pendencias.disponivel) {
     rows.push([], ['PENDÊNCIAS'],
       ['Total de comandas abertas', count(pendencias.total_comandas_abertas)],
