@@ -18,9 +18,21 @@
  * Precisa rodar DENTRO de uma transação (`tx`): fora dela a trava é solta na hora e perde o efeito.
  * Este módulo só grava a linha da comanda. Itens, total e status da mesa continuam com a rota,
  * na mesma transação.
+ *
+ * DOIS MODOS DE USO:
+ *
+ * 1. LEGADO (abrirComandaNaMesa): Requer tx fornecido. Não publica eventos.
+ *    Callers (e.g., rota de pedidos) abrem a transação, chamam isso, e publicam externamente.
+ *    Preserva o comportamento original exatamente.
+ *
+ * 2. COM PUBLICAÇÃO (abrirComandaNaMesaComPublicacao): API/facade que abre a transação própria,
+ *    publica eventos após confirmação, ou usa tx externa sem publicar (deixa para o dono).
+ *    Evita duplicação de eventos.
  */
 import { and, eq, sql } from "drizzle-orm";
+import type { App } from "../index.js";
 import * as schema from "../db/schema/schema.js";
+import { realtimeHub } from "../realtime/hub.js";
 
 export const TAMANHO_MAXIMO_NOME_COMANDA = 40;
 
@@ -34,17 +46,48 @@ export interface EntradaAbertura {
   rotulo?: unknown;
 }
 
+export interface MetadadosAbertura {
+  restauranteId: string;
+  comandaId: string;
+  mesaId: string;
+  mesaNumero: number | null;
+}
+
 export type ResultadoAbertura =
-  | { tipo: "criada"; comanda: any }
+  | { tipo: "criada"; comanda: any; __metadataParaPublicar?: MetadadosAbertura }
   | { tipo: "mesa_nao_encontrada" }
   | { tipo: "nome_obrigatorio" }
   | { tipo: "nome_muito_longo" }
   | { tipo: "nome_repetido" }
   | { tipo: "mesa_ja_tem_comanda" };
 
+type HubDeEventos = Pick<typeof realtimeHub, "publish">;
+
 function linhasDe(resultado: any): any[] {
   if (Array.isArray(resultado)) return resultado;
   return resultado?.rows ?? [];
+}
+
+/**
+ * Publica o evento de comanda criada no hub de eventos.
+ * Chamado após a transação ser confirmada (modo com transação própria) ou externamente
+ * (modo com transação externa, pelo dono da transação).
+ */
+export function publicarEventoComandaCriada(
+  app: App,
+  metadata: MetadadosAbertura,
+  hub: HubDeEventos = realtimeHub
+): void {
+  try {
+    hub.publish(metadata.restauranteId, {
+      type: "comanda.created",
+      entityId: metadata.comandaId,
+      occurredAt: new Date().toISOString(),
+      payload: { mesa_id: metadata.mesaId, mesa_numero: metadata.mesaNumero },
+    });
+  } catch (err) {
+    app.logger.debug({ err }, "Falha ao publicar comanda.created");
+  }
 }
 
 /**
@@ -129,5 +172,64 @@ export async function abrirComandaNaMesa(tx: any, entrada: EntradaAbertura): Pro
     })
     .returning();
 
-  return { tipo: "criada", comanda };
+  return {
+    tipo: "criada",
+    comanda,
+    __metadataParaPublicar: {
+      restauranteId,
+      comandaId: comanda.id,
+      mesaId,
+      mesaNumero: entrada.mesaNumero,
+    },
+  };
+}
+
+/**
+ * Abre comanda em uma mesa com suporte a transações externas e publicação de eventos.
+ *
+ * Modo com transação própria (txExterno não fornecido):
+ * - Abre e confirma a transação automaticamente
+ * - Publica evento comanda.created após confirmação
+ * - Retorna resultado com metadados internos ignorados por callers legados
+ *
+ * Modo com transação externa (txExterno fornecido):
+ * - Executa tudo dentro do txExterno (sem abrir novo, sem commit)
+ * - Não publica eventos (deixa para o dono da transação após commit)
+ * - Retorna resultado com metadados para o caller publicar após commit
+ *
+ * LEGADO: A função abrirComandaNaMesa() continua funcionando exatamente igual,
+ * aceitando apenas tx e sem publicar eventos (callers históricos lidam com publicação).
+ *
+ * @param app - Aplicação (com db e logger)
+ * @param entrada - Dados de entrada (restaurante, mesa, garcom, total, rotulo)
+ * @param txExterno - Transação externa opcional. Se não fornecida, abre a própria.
+ * @param hub - Hub de eventos para publicar (padrão: realtimeHub)
+ */
+export async function abrirComandaNaMesaComPublicacao(
+  app: App,
+  entrada: EntradaAbertura,
+  txExterno?: any,
+  hub: HubDeEventos = realtimeHub
+): Promise<ResultadoAbertura> {
+  // Lógica de núcleo extraída: aceita tx já aberto (externo) ou abre novo (próprio)
+  const executarNoTx = (tx: any): Promise<ResultadoAbertura> => {
+    return abrirComandaNaMesa(tx, entrada);
+  };
+
+  // Modo: tx externo (não publica) ou tx próprio (abre, confirma e publica)
+  if (txExterno) {
+    return executarNoTx(txExterno);
+  }
+
+  const resultado = await (app.db as any).transaction(async (tx: any) => {
+    return executarNoTx(tx);
+  });
+
+  // Publica evento de comanda criada após transação confirmada
+  // (Só acontece em modo com transação própria; modo com tx externo deixa para o dono da tx)
+  if (resultado.tipo === "criada" && resultado.__metadataParaPublicar) {
+    publicarEventoComandaCriada(app, resultado.__metadataParaPublicar, hub);
+  }
+
+  return resultado;
 }
