@@ -1,4 +1,4 @@
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and, sql, not } from "drizzle-orm";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import type { App } from "../index.js";
 import * as schema from "../db/schema/schema.js";
@@ -218,7 +218,10 @@ init()
       },
     },
     async (request: FastifyRequest<{ Body: { restaurante_id: string; mesa_numero: number; cliente_nome?: string; itens: Array<{ prato_id: string; quantidade: number; observacao?: string }> } }>, reply: FastifyReply) => {
-      if (!checkRateLimit(request, reply, { routeKey: "public-pedido", max: 10, windowMs: 60_000 })) return;
+      if (!checkRateLimit(request, reply, { routeKey: "public-pedido", max: 10, windowMs: 60_000 })) {
+        app.logger.warn({ tipoLimite: "ip", rota: "POST /api/public/pedido" }, "Limite por IP do pedido publico atingido");
+        return;
+      }
 
       try {
         const { restaurante_id, mesa_numero, cliente_nome, itens } = request.body;
@@ -277,13 +280,6 @@ init()
           nomeValidado = cliente_nome.trim() || "Cliente QR";
         }
 
-        const mesaRateLimitKey = `qr-mesa:${restaurante_id.toLowerCase()}:${mesa_numero}`;
-        const mesaCount = increment(mesaRateLimitKey, 3600_000);
-        if (mesaCount > 20) {
-          app.logger.warn({ tipoLimite: "qr-mesa", rota: "POST /api/public/pedido" }, "Limite de 20 pedidos/hora para mesa atingido");
-          return await reply.code(429).send({ error: "Limite de 20 pedidos por hora para esta mesa atingido. Tente novamente mais tarde." });
-        }
-
         const [rest] = await db.select({ id: schema.restaurante.id, modoComanda: schema.restaurante.modoComanda }).from(schema.restaurante).where(eq(schema.restaurante.id, restaurante_id));
         if (!rest) return await reply.code(404).send({ error: "Restaurante nao encontrado" });
 
@@ -296,78 +292,85 @@ init()
         let metadadosLancamento: any = null;
 
         const result = await (db as any).transaction(async (tx: any) => {
-          try {
-            const mesasLock = await tx.execute(
-              sql`SELECT id FROM mesas WHERE numero = ${mesa_numero} AND restaurante_id = ${restaurante_id} FOR UPDATE`
-            );
-            const mesasRows = Array.isArray(mesasLock) ? mesasLock : (mesasLock as any)?.rows || [];
-            if (!mesasRows.length) throw new DomainError("mesa_nao_encontrada", "Mesa nao encontrada");
-            const mesaId = mesasRows[0]?.id;
+          const mesasLock = await tx.execute(
+            sql`SELECT id FROM mesas WHERE numero = ${mesa_numero} AND restaurante_id = ${restaurante_id} FOR UPDATE`
+          );
+          const mesasRows = Array.isArray(mesasLock) ? mesasLock : (mesasLock as any)?.rows || [];
+          if (!mesasRows.length) throw new DomainError("mesa_nao_encontrada", "Mesa nao encontrada");
+          const mesaId = mesasRows[0]?.id;
 
-            const [comandaExistente] = await tx.select().from(schema.comandas).where(and(eq(schema.comandas.mesaId, mesaId), eq(schema.comandas.status, "aberta"), eq(schema.comandas.restauranteId, restaurante_id)));
+          const [comandaExistente] = await tx.select().from(schema.comandas).where(and(eq(schema.comandas.mesaId, mesaId), eq(schema.comandas.status, "aberta"), eq(schema.comandas.restauranteId, restaurante_id)));
 
-            let comanda;
-            if (comandaExistente) {
-              comanda = comandaExistente;
-            } else {
-              const entrada: EntradaAbertura = {
-                restauranteId: restaurante_id,
-                mesaId,
-                mesaNumero: mesa_numero,
-                garcomId: null as any,
-                total: "0",
-                rotulo: undefined,
-              };
+          let comanda;
+          if (comandaExistente) {
+            comanda = comandaExistente;
+          } else {
+            const entrada: EntradaAbertura = {
+              restauranteId: restaurante_id,
+              mesaId,
+              mesaNumero: mesa_numero,
+              garcomId: null as any,
+              total: "0",
+              rotulo: undefined,
+            };
 
-              const abrirResult = await abrirComandaNaMesaComPublicacao(app, entrada, tx);
-              if (abrirResult.tipo !== "criada") {
-                if (abrirResult.tipo === "mesa_ja_tem_comanda") throw new DomainError("mesa_ja_tem_comanda", "Esta mesa ja tem uma comanda aberta");
-                if (abrirResult.tipo === "mesa_nao_encontrada") throw new DomainError("mesa_nao_encontrada", "Mesa nao encontrada");
-                throw new DomainError("erro_abertura", "Erro ao abrir comanda");
-              }
-
-              comanda = abrirResult.comanda;
-              abrturaMarcada = true;
-              metadadosAbertura = { restauranteId: restaurante_id, comandaId: comanda.id, mesaId, mesaNumero: mesa_numero };
-
-              await tx
-                .update(schema.comandas)
-                .set({ rotulo: nomeValidado })
-                .where(and(eq(schema.comandas.id, comanda.id), eq(schema.comandas.restauranteId, restaurante_id)));
+            const abrirResult = await abrirComandaNaMesaComPublicacao(app, entrada, tx);
+            if (abrirResult.tipo !== "criada") {
+              if (abrirResult.tipo === "mesa_ja_tem_comanda") throw new DomainError("mesa_ja_tem_comanda", "Esta mesa ja tem uma comanda aberta");
+              if (abrirResult.tipo === "mesa_nao_encontrada") throw new DomainError("mesa_nao_encontrada", "Mesa nao encontrada");
+              throw new DomainError("erro_abertura", "Erro ao abrir comanda");
             }
 
-            const itensMapeados = itens.map((item) => ({
-              pratoId: item.prato_id,
-              quantidade: item.quantidade,
-              observacao: item.observacao?.trim() || null,
-            }));
+            comanda = abrirResult.comanda;
+            abrturaMarcada = true;
+            metadadosAbertura = { restauranteId: restaurante_id, comandaId: comanda.id, mesaId, mesaNumero: mesa_numero };
 
-            const lancamentoResult = await lancarItens(
-              app,
-              {
-                restauranteId: restaurante_id,
-                comandaId: comanda.id,
-                usuario: { id: "qr-publico", role: "garcom" },
-                itens: itensMapeados,
-              },
-              realtimeHub,
-              tx
-            );
+            await tx
+              .update(schema.comandas)
+              .set({ rotulo: nomeValidado })
+              .where(and(eq(schema.comandas.id, comanda.id), eq(schema.comandas.restauranteId, restaurante_id)));
 
-            if (lancamentoResult.tipo !== "lancado") {
-              if (lancamentoResult.tipo === "comanda_nao_encontrada") throw new DomainError("comanda_nao_encontrada", "Comanda nao encontrada");
-              if (lancamentoResult.tipo === "prato_indisponivel") throw new DomainError("prato_indisponivel", "Prato indisponivel ou nao encontrado.");
-              if (lancamentoResult.tipo === "itens_invalidos") throw new DomainError("itens_invalidos", lancamentoResult.mensagem || "Itens invalidos");
-              throw new DomainError("erro_lancamento", "Erro ao lancar itens");
-            }
-
-            metadadosLancamento = lancamentoResult.__metadataParaPublicar;
-
-            return { comanda_id: comanda.id, mesa: mesa_numero, itens_adicionados: lancamentoResult.pedidos.length };
-          } catch (err) {
-            if (err instanceof DomainError) throw err;
-            throw new DomainError("erro_transacao", "Erro na transacao");
+            await tx
+              .update(schema.mesas)
+              .set({ status: "ocupada" })
+              .where(and(eq(schema.mesas.id, mesaId), eq(schema.mesas.restauranteId, restaurante_id)));
           }
+
+          const itensMapeados = itens.map((item) => ({
+            pratoId: item.prato_id,
+            quantidade: item.quantidade,
+            observacao: item.observacao?.trim() || null,
+          }));
+
+          const lancamentoResult = await lancarItens(
+            app,
+            {
+              restauranteId: restaurante_id,
+              comandaId: comanda.id,
+              usuario: { id: "qr-publico", role: "garcom" },
+              itens: itensMapeados,
+            },
+            realtimeHub,
+            tx
+          );
+
+          if (lancamentoResult.tipo !== "lancado") {
+            if (lancamentoResult.tipo === "comanda_nao_encontrada") throw new DomainError("comanda_nao_encontrada", "Comanda nao encontrada");
+            if (lancamentoResult.tipo === "prato_indisponivel") throw new DomainError("prato_indisponivel", "Prato indisponivel ou nao encontrado.");
+            if (lancamentoResult.tipo === "itens_invalidos") throw new DomainError("itens_invalidos", lancamentoResult.mensagem || "Itens invalidos");
+            throw new DomainError("erro_lancamento", "Erro ao lancar itens");
+          }
+
+          metadadosLancamento = lancamentoResult.__metadataParaPublicar;
+
+          const mesaRateLimitKey = `qr-mesa:${restaurante_id.toLowerCase()}:${mesa_numero}`;
+          const mesaCount = increment(mesaRateLimitKey, 3600_000);
+          if (mesaCount > 20) {
+            app.logger.warn({ tipoLimite: "qr-mesa", rota: "POST /api/public/pedido" }, "Limite de 20 pedidos/hora para mesa atingido");
+            throw new DomainError("limite_mesa", "Limite de 20 pedidos por hora para esta mesa atingido. Tente novamente mais tarde.");
+          }
+
+          return { comanda_id: comanda.id, mesa: mesa_numero, itens_adicionados: lancamentoResult.pedidos.length };
         });
 
         if (metadadosAbertura) {
@@ -389,17 +392,21 @@ init()
         return await reply.code(201).send({ success: true, ...result, mensagem: "Pedido recebido! Enviado para a cozinha." });
       } catch (err) {
         if (err instanceof DomainError) {
-          app.logger.warn({ tipoErro: (err as DomainError).code }, "QR-pedido dominio error");
-          if ((err as DomainError).code === "mesa_nao_encontrada" || (err as DomainError).code === "comanda_nao_encontrada") {
+          const code = (err as DomainError).code;
+          if (code === "mesa_nao_encontrada" || code === "comanda_nao_encontrada") {
             return await reply.code(404).send({ error: err.message });
           }
-          if ((err as DomainError).code === "mesa_ja_tem_comanda") {
+          if (code === "mesa_ja_tem_comanda") {
             return await reply.code(409).send({ error: err.message });
           }
-          if ((err as DomainError).code === "prato_indisponivel") {
+          if (code === "prato_indisponivel" || code === "itens_invalidos") {
             return await reply.code(400).send({ error: err.message });
           }
-          return await reply.code(400).send({ error: err.message });
+          if (code === "limite_mesa") {
+            return await reply.code(429).send({ error: err.message });
+          }
+          app.logger.error({ err }, "Erro desconhecido no pedido QR");
+          return await reply.code(500).send({ error: "Erro interno" });
         }
         app.logger.error({ err }, "Erro interno no pedido QR");
         return await reply.code(500).send({ error: "Erro interno" });
@@ -446,6 +453,7 @@ init()
           comanda = { cliente_nome: comandaAberta.rotulo || "Cliente QR", subtotal: parseFloat(comandaAberta.subtotal || "0") };
           pedidos = await db
             .select({
+              id: schema.pedidos.id,
               pratoNome: schema.pratos.nome,
               quantidade: schema.pedidos.quantidade,
               observacao: schema.pedidos.observacao,
@@ -454,7 +462,7 @@ init()
             })
             .from(schema.pedidos)
             .leftJoin(schema.pratos, eq(schema.pedidos.pratoId, schema.pratos.id))
-            .where(and(eq(schema.pedidos.comandaId, comandaAberta.id), eq(schema.pedidos.status, "pendente")));
+            .where(and(eq(schema.pedidos.comandaId, comandaAberta.id), not(eq(schema.pedidos.status, "cancelado"))));
         }
 
         return await reply.code(200).send({ mesa: { numero: mesa.numero }, comanda, pedidos });
