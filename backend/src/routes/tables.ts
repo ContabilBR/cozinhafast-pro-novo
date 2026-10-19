@@ -3,6 +3,7 @@ import { eq, ne, and, gte, lte } from "drizzle-orm";
 import * as schema from "../db/schema/schema.js";
 import type { App } from "../index.js";
 import { requireAuth as customRequireAuth, requireRole } from "../utils/auth.js";
+import { generateQrToken, isQrTokenCollisionError, MAX_RETRIES } from "../utils/qr-token.js";
 
 // Teto realista para o número de uma mesa. Nenhum restaurante tem mais de 9.999 mesas;
 // números acima disso só aparecem por erro ou por dados de teste gravados no banco real
@@ -197,16 +198,43 @@ export function registerTableRoutes(app: App) {
           return reply.code(409).send({ error: "Mesa com este número já existe" });
         }
 
-        const [newMesa] = await app.db
-          .insert(schema.mesas)
-          .values({
-            numero,
-            capacidade,
-            status: status as any,
-            restauranteId: tenantId as any,
-            createdAt: new Date(),
-          })
-          .returning();
+        let newMesa;
+        let retries = 0;
+        let success = false;
+
+        while (retries < MAX_RETRIES && !success) {
+          try {
+            const qrToken = generateQrToken();
+            const [mesa] = await app.db
+              .insert(schema.mesas)
+              .values({
+                numero,
+                capacidade,
+                status: status as any,
+                restauranteId: tenantId as any,
+                qrToken,
+                createdAt: new Date(),
+              })
+              .returning();
+            newMesa = mesa;
+            success = true;
+          } catch (err) {
+            if (isQrTokenCollisionError(err)) {
+              retries++;
+              if (retries >= MAX_RETRIES) {
+                app.logger.error({ tenantId, numero }, "Failed to generate unique qrToken after retries");
+                return reply.code(500).send({ error: "Internal server error" });
+              }
+            } else {
+              throw err;
+            }
+          }
+        }
+
+        if (!newMesa) {
+          app.logger.error({ tenantId, numero }, "Failed to create mesa - token generation failed");
+          return reply.code(500).send({ error: "Internal server error" });
+        }
 
         app.logger.info({ mesaId: newMesa.id, tenantId }, "Mesa created successfully");
 
@@ -340,16 +368,49 @@ export function registerTableRoutes(app: App) {
         );
 
         const agora = new Date();
-        const valores = Array.from({ length: quantidade }, (_, i) => ({
-          numero: numero_inicial + i,
-          capacidade,
-          status: "disponivel" as any,
-          restauranteId: tenantId as any,
-          createdAt: agora,
-        }));
+
+        // Generate qrTokens for each mesa, with collision retry
+        const valores = [];
+        for (let i = 0; i < quantidade; i++) {
+          let token: string | null = null;
+          let retries = 0;
+
+          while (retries < MAX_RETRIES) {
+            token = generateQrToken();
+            // Quick check: token must not already be used (local check for this batch)
+            if (!valores.some((v: any) => v.qrToken === token)) {
+              break;
+            }
+            retries++;
+          }
+
+          if (retries >= MAX_RETRIES) {
+            app.logger.error({ tenantId, numero_inicial, numero_final }, "Failed to generate unique qrToken for bulk mesa");
+            return reply.code(500).send({ error: "Internal server error" });
+          }
+
+          valores.push({
+            numero: numero_inicial + i,
+            capacidade,
+            status: "disponivel" as any,
+            restauranteId: tenantId as any,
+            qrToken: token,
+            createdAt: agora,
+          });
+        }
 
         // Um único INSERT: ou entram todas as mesas, ou nenhuma
-        const criadas = await app.db.insert(schema.mesas).values(valores).returning();
+        let criadas;
+        try {
+          criadas = await app.db.insert(schema.mesas).values(valores).returning();
+        } catch (err) {
+          // If UNIQUE collision on qr_token happens despite local dedup, log and fail
+          if (isQrTokenCollisionError(err)) {
+            app.logger.error({ tenantId, numero_inicial, numero_final }, "QR token collision in bulk mesa creation");
+            return reply.code(500).send({ error: "Internal server error" });
+          }
+          throw err;
+        }
 
         app.logger.info({ tenantId, quantidade: criadas.length }, "Mesas created in bulk successfully");
 

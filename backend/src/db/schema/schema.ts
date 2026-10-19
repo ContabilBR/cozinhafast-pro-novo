@@ -81,10 +81,12 @@ export const mesas = pgTable("mesas", {
   numero: integer("numero").notNull(),
   status: mesaStatusEnum("status").default("disponivel").notNull(),
   capacidade: integer("capacidade").default(4).notNull(),
+  qrToken: text("qr_token"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   restauranteId: text("restaurante_id").notNull().references(() => restaurante.id, { onDelete: "restrict" }),
 }, (table) => ({
   unqNumeroRestaurante: unique().on(table.numero, table.restauranteId),
+  qrTokenIdx: index("mesas_qr_token_unique").on(table.qrToken),
 }));
 
 // Categorias

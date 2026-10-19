@@ -6,6 +6,7 @@ import { checkRateLimit, increment } from "../utils/rate-limit.js";
 import { abrirComandaNaMesaComPublicacao, type EntradaAbertura, publicarEventoComandaCriada } from "../services/abrir-comanda.js";
 import { lancarItens, publicarEventosPedidosLancados } from "../services/lancamento-pedidos.js";
 import { realtimeHub } from "../realtime/hub.js";
+import { isValidQrTokenFormat, compareQrTokens } from "../utils/qr-token.js";
 
 const UUID_RE = /^(?:\d{14}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
 const PRATO_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
