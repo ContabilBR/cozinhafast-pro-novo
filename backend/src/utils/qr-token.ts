@@ -3,11 +3,9 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 const TOKEN_BYTES = 16; // 32 hex chars
 const TOKEN_LENGTH = TOKEN_BYTES * 2;
 const TOKEN_REGEX = /^[0-9a-f]{32}$/i;
-const MAX_COLLISION_RETRIES = 3;
 
 /**
  * Generate a cryptographically secure QR token (32 hex characters).
- * No collision retry here - retry at the DB layer based on UNIQUE constraint.
  */
 export function generateQrToken(): string {
   const bytes = randomBytes(TOKEN_BYTES);
@@ -47,23 +45,3 @@ export function compareQrTokens(provided: unknown, stored: unknown): boolean {
     return false;
   }
 }
-
-/**
- * Check if an error is due to UNIQUE constraint violation on qr_token.
- * PostgreSQL unique constraint violations have error code 23505.
- */
-export function isQrTokenCollisionError(error: any): boolean {
-  // Check Drizzle ORM wrapped errors
-  if (error?.cause?.code === "23505") {
-    const msg = String(error?.cause?.message || "");
-    return msg.includes("qr_token") || msg.includes("mesas_qr_token");
-  }
-  // Direct PostgreSQL error
-  if (error?.code === "23505") {
-    const msg = String(error?.message || "");
-    return msg.includes("qr_token") || msg.includes("mesas_qr_token");
-  }
-  return false;
-}
-
-export const MAX_RETRIES = MAX_COLLISION_RETRIES;

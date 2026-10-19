@@ -10,6 +10,7 @@ import {
   pgEnum,
   unique,
   index,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { user } from "./auth-schema.js";
 
@@ -86,7 +87,7 @@ export const mesas = pgTable("mesas", {
   restauranteId: text("restaurante_id").notNull().references(() => restaurante.id, { onDelete: "restrict" }),
 }, (table) => ({
   unqNumeroRestaurante: unique().on(table.numero, table.restauranteId),
-  qrTokenIdx: index("mesas_qr_token_unique").on(table.qrToken),
+  qrTokenUnique: uniqueIndex("mesas_qr_token_uq").on(table.qrToken),
 }));
 
 // Categorias

@@ -87,13 +87,8 @@ try {
   // Don't exit - this is not critical
 }
 
-// Backfill QR tokens for existing mesas
-try {
-  await backfillQrTokens(app);
-} catch (error) {
-  app.logger.error({ err: error }, 'Failed to backfill QR tokens');
-  throw error; // Critical - aborting startup
-}
+// Backfill QR tokens for existing mesas (non-critical; handles errors internally)
+await backfillQrTokens(app);
 
 // Seed test admin and restaurante if test mode is enabled
 try {

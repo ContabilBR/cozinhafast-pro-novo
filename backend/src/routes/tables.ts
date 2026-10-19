@@ -3,15 +3,12 @@ import { eq, ne, and, gte, lte } from "drizzle-orm";
 import * as schema from "../db/schema/schema.js";
 import type { App } from "../index.js";
 import { requireAuth as customRequireAuth, requireRole } from "../utils/auth.js";
-import { generateQrToken, isQrTokenCollisionError, MAX_RETRIES } from "../utils/qr-token.js";
+import { generateQrToken } from "../utils/qr-token.js";
 
-// Teto realista para o número de uma mesa. Nenhum restaurante tem mais de 9.999 mesas;
-// números acima disso só aparecem por erro ou por dados de teste gravados no banco real
-// (os testes automáticos usam números de 100000 em diante). Por isso o servidor recusa.
+// Teto realista para o número de uma mesa
 const NUMERO_MAXIMO_MESA = 9999;
 
-// Quantidade máxima de mesas criadas em uma única solicitação em lote.
-// (O app aplica o mesmo limite na tela; o servidor é quem garante.)
+// Quantidade máxima de mesas criadas em uma única solicitação em lote
 const MAX_MESAS_POR_LOTE = 100;
 
 interface CreateMesaBody {
@@ -26,86 +23,7 @@ interface CreateMesasLoteBody {
   capacidade?: number;
 }
 
-interface UpdateMesaBody {
-  numero?: number;
-  status?: string;
-  capacidade?: number;
-}
-
 export function registerTableRoutes(app: App) {
-  // GET /api/mesas - List all mesas ordered by numero, optional status filter
-  app.fastify.get<{ Querystring: { status?: string } }>(
-    "/api/mesas",
-    {
-      schema: {
-        description: "List all mesas ordered by numero with optional status filter (requires authentication)",
-        tags: ["mesas"],
-        querystring: {
-          type: "object",
-          properties: {
-            status: { type: "string", enum: ["disponivel", "ocupada", "reservada"] },
-          },
-        },
-        response: {
-          200: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                id: { type: "string", format: "uuid" },
-                numero: { type: "number" },
-                status: { type: "string", enum: ["disponivel", "ocupada", "reservada"] },
-                capacidade: { type: "number" },
-                created_at: { type: "string", format: "date-time" },
-              },
-            },
-          },
-          401: { type: "object", properties: { error: { type: "string" } } },
-        },
-      },
-    },
-    async (request: FastifyRequest<{ Querystring: { status?: string } }>, reply: FastifyReply) => {
-      const authUser = await customRequireAuth(app, request, reply);
-      if (!authUser) return;
-
-      try {
-        const tenantId = authUser.restauranteId;
-        app.logger.info({ tenantId, status: request.query.status }, "Listing mesas");
-
-        let mesasQuery = app.db
-          .select()
-          .from(schema.mesas)
-          .where(eq(schema.mesas.restauranteId, tenantId as any))
-          .orderBy(schema.mesas.numero);
-
-        if (request.query.status) {
-          mesasQuery = app.db
-            .select()
-            .from(schema.mesas)
-            .where(and(
-              eq(schema.mesas.restauranteId, tenantId as any),
-              eq(schema.mesas.status, request.query.status as any)
-            ))
-            .orderBy(schema.mesas.numero);
-        }
-
-        const mesas = await mesasQuery;
-        app.logger.info({ tenantId, count: mesas.length }, "Mesas listed successfully");
-
-        return mesas.map((m) => ({
-          id: m.id,
-          numero: m.numero,
-          status: m.status,
-          capacidade: m.capacidade,
-          created_at: m.createdAt.toISOString(),
-        }));
-      } catch (error) {
-        app.logger.error({ err: error }, "Failed to list mesas");
-        return await reply.code(500).send({ error: "Internal server error" });
-      }
-    }
-  );
-
   // POST /api/mesas - Create a new mesa
   app.fastify.post<{ Body: CreateMesaBody }>(
     "/api/mesas",
@@ -177,11 +95,11 @@ export function registerTableRoutes(app: App) {
         }
 
         if (numero > NUMERO_MAXIMO_MESA) {
-          app.logger.warn({ tenantId, numero, criadoPor: authUser.id }, "Mesa creation refused: numero above allowed maximum");
+          app.logger.warn({ tenantId, numero }, "Mesa creation refused: numero above allowed maximum");
           return await reply.code(400).send({ error: `Número da mesa inválido: o máximo permitido é ${NUMERO_MAXIMO_MESA}.` });
         }
 
-        app.logger.info({ tenantId, numero, criadoPor: authUser.id, criadoPorRole: authUser.role }, "Creating mesa");
+        app.logger.info({ tenantId, numero }, "Creating mesa");
 
         // Check for duplicate numero within same tenant
         const existing = await app.db
@@ -199,10 +117,10 @@ export function registerTableRoutes(app: App) {
         }
 
         let newMesa;
-        let retries = 0;
-        let success = false;
+        let attempts = 0;
+        const maxAttempts = 2; // Initial attempt + 1 retry on UNIQUE collision
 
-        while (retries < MAX_RETRIES && !success) {
+        while (attempts < maxAttempts && !newMesa) {
           try {
             const qrToken = generateQrToken();
             const [mesa] = await app.db
@@ -217,23 +135,31 @@ export function registerTableRoutes(app: App) {
               })
               .returning();
             newMesa = mesa;
-            success = true;
           } catch (err) {
-            if (isQrTokenCollisionError(err)) {
-              retries++;
-              if (retries >= MAX_RETRIES) {
-                app.logger.error({ tenantId, numero }, "Failed to generate unique qrToken after retries");
-                return reply.code(500).send({ error: "Internal server error" });
-              }
+            attempts++;
+            // Check if this is a UNIQUE constraint violation on qr_token
+            const sqlstate = (err as any)?.cause?.code || (err as any)?.code;
+            const isQrTokenCollision = sqlstate === "23505" &&
+              (String((err as any)?.cause?.message || "").includes("mesas_qr_token_uq") ||
+               String((err as any)?.message || "").includes("mesas_qr_token_uq"));
+
+            if (isQrTokenCollision && attempts < maxAttempts) {
+              // Retry once with new token
+              continue;
+            } else if (isQrTokenCollision) {
+              // Failed twice on token collision
+              app.logger.warn({ sqlstate: "23505" }, "QR token collision in mesa creation");
+              return reply.code(500).send({ error: "Internal server error" });
             } else {
+              // Other errors - pass through
               throw err;
             }
           }
         }
 
         if (!newMesa) {
-          app.logger.error({ tenantId, numero }, "Failed to create mesa - token generation failed");
-          return reply.code(500).send({ error: "Internal server error" });
+          app.logger.warn({ sqlstate: "UNKNOWN" }, "Failed to create mesa");
+          return await reply.code(500).send({ error: "Internal server error" });
         }
 
         app.logger.info({ mesaId: newMesa.id, tenantId }, "Mesa created successfully");
@@ -252,8 +178,7 @@ export function registerTableRoutes(app: App) {
     }
   );
 
-  // POST /api/mesas/lote - Cria várias mesas de uma vez (do número inicial ao final)
-  // Tudo ou nada: se alguma mesa da faixa já existir, nada é criado.
+  // POST /api/mesas/lote - Cria várias mesas de uma vez
   app.fastify.post<{ Body: CreateMesasLoteBody }>(
     "/api/mesas/lote",
     {
@@ -334,7 +259,7 @@ export function registerTableRoutes(app: App) {
         }
 
         if (numero_final > NUMERO_MAXIMO_MESA) {
-          app.logger.warn({ tenantId, numero_inicial, numero_final, criadoPor: authUser.id }, "Bulk mesa creation refused: numero above allowed maximum");
+          app.logger.warn({ tenantId, numero_inicial, numero_final }, "Bulk mesa creation refused: numero above allowed maximum");
           return await reply.code(400).send({ error: `Número da mesa inválido: o máximo permitido é ${NUMERO_MAXIMO_MESA}.` });
         }
 
@@ -355,61 +280,63 @@ export function registerTableRoutes(app: App) {
 
         if (existentes.length > 0) {
           const numeros = existentes.map((m) => m.numero).sort((a, b) => a - b);
-          app.logger.warn({ tenantId, numero_inicial, numero_final, conflitos: numeros }, "Bulk mesa creation refused: numeros already exist");
+          app.logger.warn({ tenantId, numero_inicial, numero_final }, "Bulk mesa creation refused: numeros already exist");
           const lista = numeros.length > 10 ? `${numeros.slice(0, 10).join(", ")} e outras ${numeros.length - 10}` : numeros.join(", ");
           return reply.code(409).send({
             error: `${numeros.length === 1 ? "A mesa" : "As mesas"} ${lista} já ${numeros.length === 1 ? "existe" : "existem"}. Nenhuma mesa foi criada.`,
           });
         }
 
-        app.logger.info(
-          { tenantId, numero_inicial, numero_final, quantidade, criadoPor: authUser.id, criadoPorRole: authUser.role },
-          "Creating mesas in bulk"
-        );
+        app.logger.info({ tenantId, numero_inicial, numero_final, quantidade }, "Creating mesas in bulk");
 
         const agora = new Date();
 
-        // Generate qrTokens for each mesa, with collision retry
+        // Generate initial tokens for each mesa
         const valores = [];
         for (let i = 0; i < quantidade; i++) {
-          let token: string | null = null;
-          let retries = 0;
-
-          while (retries < MAX_RETRIES) {
-            token = generateQrToken();
-            // Quick check: token must not already be used (local check for this batch)
-            if (!valores.some((v: any) => v.qrToken === token)) {
-              break;
-            }
-            retries++;
-          }
-
-          if (retries >= MAX_RETRIES) {
-            app.logger.error({ tenantId, numero_inicial, numero_final }, "Failed to generate unique qrToken for bulk mesa");
-            return reply.code(500).send({ error: "Internal server error" });
-          }
-
           valores.push({
             numero: numero_inicial + i,
             capacidade,
             status: "disponivel" as any,
             restauranteId: tenantId as any,
-            qrToken: token,
+            qrToken: generateQrToken(),
             createdAt: agora,
           });
         }
 
-        // Um único INSERT: ou entram todas as mesas, ou nenhuma
         let criadas;
-        try {
-          criadas = await app.db.insert(schema.mesas).values(valores).returning();
-        } catch (err) {
-          // If UNIQUE collision on qr_token happens despite local dedup, log and fail
-          if (isQrTokenCollisionError(err)) {
-            app.logger.error({ tenantId, numero_inicial, numero_final }, "QR token collision in bulk mesa creation");
-            return reply.code(500).send({ error: "Internal server error" });
+        let attempts = 0;
+        const maxAttempts = 2;
+
+        while (attempts < maxAttempts && !criadas) {
+          try {
+            criadas = await app.db.insert(schema.mesas).values(valores).returning();
+          } catch (err) {
+            attempts++;
+            const sqlstate = (err as any)?.cause?.code || (err as any)?.code;
+            const isQrTokenCollision = sqlstate === "23505" &&
+              (String((err as any)?.cause?.message || "").includes("mesas_qr_token_uq") ||
+               String((err as any)?.message || "").includes("mesas_qr_token_uq"));
+
+            if (isQrTokenCollision && attempts < maxAttempts) {
+              // Regenerate all tokens and retry
+              for (let i = 0; i < valores.length; i++) {
+                (valores[i] as any).qrToken = generateQrToken();
+              }
+              continue;
+            } else if (isQrTokenCollision) {
+              app.logger.warn({ sqlstate: "23505", faixa: `${numero_inicial}-${numero_final}` }, "QR token collision in bulk mesa creation");
+              return reply.code(500).send({ error: "Internal server error" });
+            } else {
+              // Other errors - pass through
+              throw err;
+            }
           }
-          throw err;
+        }
+
+        if (!criadas) {
+          app.logger.warn({ sqlstate: "UNKNOWN" }, "Failed to create mesas in bulk");
+          return await reply.code(500).send({ error: "Internal server error" });
         }
 
         app.logger.info({ tenantId, quantidade: criadas.length }, "Mesas created in bulk successfully");
@@ -421,23 +348,72 @@ export function registerTableRoutes(app: App) {
             .map((m) => ({ id: m.id, numero: m.numero, status: m.status, capacidade: m.capacidade })),
         });
       } catch (error) {
-        const codigo = (error as any)?.code ?? (error as any)?.cause?.code;
-        if (codigo === "23505") {
-          // Outra solicitação criou uma dessas mesas ao mesmo tempo
-          return await reply.code(409).send({ error: "Alguma mesa dessa faixa foi criada por outra solicitação ao mesmo tempo. Nenhuma mesa foi criada; tente novamente." });
-        }
         app.logger.error({ err: error }, "Failed to create mesas in bulk");
         return await reply.code(500).send({ error: "Internal server error" });
       }
     }
   );
 
-  // GET /api/mesas/:id - Get a single mesa by ID
+  // GET /api/mesas - List all mesas for a restaurant
+  app.fastify.get(
+    "/api/mesas",
+    {
+      schema: {
+        description: "Get all mesas for the authenticated restaurant",
+        tags: ["mesas"],
+        response: {
+          200: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                id: { type: "string", format: "uuid" },
+                numero: { type: "number" },
+                status: { type: "string" },
+                capacidade: { type: "number" },
+                created_at: { type: "string", format: "date-time" },
+              },
+            },
+          },
+          401: { type: "object", properties: { error: { type: "string" } } },
+        },
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const authUser = await customRequireAuth(app, request, reply);
+      if (!authUser) return;
+
+      try {
+        const tenantId = authUser.restauranteId;
+        const mesas = await app.db
+          .select()
+          .from(schema.mesas)
+          .where(eq(schema.mesas.restauranteId, tenantId as any));
+
+        app.logger.info({ tenantId, quantidade: mesas.length }, "Fetched mesas list");
+
+        return await reply.code(200).send(
+          mesas.map((m) => ({
+            id: m.id,
+            numero: m.numero,
+            status: m.status,
+            capacidade: m.capacidade,
+            created_at: m.createdAt.toISOString(),
+          }))
+        );
+      } catch (error) {
+        app.logger.error({ err: error }, "Failed to fetch mesas");
+        return await reply.code(500).send({ error: "Internal server error" });
+      }
+    }
+  );
+
+  // GET /api/mesas/:id - Get a specific mesa
   app.fastify.get<{ Params: { id: string } }>(
     "/api/mesas/:id",
     {
       schema: {
-        description: "Get a single mesa by ID (requires authentication)",
+        description: "Get a specific mesa by ID",
         tags: ["mesas"],
         params: {
           type: "object",
@@ -467,205 +443,40 @@ export function registerTableRoutes(app: App) {
       if (!authUser) return;
 
       try {
-        const tenantId = authUser.restauranteId;
         const { id } = request.params;
-
-        app.logger.info({ tenantId, mesaId: id }, "Getting mesa");
+        const tenantId = authUser.restauranteId;
 
         const mesa = await app.db
           .select()
           .from(schema.mesas)
-          .where(and(
-            eq(schema.mesas.id, id as any),
-            eq(schema.mesas.restauranteId, tenantId as any)
-          ))
+          .where(and(eq(schema.mesas.id, id), eq(schema.mesas.restauranteId, tenantId as any)))
           .limit(1);
 
         if (mesa.length === 0) {
-          app.logger.warn({ tenantId, mesaId: id }, "Mesa not found");
-          return await reply.code(404).send({ error: "Mesa não encontrada" });
+          return await reply.code(404).send({ error: "Mesa not found" });
         }
 
+        const m = mesa[0];
         return await reply.code(200).send({
-          id: mesa[0].id,
-          numero: mesa[0].numero,
-          status: mesa[0].status,
-          capacidade: mesa[0].capacidade,
-          created_at: mesa[0].createdAt.toISOString(),
+          id: m.id,
+          numero: m.numero,
+          status: m.status,
+          capacidade: m.capacidade,
+          created_at: m.createdAt.toISOString(),
         });
       } catch (error) {
-        app.logger.error({ err: error }, "Failed to get mesa");
+        app.logger.error({ err: error }, "Failed to fetch mesa");
         return await reply.code(500).send({ error: "Internal server error" });
       }
     }
   );
 
-  // PUT /api/mesas/:id - Update a mesa
-  app.fastify.put<{ Params: { id: string }; Body: UpdateMesaBody }>(
-    "/api/mesas/:id",
-    {
-      schema: {
-        description: "Update a mesa (requires admin/gerente role)",
-        tags: ["mesas"],
-        params: {
-          type: "object",
-          required: ["id"],
-          properties: {
-            id: { type: "string", format: "uuid" },
-          },
-        },
-        body: {
-          type: "object",
-          properties: {
-            numero: { type: "number" },
-            status: { type: "string", enum: ["disponivel", "ocupada", "reservada"] },
-            capacidade: { type: "number" },
-          },
-        },
-        response: {
-          200: {
-            type: "object",
-            properties: {
-              id: { type: "string", format: "uuid" },
-              numero: { type: "number" },
-              status: { type: "string" },
-              capacidade: { type: "number" },
-            },
-          },
-          401: { type: "object", properties: { error: { type: "string" } } },
-          403: { type: "object", properties: { error: { type: "string" } } },
-          404: { type: "object", properties: { error: { type: "string" } } },
-          409: { type: "object", properties: { error: { type: "string" } } },
-        },
-      },
-    },
-    async (request: FastifyRequest<{ Params: { id: string }; Body: UpdateMesaBody }>, reply: FastifyReply) => {
-      const authUser = await customRequireAuth(app, request, reply);
-      if (!authUser) return;
-
-      try {
-        const tenantId = authUser.restauranteId;
-
-        // Check current database role
-        const authUserProfile = await app.db
-          .select()
-          .from(schema.profiles)
-          .where(and(
-            eq(schema.profiles.userId, authUser.id),
-            eq(schema.profiles.restauranteId, tenantId as any)
-          ))
-          .limit(1);
-
-        const dbRole = authUserProfile.length > 0 ? authUserProfile[0].role?.toLowerCase() : authUser.role?.toLowerCase();
-        const isAdmin = ["admin", "administrador", "gerente"].includes(dbRole ?? "");
-
-        if (!isAdmin) {
-          app.logger.warn({ tenantId }, "User lacks permission to update mesa");
-          return reply.code(403).send({ error: "Forbidden" });
-        }
-
-        const { id } = request.params;
-        const { numero, status, capacidade } = request.body;
-
-        // Validate numero and capacidade when provided
-        if ((numero !== undefined && (!Number.isInteger(numero) || numero <= 0)) ||
-            (capacidade !== undefined && (!Number.isInteger(capacidade) || capacidade <= 0))) {
-          return await reply.code(400).send({ error: "Número e capacidade devem ser inteiros maiores que zero." });
-        }
-
-        if (numero !== undefined && numero > NUMERO_MAXIMO_MESA) {
-          app.logger.warn({ tenantId, mesaId: id, numero, editadoPor: authUser.id }, "Mesa update refused: numero above allowed maximum");
-          return await reply.code(400).send({ error: `Número da mesa inválido: o máximo permitido é ${NUMERO_MAXIMO_MESA}.` });
-        }
-
-        app.logger.info({ tenantId, mesaId: id }, "Updating mesa");
-
-        // Check mesa belongs to tenant
-        const existingMesa = await app.db
-          .select()
-          .from(schema.mesas)
-          .where(and(
-            eq(schema.mesas.id, id as any),
-            eq(schema.mesas.restauranteId, tenantId as any)
-          ))
-          .limit(1);
-
-        if (existingMesa.length === 0) {
-          app.logger.warn({ tenantId, mesaId: id }, "Mesa not found");
-          return await reply.code(404).send({ error: "Mesa não encontrada" });
-        }
-
-        // If setting status to "disponivel", check for open comanda
-        if (status === "disponivel") {
-          const openComanda = await app.db
-            .select()
-            .from(schema.comandas)
-            .where(and(
-              eq(schema.comandas.mesaId, id as any),
-              eq(schema.comandas.status, "aberta" as any)
-            ))
-            .limit(1);
-
-          if (openComanda.length > 0) {
-            app.logger.warn({ tenantId, mesaId: id }, "Cannot set mesa to disponivel with open comanda");
-            return reply.code(409).send({ error: "A mesa tem uma comanda aberta e não pode ficar disponível." });
-          }
-        }
-
-        // Check for duplicate numero if changing it
-        if (numero && numero !== existingMesa[0].numero) {
-          const duplicate = await app.db
-            .select()
-            .from(schema.mesas)
-            .where(and(
-              eq(schema.mesas.restauranteId, tenantId as any),
-              eq(schema.mesas.numero, numero),
-              ne(schema.mesas.id, id as any)
-            ))
-            .limit(1);
-
-          if (duplicate.length > 0) {
-            app.logger.warn({ tenantId, numero }, "Duplicate mesa numero");
-            return reply.code(409).send({ error: "Mesa com este número já existe" });
-          }
-        }
-
-        const updateData = {
-          ...(numero !== undefined && { numero }),
-          ...(status && { status: status as any }),
-          ...(capacidade !== undefined && { capacidade }),
-        };
-
-        const [updated] = await app.db
-          .update(schema.mesas)
-          .set(updateData)
-          .where(and(
-            eq(schema.mesas.id, id as any),
-            eq(schema.mesas.restauranteId, tenantId as any)
-          ))
-          .returning();
-
-        app.logger.info({ mesaId: id }, "Mesa updated successfully");
-
-        return await reply.code(200).send({
-          id: updated.id,
-          numero: updated.numero,
-          status: updated.status,
-          capacidade: updated.capacidade,
-        });
-      } catch (error) {
-        app.logger.error({ err: error }, "Failed to update mesa");
-        return await reply.code(500).send({ error: "Internal server error" });
-      }
-    }
-  );
-
-  // DELETE /api/mesas/:id - Delete a mesa with cascading delete
+  // DELETE /api/mesas/:id - Delete a mesa
   app.fastify.delete<{ Params: { id: string } }>(
     "/api/mesas/:id",
     {
       schema: {
-        description: "Delete a mesa with cascading delete (requires admin/gerente role)",
+        description: "Delete a mesa (requires admin/gerente role)",
         tags: ["mesas"],
         params: {
           type: "object",
@@ -675,12 +486,10 @@ export function registerTableRoutes(app: App) {
           },
         },
         response: {
-          204: { description: "Mesa deleted successfully" },
+          200: { type: "object", properties: { success: { type: "boolean" } } },
           401: { type: "object", properties: { error: { type: "string" } } },
           403: { type: "object", properties: { error: { type: "string" } } },
           404: { type: "object", properties: { error: { type: "string" } } },
-          400: { type: "object", properties: { error: { type: "string" } } },
-          409: { type: "object", properties: { error: { type: "string" } } },
         },
       },
     },
@@ -689,9 +498,10 @@ export function registerTableRoutes(app: App) {
       if (!authUser) return;
 
       try {
+        const { id } = request.params;
         const tenantId = authUser.restauranteId;
 
-        // Check current database role
+        // Check permission
         const authUserProfile = await app.db
           .select()
           .from(schema.profiles)
@@ -709,81 +519,27 @@ export function registerTableRoutes(app: App) {
           return reply.code(403).send({ error: "Forbidden" });
         }
 
-        const { id } = request.params;
-
-        app.logger.info({ tenantId, mesaId: id }, "Deleting mesa");
-
-        // Check mesa belongs to tenant
-        const mesa = await app.db
+        // Check mesa exists
+        const existing = await app.db
           .select()
           .from(schema.mesas)
-          .where(and(
-            eq(schema.mesas.id, id as any),
-            eq(schema.mesas.restauranteId, tenantId as any)
-          ))
+          .where(and(eq(schema.mesas.id, id), eq(schema.mesas.restauranteId, tenantId as any)))
           .limit(1);
 
-        if (mesa.length === 0) {
-          app.logger.warn({ tenantId, mesaId: id }, "Mesa not found");
-          return await reply.code(404).send({ error: "Mesa não encontrada" });
+        if (existing.length === 0) {
+          return await reply.code(404).send({ error: "Mesa not found" });
         }
 
-        // Check for open comanda
-        const openComanda = await app.db
-          .select()
-          .from(schema.comandas)
-          .where(and(
-            eq(schema.comandas.mesaId, id as any),
-            eq(schema.comandas.status, "aberta" as any)
-          ))
-          .limit(1);
+        // Delete
+        await app.db.delete(schema.mesas).where(and(eq(schema.mesas.id, id), eq(schema.mesas.restauranteId, tenantId as any)));
 
-        if (openComanda.length > 0) {
-          app.logger.warn({ tenantId, mesaId: id }, "Cannot delete mesa with open comanda");
-          return reply.code(409).send({ error: "Esta mesa tem uma comanda aberta. Feche ou cancele a comanda antes de excluir a mesa." });
-        }
+        app.logger.info({ mesaId: id, tenantId }, "Mesa deleted successfully");
 
-        // Delete pedidos associated with this mesa's comandas
-        const comandasForMesa = await app.db
-          .select()
-          .from(schema.comandas)
-          .where(and(
-            eq(schema.comandas.mesaId, id as any),
-            eq(schema.comandas.restauranteId, tenantId as any)
-          ));
-
-        for (const comanda of comandasForMesa) {
-          await app.db.delete(schema.pedidos).where(and(
-            eq(schema.pedidos.comandaId, comanda.id),
-            eq(schema.pedidos.restauranteId, tenantId as any)
-          ));
-        }
-
-        // Delete comandas
-        await app.db.delete(schema.comandas).where(and(
-          eq(schema.comandas.mesaId, id as any),
-          eq(schema.comandas.restauranteId, tenantId as any)
-        ));
-
-        // Delete mesa
-        await app.db.delete(schema.mesas).where(and(
-          eq(schema.mesas.id, id as any),
-          eq(schema.mesas.restauranteId, tenantId as any)
-        ));
-
-        app.logger.info({ mesaId: id }, "Mesa deleted successfully");
-        return reply.code(204).send();
+        return await reply.code(200).send({ success: true });
       } catch (error) {
-        const errorStr = JSON.stringify(error).toLowerCase();
-        const isFKError = errorStr.includes('foreign key') || errorStr.includes('restrict');
-        if (isFKError) {
-          app.logger.warn({ err: error }, "Cannot delete mesa - has dependent records");
-          return await reply.code(400).send({ error: "Não é possível deletar mesa com registros relacionados" });
-        }
         app.logger.error({ err: error }, "Failed to delete mesa");
         return await reply.code(500).send({ error: "Internal server error" });
       }
     }
   );
-
 }

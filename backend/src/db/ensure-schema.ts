@@ -238,70 +238,36 @@ export async function garantirColunasContinuasDeDesconto(app: App): Promise<numb
 
 /**
  * Backfill qrToken for existing mesas that have NULL qr_token.
- * Runs after schema is verified. Idempotent and concurrency-safe.
- * Retries on UNIQUE collision up to 3 times per mesa.
+ * Single atomic SQL operation: generates 32-char hex tokens (UUID without hyphens).
+ * Idempotent - already-filled mesas are never changed.
+ * Does not throw; logs outcome and continues startup.
  */
 export async function backfillQrTokens(app: App): Promise<void> {
   const db = app.db as any;
 
   try {
-    // Import token utils
-    const { generateQrToken, isQrTokenCollisionError, MAX_RETRIES } = await import("../utils/qr-token.js");
+    const result = await db.execute(
+      sql`WITH preenchidas AS (
+            UPDATE mesas
+            SET qr_token = replace(gen_random_uuid()::text, '-', '')
+            WHERE qr_token IS NULL
+            RETURNING 1
+          )
+          SELECT count(*)::int AS quantidade FROM preenchidas`
+    );
 
-    let filled = 0;
-    const pageSize = 100;
-    let offset = 0;
-    let hasMore = true;
+    const rows = Array.isArray(result) ? result : (result as any)?.rows || [];
+    const quantidade = rows[0]?.quantidade ?? 0;
 
-    while (hasMore) {
-      // Fetch mesas with NULL qr_token
-      const mesasToFill = await db.execute(
-        sql`SELECT id, restaurante_id FROM mesas WHERE qr_token IS NULL LIMIT ${pageSize} OFFSET ${offset}`
-      );
-      const rows = Array.isArray(mesasToFill) ? mesasToFill : (mesasToFill as any)?.rows || [];
-
-      if (rows.length === 0) {
-        hasMore = false;
-        break;
-      }
-
-      for (const mesa of rows) {
-        let retries = 0;
-        let success = false;
-
-        while (retries < MAX_RETRIES && !success) {
-          try {
-            const token = generateQrToken();
-            await db.execute(
-              sql`UPDATE mesas SET qr_token = ${token} WHERE id = ${mesa.id} AND restaurante_id = ${mesa.restaurante_id} AND qr_token IS NULL`
-            );
-            filled++;
-            success = true;
-          } catch (err) {
-            if (isQrTokenCollisionError(err)) {
-              retries++;
-              if (retries >= MAX_RETRIES) {
-                app.logger.error({ mesaId: mesa.id }, "Failed to generate unique qrToken after 3 retries");
-                throw new Error("QR token collision - max retries exceeded");
-              }
-              // Retry with new token
-            } else {
-              throw err;
-            }
-          }
-        }
-      }
-
-      offset += pageSize;
-    }
-
-    if (filled > 0) {
-      app.logger.info({ filled }, "QR tokens backfilled for mesas");
+    if (quantidade > 0) {
+      app.logger.info({ quantidade }, "QR tokens backfilled for mesas");
     } else {
       app.logger.debug("No mesas needed qr_token backfill");
     }
   } catch (err) {
-    app.logger.error({ err }, "Failed to backfill qr_tokens - aborting startup");
-    throw err;
+    // Extract safe SQLSTATE if available
+    const sqlstate = (err as any)?.cause?.code || (err as any)?.code || "UNKNOWN";
+    app.logger.warn({ codigo: sqlstate, mensagem: "Falha ao preencher tokens das mesas" }, "Backfill QR tokens");
+    // Do not throw - continue startup
   }
 }
