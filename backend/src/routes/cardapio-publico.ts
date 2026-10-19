@@ -2,13 +2,22 @@ import { eq, and, sql } from "drizzle-orm";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import type { App } from "../index.js";
 import * as schema from "../db/schema/schema.js";
-import { checkRateLimit } from "../utils/rate-limit.js";
-import { calcularTotalComandaMesa, calcularTotalComandaMesaComDesconto } from "../services/total-comanda.js";
+import { checkRateLimit, increment } from "../utils/rate-limit.js";
+import { abrirComandaNaMesaComPublicacao, type EntradaAbertura, publicarEventoComandaCriada } from "../services/abrir-comanda.js";
+import { lancarItens, publicarEventosPedidosLancados } from "../services/lancamento-pedidos.js";
+import { realtimeHub } from "../realtime/hub.js";
 
-// Id do restaurante: CNPJ (14 dígitos) ou uuid (restaurantes antigos)
 const UUID_RE = /^(?:\d{14}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+const PRATO_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-// Escape para texto colocado dentro de HTML (título e cabeçalho da página do cardápio)
+function hasInvalidLineBreaks(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c === 0x0d || c === 0x0a || c === 0x2028 || c === 0x2029) return true;
+  }
+  return false;
+}
+
 function escHtml(s: string): string {
   return String(s)
     .replace(/&/g, "&amp;")
@@ -18,14 +27,18 @@ function escHtml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
+class DomainError extends Error {
+  constructor(public code: string, message: string) {
+    super(message);
+  }
+}
+
 export function registerCardapioPublicoRoutes(app: App) {
   const db = app.db as any;
 
-  // GET /cardapio — página web do cardápio digital
   app.fastify.get("/cardapio", async (request: FastifyRequest, reply: FastifyReply) => {
     if (!checkRateLimit(request, reply, { routeKey: "cardapio-html", max: 60, windowMs: 60_000 })) return;
     const q = request.query as any;
-    // r e m entram dentro do JavaScript da página: só aceitamos CNPJ/UUID e número inteiro curto
     const rBruto = typeof q.r === "string" ? q.r : "";
     const mBruto = typeof q.m === "string" ? q.m : "";
     const r = UUID_RE.test(rBruto) ? rBruto : "";
@@ -35,9 +48,9 @@ export function registerCardapioPublicoRoutes(app: App) {
       try {
         const [rest] = await db.select({ nome: schema.restaurante.nome }).from(schema.restaurante).where(eq(schema.restaurante.id, r));
         if (rest) restNome = rest.nome;
-      } catch (_) { /* invalid uuid, keep default name */ }
+      } catch (_) {}
     }
-    const mesaLabel = m !== "0" ? `Mesa ${m}` : "Cardápio Digital";
+    const mesaLabel = m !== "0" ? `Mesa ${m}` : "Cardapio Digital";
     const restNomeHtml = escHtml(restNome);
     const html = `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -91,11 +104,11 @@ function fmt(v){return"R$ "+v.toFixed(2).replace(".",",")}
 function esc(s){var d=document.createElement("div");d.textContent=s;return d.innerHTML}
 function su(u){try{u=encodeURI(String(u||""))}catch(e){return""}return u.slice(0,8).toLowerCase()==="https://"?u:""}
 function init(){
-  if(!R){document.getElementById("cd").innerHTML='<div style="text-align:center;padding:60px;color:#c00"><h2>QR Code inválido</h2><p style="margin-top:8px;color:#888">Escaneie o QR Code da mesa para acessar o cardápio.</p></div>';return}
+  if(!R){document.getElementById("cd").innerHTML='<div style="text-align:center;padding:60px;color:#c00"><h2>QR Code invalido</h2><p style="margin-top:8px;color:#888">Escaneie o QR Code da mesa para acessar o cardapio.</p></div>';return}
   fetch("/api/public/cardapio/"+R)
     .then(function(r){return r.json()})
     .then(function(d){D=d.cardapio||[];ren()})
-    .catch(function(){document.getElementById("cd").innerHTML='<div style="text-align:center;padding:60px;color:#c00">Erro ao carregar o cardápio</div>'})
+    .catch(function(){document.getElementById("cd").innerHTML='<div style="text-align:center;padding:60px;color:#c00">Erro ao carregar o cardapio</div>'})
 }
 function ren(){
   var h="";
@@ -110,7 +123,7 @@ function ren(){
       h+='<div class="pr">'+fmt(p.preco)+'</div></div>';
     })
   });
-  document.getElementById("cd").innerHTML=h||'<div style="text-align:center;padding:60px;color:#888">Nenhum prato disponível</div>';
+  document.getElementById("cd").innerHTML=h||'<div style="text-align:center;padding:60px;color:#888">Nenhum prato disponivel</div>';
   document.querySelectorAll(".it").forEach(function(el){
     el.addEventListener("click",function(){
       ad(el.dataset.id,el.dataset.nome,parseFloat(el.dataset.preco));
@@ -124,7 +137,7 @@ function oc(){
   var h='<h2 style="font-size:18px;margin-bottom:16px">Seu Pedido</h2>';
   C.forEach(function(i,x){
     h+='<div class="cart-row"><div><div style="font-weight:500">'+esc(i.n)+'</div><div style="color:#888;font-size:13px">'+fmt(i.p)+'</div></div>';
-    h+='<div class="qi"><button onclick="cq('+x+',-1)">−</button><span style="font-size:16px;font-weight:600;min-width:20px;text-align:center">'+i.q+'</span><button onclick="cq('+x+',1)">+</button></div></div>';
+    h+='<div class="qi"><button onclick="cq('+x+',-1)">-</button><span style="font-size:16px;font-weight:600;min-width:20px;text-align:center">'+i.q+'</span><button onclick="cq('+x+',1)">+</button></div></div>';
   });
   h+='<div class="cart-total"><span>Total</span><span style="color:#E8521A">'+fmt(t)+'</span></div>';
   h+='<input class="cart-input" id="cn" placeholder="Seu nome (opcional)">';
@@ -143,9 +156,9 @@ function ep(){
     if(r.ok){
       document.getElementById("md").style.display="none";
       document.getElementById("cr").style.display="none";
-      document.getElementById("cd").innerHTML='<div class="success"><div style="font-size:48px">✅</div><h2>Pedido enviado!</h2><p>'+esc(d.mensagem||"A cozinha já está preparando.")+'</p><button class="bt bp" onclick="C=[];ren();uc()" style="margin-top:20px">Novo pedido</button></div>';
+      document.getElementById("cd").innerHTML='<div class="success"><div style="font-size:48px">✓</div><h2>Pedido enviado!</h2><p>'+esc(d.mensagem||"A cozinha ja esta preparando.")+'</p><button class="bt bp" onclick="C=[];ren();uc()" style="margin-top:20px">Novo pedido</button></div>';
     }else{alert(d.error||"Erro ao enviar pedido");if(btn){btn.disabled=false;btn.textContent="Enviar pedido"}}
-  })}).catch(function(){alert("Erro de conexão. Verifique sua internet.");if(btn){btn.disabled=false;btn.textContent="Enviar pedido"}})
+  })}).catch(function(){alert("Erro de conexao. Verifique sua internet.");if(btn){btn.disabled=false;btn.textContent="Enviar pedido"}})
 }
 init()
 </script>
@@ -154,15 +167,16 @@ init()
     await reply.header("Content-Type", "text/html; charset=utf-8").send(html);
   });
 
-  // GET /api/public/cardapio/:restauranteId — cardápio público (sem auth)
   app.fastify.get<{ Params: { restauranteId: string } }>(
     "/api/public/cardapio/:restauranteId",
     async (request: FastifyRequest<{ Params: { restauranteId: string } }>, reply: FastifyReply) => {
       if (!checkRateLimit(request, reply, { routeKey: "public-cardapio", max: 60, windowMs: 60_000 })) return;
       try {
         const { restauranteId } = request.params;
+        if (!UUID_RE.test(restauranteId)) return await reply.code(404).send({ error: "Restaurante nao encontrado" });
+
         const [rest] = await db.select({ id: schema.restaurante.id, nome: schema.restaurante.nome }).from(schema.restaurante).where(eq(schema.restaurante.id, restauranteId));
-        if (!rest) return await reply.code(404).send({ error: "Restaurante não encontrado" });
+        if (!rest) return await reply.code(404).send({ error: "Restaurante nao encontrado" });
 
         const categorias = await db.select().from(schema.categorias).where(eq(schema.categorias.restauranteId, restauranteId));
         const pratos = await db.select().from(schema.pratos).where(and(eq(schema.pratos.restauranteId, restauranteId), eq(schema.pratos.disponivel, true)));
@@ -181,134 +195,271 @@ init()
 
         return await reply.code(200).send({ restaurante: rest, cardapio });
       } catch (err) {
+        app.logger.error({ err }, "Erro ao carregar cardapio publico");
         return await reply.code(500).send({ error: "Erro interno" });
       }
     }
   );
 
-  // POST /api/public/pedido — cliente faz pedido pelo QR Code (sem auth)
   app.fastify.post<{ Body: { restaurante_id: string; mesa_numero: number; cliente_nome?: string; itens: Array<{ prato_id: string; quantidade: number; observacao?: string }> } }>(
     "/api/public/pedido",
+    {
+      schema: {
+        body: {
+          type: "object",
+          required: ["restaurante_id", "mesa_numero", "itens"],
+          properties: {
+            restaurante_id: { type: "string" },
+            mesa_numero: { type: "number" },
+            cliente_nome: { type: "string" },
+            itens: { type: "array", items: { type: "object" } },
+          },
+        },
+      },
+    },
     async (request: FastifyRequest<{ Body: { restaurante_id: string; mesa_numero: number; cliente_nome?: string; itens: Array<{ prato_id: string; quantidade: number; observacao?: string }> } }>, reply: FastifyReply) => {
       if (!checkRateLimit(request, reply, { routeKey: "public-pedido", max: 10, windowMs: 60_000 })) return;
+
       try {
         const { restaurante_id, mesa_numero, cliente_nome, itens } = request.body;
-        if (!restaurante_id || !mesa_numero || !itens || itens.length === 0) {
-          return await reply.code(400).send({ error: "restaurante_id, mesa_numero e itens são obrigatórios" });
+        app.logger.info({ restaurante_id, mesa_numero }, "POST /api/public/pedido iniciado");
+
+        if (typeof restaurante_id !== "string" || !UUID_RE.test(restaurante_id)) {
+          return await reply.code(400).send({ error: "restaurante_id invalido" });
+        }
+
+        if (typeof mesa_numero !== "number" || !Number.isSafeInteger(mesa_numero) || mesa_numero <= 0 || mesa_numero > 2147483647) {
+          return await reply.code(400).send({ error: "mesa_numero deve ser um numero inteiro positivo" });
+        }
+
+        if (!Array.isArray(itens) || itens.length < 1 || itens.length > 30) {
+          return await reply.code(400).send({ error: "Informe entre 1 e 30 itens" });
+        }
+
+        for (let idx = 0; idx < itens.length; idx++) {
+          const item = itens[idx];
+          if (!item || typeof item !== "object" || Array.isArray(item)) {
+            return await reply.code(400).send({ error: `Item ${idx} invalido` });
+          }
+
+          if (typeof item.prato_id !== "string" || !PRATO_UUID_RE.test(item.prato_id)) {
+            return await reply.code(400).send({ error: `Item ${idx}: prato_id invalido` });
+          }
+
+          if (typeof item.quantidade !== "number" || !Number.isInteger(item.quantidade) || item.quantidade < 1 || item.quantidade > 20) {
+            return await reply.code(400).send({ error: `Item ${idx}: quantidade deve ser inteiro entre 1 e 20` });
+          }
+
+          if (item.observacao !== undefined) {
+            if (typeof item.observacao !== "string") {
+              return await reply.code(400).send({ error: `Item ${idx}: observacao deve ser texto` });
+            }
+            if (item.observacao.length > 300) {
+              return await reply.code(400).send({ error: `Item ${idx}: observacao maximo 300 caracteres` });
+            }
+            if (hasInvalidLineBreaks(item.observacao)) {
+              return await reply.code(400).send({ error: `Item ${idx}: observacao invalida` });
+            }
+          }
+        }
+
+        let nomeValidado = "Cliente QR";
+        if (cliente_nome !== undefined) {
+          if (typeof cliente_nome !== "string") {
+            return await reply.code(400).send({ error: "cliente_nome deve ser texto" });
+          }
+          if (cliente_nome.length > 60) {
+            return await reply.code(400).send({ error: "cliente_nome maximo 60 caracteres" });
+          }
+          if (hasInvalidLineBreaks(cliente_nome)) {
+            return await reply.code(400).send({ error: "cliente_nome invalido" });
+          }
+          nomeValidado = cliente_nome.trim() || "Cliente QR";
+        }
+
+        const mesaRateLimitKey = `qr-mesa:${restaurante_id.toLowerCase()}:${mesa_numero}`;
+        const mesaCount = increment(mesaRateLimitKey, 3600_000);
+        if (mesaCount > 20) {
+          app.logger.warn({ tipoLimite: "qr-mesa", rota: "POST /api/public/pedido" }, "Limite de 20 pedidos/hora para mesa atingido");
+          return await reply.code(429).send({ error: "Limite de 20 pedidos por hora para esta mesa atingido. Tente novamente mais tarde." });
         }
 
         const [rest] = await db.select({ id: schema.restaurante.id, modoComanda: schema.restaurante.modoComanda }).from(schema.restaurante).where(eq(schema.restaurante.id, restaurante_id));
-        if (!rest) return await reply.code(404).send({ error: "Restaurante não encontrado" });
+        if (!rest) return await reply.code(404).send({ error: "Restaurante nao encontrado" });
 
-        // No modo "individual" a mesa tem várias comandas, cada uma com o nome de uma pessoa. O pedido
-        // por QR Code não sabe a qual delas pertence (e deixar o cliente escolher pelo nome permitiria
-        // lançar itens na conta de outra pessoa). Até existir um fluxo próprio, o pedido é feito pelo garçom.
         if (rest.modoComanda === "individual") {
-          return await reply.code(409).send({ error: "Este restaurante atende por comanda individual. Chame o garçom para fazer o seu pedido." });
+          return await reply.code(409).send({ error: "Este restaurante atende por comanda individual. Chame o garcom para fazer o seu pedido." });
         }
 
-        const [mesa] = await db.select().from(schema.mesas).where(and(eq(schema.mesas.numero, mesa_numero), eq(schema.mesas.restauranteId, restaurante_id)));
-        if (!mesa) return await reply.code(404).send({ error: "Mesa não encontrada" });
+        let abrturaMarcada = false;
+        let metadadosAbertura: any = null;
+        let metadadosLancamento: any = null;
 
         const result = await (db as any).transaction(async (tx: any) => {
-          const itensPedido: any[] = [];
+          try {
+            const mesasLock = await tx.execute(
+              sql`SELECT id FROM mesas WHERE numero = ${mesa_numero} AND restaurante_id = ${restaurante_id} FOR UPDATE`
+            );
+            const mesasRows = Array.isArray(mesasLock) ? mesasLock : (mesasLock as any)?.rows || [];
+            if (!mesasRows.length) throw new DomainError("mesa_nao_encontrada", "Mesa nao encontrada");
+            const mesaId = mesasRows[0]?.id;
 
-          // Validate pratos and collect order items
-          for (const item of itens) {
-            const [prato] = await tx.select({ id: schema.pratos.id, preco: schema.pratos.preco }).from(schema.pratos).where(and(eq(schema.pratos.id, item.prato_id), eq(schema.pratos.restauranteId, restaurante_id)));
-            if (!prato) return { error: "Prato não encontrado: " + item.prato_id };
-            itensPedido.push({ pratoId: item.prato_id, quantidade: item.quantidade, precoUnitario: prato.preco, observacao: item.observacao || null });
+            const [comandaExistente] = await tx.select().from(schema.comandas).where(and(eq(schema.comandas.mesaId, mesaId), eq(schema.comandas.status, "aberta"), eq(schema.comandas.restauranteId, restaurante_id)));
+
+            let comanda;
+            if (comandaExistente) {
+              comanda = comandaExistente;
+            } else {
+              const entrada: EntradaAbertura = {
+                restauranteId: restaurante_id,
+                mesaId,
+                mesaNumero: mesa_numero,
+                garcomId: null as any,
+                total: "0",
+                rotulo: undefined,
+              };
+
+              const abrirResult = await abrirComandaNaMesaComPublicacao(app, entrada, tx);
+              if (abrirResult.tipo !== "criada") {
+                if (abrirResult.tipo === "mesa_ja_tem_comanda") throw new DomainError("mesa_ja_tem_comanda", "Esta mesa ja tem uma comanda aberta");
+                if (abrirResult.tipo === "mesa_nao_encontrada") throw new DomainError("mesa_nao_encontrada", "Mesa nao encontrada");
+                throw new DomainError("erro_abertura", "Erro ao abrir comanda");
+              }
+
+              comanda = abrirResult.comanda;
+              abrturaMarcada = true;
+              metadadosAbertura = { restauranteId: restaurante_id, comandaId: comanda.id, mesaId, mesaNumero: mesa_numero };
+
+              await tx
+                .update(schema.comandas)
+                .set({ rotulo: nomeValidado })
+                .where(and(eq(schema.comandas.id, comanda.id), eq(schema.comandas.restauranteId, restaurante_id)));
+            }
+
+            const itensMapeados = itens.map((item) => ({
+              pratoId: item.prato_id,
+              quantidade: item.quantidade,
+              observacao: item.observacao?.trim() || null,
+            }));
+
+            const lancamentoResult = await lancarItens(
+              app,
+              {
+                restauranteId: restaurante_id,
+                comandaId: comanda.id,
+                usuario: { id: "qr-publico", role: "garcom" },
+                itens: itensMapeados,
+              },
+              realtimeHub,
+              tx
+            );
+
+            if (lancamentoResult.tipo !== "lancado") {
+              if (lancamentoResult.tipo === "comanda_nao_encontrada") throw new DomainError("comanda_nao_encontrada", "Comanda nao encontrada");
+              if (lancamentoResult.tipo === "prato_indisponivel") throw new DomainError("prato_indisponivel", "Prato indisponivel ou nao encontrado.");
+              if (lancamentoResult.tipo === "itens_invalidos") throw new DomainError("itens_invalidos", lancamentoResult.mensagem || "Itens invalidos");
+              throw new DomainError("erro_lancamento", "Erro ao lancar itens");
+            }
+
+            metadadosLancamento = lancamentoResult.__metadataParaPublicar;
+
+            return { comanda_id: comanda.id, mesa: mesa_numero, itens_adicionados: lancamentoResult.pedidos.length };
+          } catch (err) {
+            if (err instanceof DomainError) throw err;
+            throw new DomainError("erro_transacao", "Erro na transacao");
           }
-
-          // Check for existing open comanda
-          let comanda;
-          const [comandaExistente] = await tx.select().from(schema.comandas).where(and(eq(schema.comandas.mesaId, mesa.id), eq(schema.comandas.status, "aberta"), eq(schema.comandas.restauranteId, restaurante_id)));
-
-          if (comandaExistente) {
-            comanda = comandaExistente;
-          } else {
-            [comanda] = await tx.insert(schema.comandas).values({
-              tipo: "mesa", mesaId: mesa.id, mesaNumero: mesa_numero, status: "aberta",
-              clienteNome: cliente_nome || "Cliente QR", subtotal: "0", total: "0", restauranteId: restaurante_id,
-            }).returning();
-            await tx.update(schema.mesas).set({ status: "ocupada" }).where(eq(schema.mesas.id, mesa.id));
-          }
-
-          // Insert order items
-          for (const item of itensPedido) {
-            await tx.insert(schema.pedidos).values({
-              comandaId: comanda.id, pratoId: item.pratoId, quantidade: item.quantidade,
-              precoUnitario: item.precoUnitario, observacao: item.observacao, status: "pendente", restauranteId: restaurante_id,
-            });
-          }
-
-          // Recalculate subtotal via SQL aggregation
-          const subtotalResult = await tx.select({
-            subtotal: sql<string>`COALESCE(SUM(quantidade * preco_unitario) FILTER (WHERE status <> 'cancelado'), 0)`,
-          }).from(schema.pedidos).where(eq(schema.pedidos.comandaId, comanda.id));
-
-          const subtotalValue = subtotalResult[0]?.subtotal || "0";
-          const subtotal = parseFloat(String(subtotalValue));
-
-          // Fetch gorjeta and desconto from comanda
-          const comandaResult = await tx.select({
-            gorjeta: schema.comandas.gorjeta,
-            tipo: schema.comandas.tipo,
-            descontoValor: schema.comandas.descontoValor,
-            descontoTipo: schema.comandas.descontoTipo,
-          }).from(schema.comandas).where(eq(schema.comandas.id, comanda.id));
-
-          const gorjeta = parseFloat(String(comandaResult[0]?.gorjeta || "0"));
-          let newTotal: string;
-          let descontoEfetivo: number | undefined;
-
-          if (comandaResult[0]?.tipo === "delivery") {
-            newTotal = subtotal.toFixed(2);
-          } else {
-            const result = calcularTotalComandaMesaComDesconto(subtotal, gorjeta, comandaResult[0]?.descontoTipo, comandaResult[0]?.descontoValor);
-            newTotal = result.total.toFixed(2);
-            descontoEfetivo = result.descontoEfetivo;
-          }
-
-          // Update comanda with calculated subtotal and total
-          await tx.update(schema.comandas).set({
-            subtotal: subtotal.toString(),
-            total: newTotal,
-            ...(descontoEfetivo !== undefined && { descontoValor: descontoEfetivo.toFixed(2) })
-          }).where(eq(schema.comandas.id, comanda.id));
-
-          return { comanda_id: comanda.id, mesa: mesa_numero, itens_adicionados: itensPedido.length };
         });
 
-        if (result.error) return await reply.code(400).send({ error: result.error });
-        return await reply.code(201).send({ success: true, ...result, mensagem: "Pedido recebido! A cozinha já está preparando." });
+        if (metadadosAbertura) {
+          try {
+            publicarEventoComandaCriada(app, metadadosAbertura, realtimeHub);
+          } catch (err) {
+            app.logger.debug({ err }, "Falha ao publicar comanda.created apos QR-pedido");
+          }
+        }
+        if (metadadosLancamento) {
+          try {
+            publicarEventosPedidosLancados(app, restaurante_id, result.comanda_id, metadadosLancamento.pedidos, realtimeHub);
+          } catch (err) {
+            app.logger.debug({ err }, "Falha ao publicar pedidos.created apos QR-pedido");
+          }
+        }
+
+        app.logger.info({ ...result }, "Pedido QR criado com sucesso");
+        return await reply.code(201).send({ success: true, ...result, mensagem: "Pedido recebido! Enviado para a cozinha." });
       } catch (err) {
-        app.logger.error({ error: (err as any).message }, "Erro no pedido público");
+        if (err instanceof DomainError) {
+          app.logger.warn({ tipoErro: (err as DomainError).code }, "QR-pedido dominio error");
+          if ((err as DomainError).code === "mesa_nao_encontrada" || (err as DomainError).code === "comanda_nao_encontrada") {
+            return await reply.code(404).send({ error: err.message });
+          }
+          if ((err as DomainError).code === "mesa_ja_tem_comanda") {
+            return await reply.code(409).send({ error: err.message });
+          }
+          if ((err as DomainError).code === "prato_indisponivel") {
+            return await reply.code(400).send({ error: err.message });
+          }
+          return await reply.code(400).send({ error: err.message });
+        }
+        app.logger.error({ err }, "Erro interno no pedido QR");
         return await reply.code(500).send({ error: "Erro interno" });
       }
     }
   );
 
-  // GET /api/public/mesa/:restauranteId/:mesaNumero — status da mesa (sem auth)
   app.fastify.get<{ Params: { restauranteId: string; mesaNumero: string } }>(
     "/api/public/mesa/:restauranteId/:mesaNumero",
     async (request: FastifyRequest<{ Params: { restauranteId: string; mesaNumero: string } }>, reply: FastifyReply) => {
       if (!checkRateLimit(request, reply, { routeKey: "public-mesa-status", max: 30, windowMs: 60_000 })) return;
       try {
         const { restauranteId, mesaNumero } = request.params;
-        const [mesa] = await db.select().from(schema.mesas).where(and(eq(schema.mesas.numero, parseInt(mesaNumero)), eq(schema.mesas.restauranteId, restauranteId)));
-        if (!mesa) return await reply.code(404).send({ error: "Mesa não encontrada" });
+
+        if (!UUID_RE.test(restauranteId)) {
+          return await reply.code(404).send({ error: "Mesa nao encontrada" });
+        }
+
+        const mesaNum = (() => {
+          const n = Number(mesaNumero);
+          return Number.isSafeInteger(n) && n > 0 && n <= 2147483647 ? n : NaN;
+        })();
+
+        if (isNaN(mesaNum)) {
+          return await reply.code(404).send({ error: "Mesa nao encontrada" });
+        }
+
+        const [mesa] = await db
+          .select({ id: schema.mesas.id, numero: schema.mesas.numero })
+          .from(schema.mesas)
+          .where(and(eq(schema.mesas.numero, mesaNum), eq(schema.mesas.restauranteId, restauranteId)));
+
+        if (!mesa) return await reply.code(404).send({ error: "Mesa nao encontrada" });
 
         let comanda = null;
         let pedidos: any[] = [];
-        const [comandaAberta] = await db.select().from(schema.comandas).where(and(eq(schema.comandas.mesaId, mesa.id), eq(schema.comandas.status, "aberta")));
+
+        const [comandaAberta] = await db
+          .select({ id: schema.comandas.id, rotulo: schema.comandas.rotulo, subtotal: schema.comandas.subtotal })
+          .from(schema.comandas)
+          .where(and(eq(schema.comandas.mesaId, mesa.id), eq(schema.comandas.status, "aberta"), eq(schema.comandas.restauranteId, restauranteId)));
+
         if (comandaAberta) {
-          comanda = comandaAberta;
-          pedidos = await db.select({ id: schema.pedidos.id, quantidade: schema.pedidos.quantidade, precoUnitario: schema.pedidos.precoUnitario, status: schema.pedidos.status, pratoNome: schema.pratos.nome }).from(schema.pedidos).leftJoin(schema.pratos, eq(schema.pedidos.pratoId, schema.pratos.id)).where(eq(schema.pedidos.comandaId, comandaAberta.id));
+          comanda = { cliente_nome: comandaAberta.rotulo || "Cliente QR", subtotal: parseFloat(comandaAberta.subtotal || "0") };
+          pedidos = await db
+            .select({
+              pratoNome: schema.pratos.nome,
+              quantidade: schema.pedidos.quantidade,
+              observacao: schema.pedidos.observacao,
+              status: schema.pedidos.status,
+              precoUnitario: schema.pedidos.precoUnitario,
+            })
+            .from(schema.pedidos)
+            .leftJoin(schema.pratos, eq(schema.pedidos.pratoId, schema.pratos.id))
+            .where(and(eq(schema.pedidos.comandaId, comandaAberta.id), eq(schema.pedidos.status, "pendente")));
         }
 
-        return await reply.code(200).send({ mesa: { numero: mesa.numero, status: mesa.status }, comanda, pedidos });
+        return await reply.code(200).send({ mesa: { numero: mesa.numero }, comanda, pedidos });
       } catch (err) {
+        app.logger.error({ err }, "Erro ao consultar mesa publica");
         return await reply.code(500).send({ error: "Erro interno" });
       }
     }
