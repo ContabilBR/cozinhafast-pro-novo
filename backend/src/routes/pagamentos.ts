@@ -161,7 +161,7 @@ export function registerPagamentoRoutes(app: App) {
         if (!pagamento.length) return await reply.code(404).send({ error: "Pagamento não encontrado" });
         if (pagamento[0].status === "confirmado") return await reply.code(400).send({ error: "Pagamento já confirmado não pode ser cancelado" });
 
-        await db.update(schema.pagamentos).set({ status: "cancelado" }).where(eq(schema.pagamentos.id, request.params.id));
+        await db.update(schema.pagamentos).set({ status: "cancelado" }).where(and(eq(schema.pagamentos.id, request.params.id), eq(schema.pagamentos.restauranteId, restauranteId)));
 
         return await reply.code(200).send({ success: true, message: "Pagamento cancelado" });
       } catch (err) {
