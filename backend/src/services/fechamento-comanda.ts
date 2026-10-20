@@ -302,7 +302,7 @@ export async function fecharComanda(
             }))
         );
 
-        await tx.delete(schema.pagamentos).where(eq(schema.pagamentos.comandaId, comandaId));
+        await tx.delete(schema.pagamentos).where(and(eq(schema.pagamentos.comandaId, comandaId), eq(schema.pagamentos.restauranteId, restauranteId)));
       }
 
       // Grava subtotal e gorjeta na comanda antes de apagá-la
@@ -312,11 +312,11 @@ export async function fecharComanda(
           subtotal: subtotal.toString(),
           gorjeta: gorjetaValue.toString(),
         })
-        .where(eq(schema.comandas.id, comandaId));
+        .where(and(eq(schema.comandas.id, comandaId), eq(schema.comandas.restauranteId, restauranteId)));
 
       // Apaga pedidos e comanda
-      await tx.delete(schema.pedidos).where(eq(schema.pedidos.comandaId, comandaId));
-      await tx.delete(schema.comandas).where(eq(schema.comandas.id, comandaId));
+      await tx.delete(schema.pedidos).where(and(eq(schema.pedidos.comandaId, comandaId), eq(schema.pedidos.restauranteId, restauranteId)));
+      await tx.delete(schema.comandas).where(and(eq(schema.comandas.id, comandaId), eq(schema.comandas.restauranteId, restauranteId)));
 
       // Depois de arquivar, libera a mesa só se não restar outra comanda aberta nela
       // (regra única em services/liberar-mesa.ts; com uma comanda por mesa libera como sempre)

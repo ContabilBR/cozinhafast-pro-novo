@@ -134,7 +134,7 @@ export async function cancelarPedido(
         motivoCancelamentoDetalhe: detalhe,
         canceladoAposInicio: aposInicio,
       })
-      .where(eq(schema.pedidos.id, pedidoId));
+      .where(and(eq(schema.pedidos.id, pedidoId), eq(schema.pedidos.restauranteId, restauranteId)));
 
     // 5) Recalcula o total gravado na comanda (sem os itens cancelados)
     const subtotal = await subtotalDaComanda(tx, comandaId);
@@ -156,7 +156,7 @@ export async function cancelarPedido(
         total: total.toFixed(2),
         ...(descontoEfetivo !== undefined && { descontoValor: descontoEfetivo.toFixed(2) })
       })
-      .where(eq(schema.comandas.id, comandaId));
+      .where(and(eq(schema.comandas.id, comandaId), eq(schema.comandas.restauranteId, restauranteId)));
 
     // Bug 4: Se for delivery, atualizar o valor do pagamento pendente para refletir o novo total
     if (comanda.tipo === "delivery") {
@@ -165,7 +165,8 @@ export async function cancelarPedido(
         .set({ valor: total.toFixed(2) })
         .where(and(
           eq(schema.pagamentos.comandaId, comandaId),
-          eq(schema.pagamentos.status, "pendente" as any)
+          eq(schema.pagamentos.status, "pendente" as any),
+          eq(schema.pagamentos.restauranteId, restauranteId)
         ));
     }
 
