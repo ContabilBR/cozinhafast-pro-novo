@@ -15,7 +15,8 @@ import { avaliarTransicao, validarEdicao } from "../services/transicao-pedidos.j
 // pendente acompanha o novo total); mesa = subtotal + gorjeta. `executor` é o banco ou uma transação.
 async function regravarTotaisDaComanda(
   executor: any,
-  comanda: { id: string; tipo: string | null; gorjeta: string | null; descontoValor?: string | null; descontoTipo?: string | null }
+  comanda: { id: string; tipo: string | null; gorjeta: string | null; descontoValor?: string | null; descontoTipo?: string | null },
+  restauranteId: string
 ): Promise<{ descontoEfetivo?: number }> {
   const subtotal = await subtotalDaComanda(executor, comanda.id);
   let total: number;
@@ -35,13 +36,13 @@ async function regravarTotaisDaComanda(
       total: total.toFixed(2),
       ...(descontoEfetivo !== undefined && { descontoValor: descontoEfetivo.toFixed(2) })
     })
-    .where(eq(schema.comandas.id, comanda.id));
+    .where(and(eq(schema.comandas.id, comanda.id), eq(schema.comandas.restauranteId, restauranteId)));
 
   if (comanda.tipo === "delivery") {
     await executor
       .update(schema.pagamentos)
       .set({ valor: total.toFixed(2) })
-      .where(and(eq(schema.pagamentos.comandaId, comanda.id), eq(schema.pagamentos.status, "pendente" as any)));
+      .where(and(eq(schema.pagamentos.comandaId, comanda.id), eq(schema.pagamentos.status, "pendente" as any), eq(schema.pagamentos.restauranteId, restauranteId)));
   }
 
   return { descontoEfetivo };
@@ -944,7 +945,7 @@ export function registerOrderItemRoutes(app: App) {
 
           if (!atualizados.length) return { tipo: "item_mudou" as const };
 
-          await regravarTotaisDaComanda(tx, comandaTravada);
+          await regravarTotaisDaComanda(tx, comandaTravada, restauranteIdAtual);
           return { tipo: "ok" as const, pedido: atualizados[0] };
         });
 
@@ -1225,7 +1226,7 @@ export function registerOrderItemRoutes(app: App) {
                 restauranteId,
               });
 
-              await tx.delete(schema.comandas).where(eq(schema.comandas.id, pedido.comandaId));
+              await tx.delete(schema.comandas).where(and(eq(schema.comandas.id, pedido.comandaId), eq(schema.comandas.restauranteId, restauranteId)));
 
               await liberarMesaSeVazia(tx, comanda.mesaId, restauranteId);
             });
