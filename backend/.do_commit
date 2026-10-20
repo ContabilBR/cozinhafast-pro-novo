@@ -1,0 +1,19 @@
+#!/bin/bash
+# This script will be executed to commit the changes
+set -e
+cd "$(dirname "${BASH_SOURCE[0]}")"
+
+echo "Restoring tsbuildinfo..."
+git checkout HEAD -- tsconfig.tsbuildinfo 2>/dev/null || true
+
+echo "Resetting staging..."
+git reset HEAD 2>/dev/null || true
+
+echo "Staging cardapio-publico.ts..."
+git add src/routes/cardapio-publico.ts
+
+echo "Committing..."
+git commit -m "Implement QR-2b: token validation gate for public routes"
+
+echo "✅ Done!"
+git rev-parse HEAD

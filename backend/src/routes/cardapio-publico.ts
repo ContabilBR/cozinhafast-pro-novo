@@ -37,23 +37,39 @@ class DomainError extends Error {
 export function registerCardapioPublicoRoutes(app: App) {
   const db = app.db as any;
 
-  app.fastify.get("/cardapio", async (request: FastifyRequest, reply: FastifyReply) => {
-    if (!checkRateLimit(request, reply, { routeKey: "cardapio-html", max: 60, windowMs: 60_000 })) return;
-    const q = request.query as any;
-    const rBruto = typeof q.r === "string" ? q.r : "";
-    const mBruto = typeof q.m === "string" ? q.m : "";
-    const r = UUID_RE.test(rBruto) ? rBruto : "";
-    const m = /^\d{1,6}$/.test(mBruto) ? mBruto : "0";
-    let restNome = "Restaurante";
-    if (r) {
-      try {
-        const [rest] = await db.select({ nome: schema.restaurante.nome }).from(schema.restaurante).where(eq(schema.restaurante.id, r));
-        if (rest) restNome = rest.nome;
-      } catch (_) {}
-    }
-    const mesaLabel = m !== "0" ? `Mesa ${m}` : "Cardapio Digital";
-    const restNomeHtml = escHtml(restNome);
-    const html = `<!DOCTYPE html>
+  app.fastify.get<{ Querystring: { r?: string; m?: string; t?: string } }>(
+    "/cardapio",
+    {
+      schema: {
+        querystring: {
+          type: "object",
+          properties: {
+            r: { type: "string" },
+            m: { type: "string" },
+            t: { type: "string" },
+          },
+        },
+      },
+    },
+    async (request: FastifyRequest<{ Querystring: { r?: string; m?: string; t?: string } }>, reply: FastifyReply) => {
+      if (!checkRateLimit(request, reply, { routeKey: "cardapio-html", max: 60, windowMs: 60_000 })) return;
+      const q = request.query;
+      const rBruto = typeof q.r === "string" ? q.r : "";
+      const mBruto = typeof q.m === "string" ? q.m : "";
+      const tBruto = typeof q.t === "string" ? q.t : "";
+      const r = UUID_RE.test(rBruto) ? rBruto : "";
+      const m = /^\d{1,6}$/.test(mBruto) ? mBruto : "0";
+      const T = isValidQrTokenFormat(tBruto) ? tBruto.toLowerCase() : "";
+      let restNome = "Restaurante";
+      if (r) {
+        try {
+          const [rest] = await db.select({ nome: schema.restaurante.nome }).from(schema.restaurante).where(eq(schema.restaurante.id, r));
+          if (rest) restNome = rest.nome;
+        } catch (_) {}
+      }
+      const mesaLabel = m !== "0" ? `Mesa ${m}` : "Cardapio Digital";
+      const restNomeHtml = escHtml(restNome);
+      const html = `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
@@ -100,12 +116,12 @@ body{font-family:-apple-system,system-ui,sans-serif;background:#FAF7F4;color:#1a
 </div>
 <div class="md" id="md" onclick="if(event.target===this)cl()"><div class="mc" id="mc"></div></div>
 <script>
-var R="${r}",M=${m},D=[],C=[];
+var R="${r}",M=${m},T="${T}",D=[],C=[];
 function fmt(v){return"R$ "+v.toFixed(2).replace(".",",")}
 function esc(s){var d=document.createElement("div");d.textContent=s;return d.innerHTML}
 function su(u){try{u=encodeURI(String(u||""))}catch(e){return""}return u.slice(0,8).toLowerCase()==="https://"?u:""}
 function init(){
-  if(!R){document.getElementById("cd").innerHTML='<div style="text-align:center;padding:60px;color:#c00"><h2>QR Code invalido</h2><p style="margin-top:8px;color:#888">Escaneie o QR Code da mesa para acessar o cardapio.</p></div>';return}
+  if(!R||!T){document.getElementById("cd").innerHTML='<div style="text-align:center;padding:60px;color:#c00"><h2>QR Code invalido</h2><p style="margin-top:8px;color:#888">Escaneie o QR Code da mesa para acessar o cardapio.</p></div>';return}
   fetch("/api/public/cardapio/"+R)
     .then(function(r){return r.json()})
     .then(function(d){D=d.cardapio||[];ren()})
@@ -152,7 +168,7 @@ function cq(x,d){C[x].q+=d;if(C[x].q<=0)C.splice(x,1);uc();if(C.length>0)oc();el
 function ep(){
   var n=document.getElementById("cn");var nome=n?n.value:"";
   var btn=document.querySelector(".mc .bp");if(btn){btn.disabled=true;btn.textContent="Enviando..."}
-  fetch("/api/public/pedido",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({restaurante_id:R,mesa_numero:M,cliente_nome:nome||undefined,itens:C.map(function(i){return{prato_id:i.id,quantidade:i.q}})})})
+  fetch("/api/public/pedido",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({restaurante_id:R,mesa_numero:M,token:T,cliente_nome:nome||undefined,itens:C.map(function(i){return{prato_id:i.id,quantidade:i.q}})})})
   .then(function(r){return r.json().then(function(d){
     if(r.ok){
       document.getElementById("md").style.display="none";
@@ -165,8 +181,9 @@ init()
 </script>
 </body>
 </html>`;
-    await reply.header("Content-Type", "text/html; charset=utf-8").send(html);
-  });
+      await reply.header("Content-Type", "text/html; charset=utf-8").send(html);
+    }
+  );
 
   app.fastify.get<{ Params: { restauranteId: string } }>(
     "/api/public/cardapio/:restauranteId",
@@ -196,13 +213,13 @@ init()
 
         return await reply.code(200).send({ restaurante: rest, cardapio });
       } catch (err) {
-        app.logger.error({ err }, "Erro ao carregar cardapio publico");
+        app.logger.error({ rota: "GET /cardapio", tipoErro: "desconhecido" }, "Erro ao carregar cardapio publico");
         return await reply.code(500).send({ error: "Erro interno" });
       }
     }
   );
 
-  app.fastify.post<{ Body: { restaurante_id: string; mesa_numero: number; cliente_nome?: string; itens: Array<{ prato_id: string; quantidade: number; observacao?: string }> } }>(
+  app.fastify.post<{ Body: { restaurante_id: string; mesa_numero: number; token?: string; cliente_nome?: string; itens: Array<{ prato_id: string; quantidade: number; observacao?: string }> } }>(
     "/api/public/pedido",
     {
       schema: {
@@ -212,22 +229,23 @@ init()
           properties: {
             restaurante_id: { type: "string" },
             mesa_numero: { type: "number" },
+            token: { type: "string" },
             cliente_nome: { type: "string" },
             itens: { type: "array", items: { type: "object" } },
           },
         },
       },
     },
-    async (request: FastifyRequest<{ Body: { restaurante_id: string; mesa_numero: number; cliente_nome?: string; itens: Array<{ prato_id: string; quantidade: number; observacao?: string }> } }>, reply: FastifyReply) => {
+    async (request: FastifyRequest<{ Body: { restaurante_id: string; mesa_numero: number; token?: string; cliente_nome?: string; itens: Array<{ prato_id: string; quantidade: number; observacao?: string }> } }>, reply: FastifyReply) => {
       if (!checkRateLimit(request, reply, { routeKey: "public-pedido", max: 10, windowMs: 60_000 })) {
         app.logger.warn({ tipoLimite: "ip", rota: "POST /api/public/pedido" }, "Limite por IP do pedido publico atingido");
         return;
       }
 
       try {
-        const { restaurante_id, mesa_numero, cliente_nome, itens } = request.body;
-        app.logger.info({ restaurante_id, mesa_numero }, "POST /api/public/pedido iniciado");
+        const { restaurante_id, mesa_numero, token, cliente_nome, itens } = request.body;
 
+        // Validação segura: restaurante_id e mesa_numero para busca segura
         if (typeof restaurante_id !== "string" || !UUID_RE.test(restaurante_id)) {
           return await reply.code(400).send({ error: "restaurante_id invalido" });
         }
@@ -235,6 +253,47 @@ init()
         if (typeof mesa_numero !== "number" || !Number.isSafeInteger(mesa_numero) || mesa_numero <= 0 || mesa_numero > 2147483647) {
           return await reply.code(400).send({ error: "mesa_numero deve ser um numero inteiro positivo" });
         }
+
+        // Gate de validação de token: deve ocorrer ANTES de qualquer regra de negócio
+        // Trata body null/não-objeto com segurança
+        if (!request.body || typeof request.body !== "object" || Array.isArray(request.body)) {
+          app.logger.info({ rota: "POST /api/public/pedido" }, "Body invalido");
+          return await reply.code(404).send({ error: "Mesa nao encontrada" });
+        }
+
+        // Busca mesa (segura com restaurante_id + mesa_numero)
+        const [mesa] = await db
+          .select({ id: schema.mesas.id, qrToken: schema.mesas.qrToken })
+          .from(schema.mesas)
+          .where(and(eq(schema.mesas.numero, mesa_numero), eq(schema.mesas.restauranteId, restaurante_id)));
+
+        if (!mesa) {
+          app.logger.info({ rota: "POST /api/public/pedido" }, "Mesa nao encontrada na busca");
+          return await reply.code(404).send({ error: "Mesa nao encontrada" });
+        }
+
+        // Validação de token: presença, formato e comparação
+        if (!mesa.qrToken) {
+          app.logger.info({ rota: "POST /api/public/pedido" }, "Mesa sem qrToken");
+          return await reply.code(404).send({ error: "Mesa nao encontrada" });
+        }
+
+        if (!isValidQrTokenFormat(mesa.qrToken)) {
+          app.logger.info({ rota: "POST /api/public/pedido" }, "QrToken de mesa em formato invalido");
+          return await reply.code(404).send({ error: "Mesa nao encontrada" });
+        }
+
+        if (!isValidQrTokenFormat(token)) {
+          app.logger.info({ rota: "POST /api/public/pedido" }, "Token fornecido em formato invalido");
+          return await reply.code(404).send({ error: "Mesa nao encontrada" });
+        }
+
+        if (!compareQrTokens(token, mesa.qrToken)) {
+          app.logger.info({ rota: "POST /api/public/pedido" }, "Token fornecido nao corresponde a mesa");
+          return await reply.code(404).send({ error: "Mesa nao encontrada" });
+        }
+
+        app.logger.info({ restaurante_id, mesa_numero }, "POST /api/public/pedido iniciado");
 
         if (!Array.isArray(itens) || itens.length < 1 || itens.length > 30) {
           return await reply.code(400).send({ error: "Informe entre 1 e 30 itens" });
@@ -406,21 +465,32 @@ init()
           if (code === "limite_mesa") {
             return await reply.code(429).send({ error: err.message });
           }
-          app.logger.error({ err }, "Erro desconhecido no pedido QR");
+          app.logger.error({ rota: "POST /api/public/pedido", tipoErro: code }, "Erro desconhecido no pedido QR");
           return await reply.code(500).send({ error: "Erro interno" });
         }
-        app.logger.error({ err }, "Erro interno no pedido QR");
+        app.logger.error({ rota: "POST /api/public/pedido", tipoErro: "desconhecido" }, "Erro interno no pedido QR");
         return await reply.code(500).send({ error: "Erro interno" });
       }
     }
   );
 
-  app.fastify.get<{ Params: { restauranteId: string; mesaNumero: string } }>(
+  app.fastify.get<{ Params: { restauranteId: string; mesaNumero: string }; Querystring: { t?: string } }>(
     "/api/public/mesa/:restauranteId/:mesaNumero",
-    async (request: FastifyRequest<{ Params: { restauranteId: string; mesaNumero: string } }>, reply: FastifyReply) => {
+    {
+      schema: {
+        querystring: {
+          type: "object",
+          properties: {
+            t: { type: "string" },
+          },
+        },
+      },
+    },
+    async (request: FastifyRequest<{ Params: { restauranteId: string; mesaNumero: string }; Querystring: { t?: string } }>, reply: FastifyReply) => {
       if (!checkRateLimit(request, reply, { routeKey: "public-mesa-status", max: 30, windowMs: 60_000 })) return;
       try {
         const { restauranteId, mesaNumero } = request.params;
+        const { t: tokenParam } = request.query;
 
         if (!UUID_RE.test(restauranteId)) {
           return await reply.code(404).send({ error: "Mesa nao encontrada" });
@@ -435,12 +505,37 @@ init()
           return await reply.code(404).send({ error: "Mesa nao encontrada" });
         }
 
+        // Gate de validação de token: buscar mesa com qrToken
         const [mesa] = await db
-          .select({ id: schema.mesas.id, numero: schema.mesas.numero })
+          .select({ id: schema.mesas.id, numero: schema.mesas.numero, qrToken: schema.mesas.qrToken })
           .from(schema.mesas)
           .where(and(eq(schema.mesas.numero, mesaNum), eq(schema.mesas.restauranteId, restauranteId)));
 
-        if (!mesa) return await reply.code(404).send({ error: "Mesa nao encontrada" });
+        if (!mesa) {
+          app.logger.info({ rota: "GET /api/public/mesa" }, "Mesa nao encontrada na busca");
+          return await reply.code(404).send({ error: "Mesa nao encontrada" });
+        }
+
+        // Validar token usando os mesmos utilitários
+        if (!mesa.qrToken) {
+          app.logger.info({ rota: "GET /api/public/mesa" }, "Mesa sem qrToken");
+          return await reply.code(404).send({ error: "Mesa nao encontrada" });
+        }
+
+        if (!isValidQrTokenFormat(mesa.qrToken)) {
+          app.logger.info({ rota: "GET /api/public/mesa" }, "QrToken de mesa em formato invalido");
+          return await reply.code(404).send({ error: "Mesa nao encontrada" });
+        }
+
+        if (!isValidQrTokenFormat(tokenParam)) {
+          app.logger.info({ rota: "GET /api/public/mesa" }, "Token fornecido em formato invalido");
+          return await reply.code(404).send({ error: "Mesa nao encontrada" });
+        }
+
+        if (!compareQrTokens(tokenParam, mesa.qrToken)) {
+          app.logger.info({ rota: "GET /api/public/mesa" }, "Token fornecido nao corresponde a mesa");
+          return await reply.code(404).send({ error: "Mesa nao encontrada" });
+        }
 
         let comanda = null;
         let pedidos: any[] = [];
@@ -468,7 +563,7 @@ init()
 
         return await reply.code(200).send({ mesa: { numero: mesa.numero }, comanda, pedidos });
       } catch (err) {
-        app.logger.error({ err }, "Erro ao consultar mesa publica");
+        app.logger.error({ rota: "GET /api/public/mesa", tipoErro: "desconhecido" }, "Erro ao consultar mesa publica");
         return await reply.code(500).send({ error: "Erro interno" });
       }
     }

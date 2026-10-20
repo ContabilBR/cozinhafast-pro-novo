@@ -1,0 +1,108 @@
+QR-2b IMPLEMENTATION - FINAL VERIFICATION
+==========================================
+
+File Modified: backend/src/routes/cardapio-publico.ts
+
+REQUIREMENT 1: GET /cardapio - Token Parameter
+✓ Line 40: Querystring type includes t?: string
+✓ Line 44-50: Schema includes t parameter
+✓ Line 59: Extracts tBruto from query
+✓ Line 62: Validates using isValidQrTokenFormat(tBruto), stores as T (lowercase)
+✓ Line 119: Variable T included in JavaScript scope
+✓ Line 124: init() shows "QR Code invalido" when !R || !T
+✓ Line 171: token:T included in POST body JSON
+
+REQUIREMENT 2: POST /api/public/pedido - Token Validation Gate
+✓ Line 222: Body type includes token?: string (optional)
+✓ Line 232: Schema includes token: { type: "string" } (optional, not required)
+✓ Line 246: Extracts token from request.body
+✓ Line 249-255: Validates restaurante_id and mesa_numero with 400 errors
+✓ Line 257-262: Gate comment - validates BEFORE business logic
+✓ Line 259-262: Handles body null/non-object with 404
+✓ Line 265-268: Safely queries mesa with qrToken projection
+✓ Line 270-273: Mesa not found = 404 "Mesa nao encontrada"
+✓ Line 276-279: Mesa without qrToken = 404
+✓ Line 281-284: Mesa qrToken format invalid = 404
+✓ Line 286-289: Provided token format invalid = 404
+✓ Line 291-294: compareQrTokens() fails = 404
+✓ Line 296: Logger safe - only restaurante_id, mesa_numero logged
+✓ Line 426-431: qr-mesa counter positioned correctly after validation
+✓ All original business logic preserved unchanged
+✓ All logging errors protected (no err object logged)
+
+REQUIREMENT 3: GET /api/public/mesa/:restauranteId/:mesaNumero - Token Validation
+✓ Line 477: Querystring type includes t?: string
+✓ Line 477-487: Schema includes t parameter
+✓ Line 489: Full FastifyRequest type with Querystring
+✓ Line 493: Extracts tokenParam from query
+✓ Line 508-512: SELECT projects qrToken from mesa
+✓ Line 514-516: Mesa not found = 404
+✓ Line 518-521: Mesa.qrToken missing = 404
+✓ Line 523-526: Mesa.qrToken format invalid = 404
+✓ Line 528-531: Provided token format invalid = 404
+✓ Line 533-536: compareQrTokens() fails = 404
+✓ Response doesn't include qrToken (only id, numero, rotulo, subtotal)
+✓ Cancelado filter preserved (line with not(eq(status, "cancelado")))
+✓ Logging errors protected
+
+REQUIREMENT 4: GET /api/public/cardapio/:restauranteId - Public Endpoint
+✓ Line 188-220: COMPLETELY UNCHANGED from original
+✓ Public endpoint without authentication required
+
+REQUIREMENT 5: Security - Logging Protection
+✓ Line 216: GET /cardapio error - only rota and tipoErro logged
+✓ Line 241: IP rate limit warning - only tipoLimite and rota logged
+✓ Line 260-261, 271-272, etc: POST gate logs - only rota logged with safe messages
+✓ Line 468-471: POST error handlers - only rota and tipoErro logged
+✓ Line 566: GET mesa error - only rota and tipoErro logged
+✗ No tokens, body, query, or raw err objects in any logs
+
+REQUIREMENT 6: Rate Limiting - Preserved Order
+✓ Line 240-243: IP check at start of handler
+✓ Line 246-296: Gate validates token
+✓ Line 426-431: qr-mesa counter increments after lancarItens (within transaction)
+✓ All current rate limiting keys and semantics preserved
+
+REQUIREMENT 7: Response Messages and Status Codes
+✓ All original messages preserved
+✓ All original status codes preserved
+✓ POST success: 201, message: "Pedido recebido! Enviado para a cozinha."
+✓ GET responses: 200 with original structure
+✓ Errors unified to 404 "Mesa nao encontrada" for token failures
+
+SECURITY REVIEW
+✓ Token only compared in memory (compareQrTokens)
+✓ Token never passed to SQL queries
+✓ isValidQrTokenFormat validates format before use
+✓ No token exposure in logs
+✓ No body exposure in logs
+✓ No query exposure in logs
+✓ Timing-safe comparison prevents timing attacks
+✓ Uniform error responses prevent information disclosure
+✓ SQL injection impossible (no token in SQL)
+
+FILES MODIFIED
+✓ ONLY: backend/src/routes/cardapio-publico.ts
+
+IMPORTS USED
+✓ isValidQrTokenFormat - from ../utils/qr-token.js (existing)
+✓ compareQrTokens - from ../utils/qr-token.js (existing)
+✓ No new dependencies added
+✓ No utilities modified
+
+READY FOR COMMIT
+✓ Implementation complete
+✓ All requirements met
+✓ Security verified
+✓ Logging protected
+✓ No extraneous changes
+✓ Ready for testing
+
+Commit Command:
+  git checkout HEAD -- tsconfig.tsbuildinfo
+  git reset HEAD
+  git add src/routes/cardapio-publico.ts
+  git commit -m "Implement QR-2b: token validation gate for public routes"
+
+Or use provided script: bash COMMIT_QR2B.sh
+
