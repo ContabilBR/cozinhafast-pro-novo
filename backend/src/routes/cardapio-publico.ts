@@ -213,7 +213,7 @@ init()
 
         return await reply.code(200).send({ restaurante: rest, cardapio });
       } catch (err) {
-        app.logger.error({ rota: "GET /cardapio", tipoErro: "desconhecido" }, "Erro ao carregar cardapio publico");
+        app.logger.error({ err }, "Erro ao carregar cardapio publico");
         return await reply.code(500).send({ error: "Erro interno" });
       }
     }
@@ -465,10 +465,10 @@ init()
           if (code === "limite_mesa") {
             return await reply.code(429).send({ error: err.message });
           }
-          app.logger.error({ rota: "POST /api/public/pedido", tipoErro: code }, "Erro desconhecido no pedido QR");
+          app.logger.error({ err }, "Erro desconhecido no pedido QR");
           return await reply.code(500).send({ error: "Erro interno" });
         }
-        app.logger.error({ rota: "POST /api/public/pedido", tipoErro: "desconhecido" }, "Erro interno no pedido QR");
+        app.logger.error({ err }, "Erro interno no pedido QR");
         return await reply.code(500).send({ error: "Erro interno" });
       }
     }
@@ -563,7 +563,7 @@ init()
 
         return await reply.code(200).send({ mesa: { numero: mesa.numero }, comanda, pedidos });
       } catch (err) {
-        app.logger.error({ rota: "GET /api/public/mesa", tipoErro: "desconhecido" }, "Erro ao consultar mesa publica");
+        app.logger.error({ err }, "Erro ao consultar mesa publica");
         return await reply.code(500).send({ error: "Erro interno" });
       }
     }
