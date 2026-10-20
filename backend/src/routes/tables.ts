@@ -3,6 +3,7 @@ import { eq, ne, and, gte, lte } from "drizzle-orm";
 import * as schema from "../db/schema/schema.js";
 import type { App } from "../index.js";
 import { requireAuth as customRequireAuth, requireRole } from "../utils/auth.js";
+import { generateQrToken } from "../utils/qr-token.js";
 
 // Teto realista para o número de uma mesa. Nenhum restaurante tem mais de 9.999 mesas;
 // números acima disso só aparecem por erro ou por dados de teste gravados no banco real
@@ -55,6 +56,7 @@ export function registerTableRoutes(app: App) {
                 numero: { type: "number" },
                 status: { type: "string", enum: ["disponivel", "ocupada", "reservada"] },
                 capacidade: { type: "number" },
+                qr_token: { type: "string" },
                 created_at: { type: "string", format: "date-time" },
               },
             },
@@ -96,6 +98,7 @@ export function registerTableRoutes(app: App) {
           numero: m.numero,
           status: m.status,
           capacidade: m.capacidade,
+          qr_token: m.qrToken,
           created_at: m.createdAt.toISOString(),
         }));
       } catch (error) {
@@ -129,6 +132,7 @@ export function registerTableRoutes(app: App) {
               numero: { type: "number" },
               status: { type: "string" },
               capacidade: { type: "number" },
+              qr_token: { type: "string" },
               created_at: { type: "string", format: "date-time" },
             },
           },
@@ -197,6 +201,8 @@ export function registerTableRoutes(app: App) {
           return reply.code(409).send({ error: "Mesa com este número já existe" });
         }
 
+        const qrToken = generateQrToken();
+
         const [newMesa] = await app.db
           .insert(schema.mesas)
           .values({
@@ -204,6 +210,7 @@ export function registerTableRoutes(app: App) {
             capacidade,
             status: status as any,
             restauranteId: tenantId as any,
+            qrToken,
             createdAt: new Date(),
           })
           .returning();
@@ -215,6 +222,7 @@ export function registerTableRoutes(app: App) {
           numero: newMesa.numero,
           status: newMesa.status,
           capacidade: newMesa.capacidade,
+          qr_token: newMesa.qrToken,
           created_at: newMesa.createdAt.toISOString(),
         });
       } catch (error) {
@@ -255,6 +263,7 @@ export function registerTableRoutes(app: App) {
                     numero: { type: "number" },
                     status: { type: "string" },
                     capacidade: { type: "number" },
+                    qr_token: { type: "string" },
                   },
                 },
               },
@@ -345,6 +354,7 @@ export function registerTableRoutes(app: App) {
           capacidade,
           status: "disponivel" as any,
           restauranteId: tenantId as any,
+          qrToken: generateQrToken(),
           createdAt: agora,
         }));
 
@@ -357,7 +367,7 @@ export function registerTableRoutes(app: App) {
           criadas: criadas.length,
           mesas: criadas
             .sort((a, b) => a.numero - b.numero)
-            .map((m) => ({ id: m.id, numero: m.numero, status: m.status, capacidade: m.capacidade })),
+            .map((m) => ({ id: m.id, numero: m.numero, status: m.status, capacidade: m.capacidade, qr_token: m.qrToken })),
         });
       } catch (error) {
         const codigo = (error as any)?.code ?? (error as any)?.cause?.code;
@@ -393,6 +403,7 @@ export function registerTableRoutes(app: App) {
               numero: { type: "number" },
               status: { type: "string" },
               capacidade: { type: "number" },
+              qr_token: { type: "string" },
               created_at: { type: "string", format: "date-time" },
             },
           },
@@ -430,6 +441,7 @@ export function registerTableRoutes(app: App) {
           numero: mesa[0].numero,
           status: mesa[0].status,
           capacidade: mesa[0].capacidade,
+          qr_token: mesa[0].qrToken,
           created_at: mesa[0].createdAt.toISOString(),
         });
       } catch (error) {
@@ -469,6 +481,7 @@ export function registerTableRoutes(app: App) {
               numero: { type: "number" },
               status: { type: "string" },
               capacidade: { type: "number" },
+              qr_token: { type: "string" },
             },
           },
           401: { type: "object", properties: { error: { type: "string" } } },
@@ -591,6 +604,7 @@ export function registerTableRoutes(app: App) {
           numero: updated.numero,
           status: updated.status,
           capacidade: updated.capacidade,
+          qr_token: updated.qrToken,
         });
       } catch (error) {
         app.logger.error({ err: error }, "Failed to update mesa");
