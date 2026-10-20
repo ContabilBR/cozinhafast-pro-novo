@@ -4,7 +4,7 @@ import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useColors } from "@/hooks/useColors";
-import { apiGet, apiPost } from "@/utils/api";
+import { apiGet, BACKEND_URL } from "@/utils/api";
 import { useMesaCliente } from "@/contexts/MesaClienteContext";
 import { MesaClienteConfig } from "@/utils/mesaCliente";
 
@@ -12,6 +12,29 @@ type Prato = { id: string; nome: string; descricao?: string; preco: number; imag
 type Categoria = { categoria: { id: string; nome: string }; pratos: Prato[] };
 type CartItem = { pratoId: string; nome: string; preco: number; quantidade: number };
 type PedidoStatus = { id: string; quantidade: number; precoUnitario: string; status: string; pratoNome: string };
+
+const AVISO_RECONFIGURAR = "Este tablet precisa ser configurado de novo. Chame o gerente.";
+const MESA_NAO_ENCONTRADA = "Mesa nao encontrada";
+
+// Estas chamadas não usam o logger compartilhado: a URL contém o código da mesa.
+// Nunca propagar a URL, o corpo de resposta ou erros brutos para logs/avisos.
+const consultarMesaPublica = async (path: string, options?: RequestInit) => {
+  let response: Response;
+  let data: any;
+  try {
+    response = await fetch(`${BACKEND_URL}${path}`, options);
+    data = await response.json();
+  } catch {
+    throw new Error("Não foi possível conectar. Tente novamente em instantes.");
+  }
+  if (data?.error === MESA_NAO_ENCONTRADA || data?.message === MESA_NAO_ENCONTRADA) {
+    throw new Error(MESA_NAO_ENCONTRADA);
+  }
+  if (!response.ok) {
+    throw new Error("Não foi possível concluir. Tente novamente em instantes.");
+  }
+  return data;
+};
 
 const STATUS_LABEL: Record<string, string> = {
   pendente: "Recebido",
@@ -37,6 +60,8 @@ export default function MesaClienteScreen() {
   const [aba, setAba] = useState<"cardapio" | "pedidos">("cardapio");
   const [pedidos, setPedidos] = useState<PedidoStatus[]>([]);
   const [loadingPedidos, setLoadingPedidos] = useState(false);
+  const [mesaRecusada, setMesaRecusada] = useState(false);
+  const precisaReconfigurar = !!config && (!config.qrToken?.trim() || mesaRecusada);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const carregarCardapio = useCallback(async (cfg: MesaClienteConfig) => {
@@ -52,22 +77,30 @@ export default function MesaClienteScreen() {
   }, []);
 
   const carregarPedidos = useCallback(async (cfg: MesaClienteConfig) => {
+    if (!cfg.qrToken?.trim()) {
+      setLoadingPedidos(false);
+      return;
+    }
     try {
-      const data = await apiGet<any>(`/api/public/mesa/${cfg.restauranteId}/${cfg.mesaNumero}`);
+      const data = await consultarMesaPublica(`/api/public/mesa/${cfg.restauranteId}/${cfg.mesaNumero}?t=${encodeURIComponent(cfg.qrToken)}`);
       setPedidos(data?.pedidos || []);
     } catch (error) {
-      console.error("[MesaCliente] Erro ao carregar status dos pedidos:", error);
+      if (error instanceof Error && error.message === MESA_NAO_ENCONTRADA) {
+        setMesaRecusada(true);
+        setPedidos([]);
+      }
     } finally {
       setLoadingPedidos(false);
     }
   }, []);
 
   useEffect(() => {
+    setMesaRecusada(false);
     if (config) carregarCardapio(config);
   }, [config, carregarCardapio]);
 
   useEffect(() => {
-    if (!config || aba !== "pedidos") {
+    if (!config || precisaReconfigurar || aba !== "pedidos") {
       if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
       return;
     }
@@ -75,7 +108,7 @@ export default function MesaClienteScreen() {
     carregarPedidos(config);
     pollRef.current = setInterval(() => carregarPedidos(config), 8000);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [config, aba, carregarPedidos]);
+  }, [config, aba, carregarPedidos, precisaReconfigurar]);
 
   const adicionarAoCarrinho = (prato: Prato) => {
     setCart((prev) => {
@@ -98,20 +131,30 @@ export default function MesaClienteScreen() {
   const itensCarrinho = cart.reduce((sum, i) => sum + i.quantidade, 0);
 
   const enviarPedido = async () => {
-    if (!config || cart.length === 0) return;
+    if (!config || cart.length === 0 || precisaReconfigurar) return;
     setEnviando(true);
     try {
-      const resp = await apiPost<any>("/api/public/pedido", {
-        restaurante_id: config.restauranteId,
-        mesa_numero: config.mesaNumero,
-        cliente_nome: clienteNome || undefined,
-        itens: cart.map((i) => ({ prato_id: i.pratoId, quantidade: i.quantidade })),
+      await consultarMesaPublica("/api/public/pedido", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          restaurante_id: config.restauranteId,
+          mesa_numero: config.mesaNumero,
+          token: config.qrToken,
+          cliente_nome: clienteNome || undefined,
+          itens: cart.map((i) => ({ prato_id: i.pratoId, quantidade: i.quantidade })),
+        }),
       });
-      setSucesso(resp?.mensagem || "Pedido enviado! A cozinha já está preparando.");
+      setSucesso("Pedido enviado! A cozinha já está preparando.");
       setCart([]);
       setClienteNome("");
-    } catch (error: any) {
-      Alert.alert("Não foi possível enviar", error?.message || "Tente novamente em instantes.");
+    } catch (error) {
+      if (error instanceof Error && error.message === MESA_NAO_ENCONTRADA) {
+        setMesaRecusada(true);
+        setPedidos([]);
+      } else {
+        Alert.alert("Não foi possível enviar", "Tente novamente em instantes.");
+      }
     } finally {
       setEnviando(false);
     }
@@ -170,6 +213,12 @@ export default function MesaClienteScreen() {
         </View>
       </View>
 
+      {precisaReconfigurar && (
+        <View accessibilityRole="alert" style={{ marginHorizontal: 16, marginTop: 12, padding: 14, borderRadius: 10, borderWidth: 1, borderColor: "#B45309", backgroundColor: COLORS.surface }}>
+          <Text style={{ fontFamily: "Outfit_700Bold", fontSize: 15, color: COLORS.text }}>{AVISO_RECONFIGURAR}</Text>
+        </View>
+      )}
+
       {aba === "cardapio" ? (
         loadingCardapio ? (
           <View style={{ padding: 24 }}><ActivityIndicator size="large" color={COLORS.primary} /></View>
@@ -197,7 +246,7 @@ export default function MesaClienteScreen() {
         )
       ) : (
         <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
-          {loadingPedidos && pedidos.length === 0 ? (
+          {precisaReconfigurar ? null : loadingPedidos && pedidos.length === 0 ? (
             <ActivityIndicator size="large" color={COLORS.primary} style={{ marginTop: 24 }} />
           ) : pedidos.length === 0 ? (
             <Text style={{ textAlign: "center", color: COLORS.textSecondary, marginTop: 40 }}>Nenhum pedido enviado ainda nesta mesa.</Text>
@@ -266,7 +315,10 @@ export default function MesaClienteScreen() {
                   placeholderTextColor={COLORS.textTertiary}
                   style={{ borderWidth: 1, borderColor: COLORS.border, borderRadius: 10, padding: 12, fontFamily: "Outfit_400Regular", fontSize: 14, color: COLORS.text, marginBottom: 10 }}
                 />
-                <Pressable disabled={enviando || cart.length === 0} onPress={enviarPedido} style={{ backgroundColor: COLORS.primary, borderRadius: 12, paddingVertical: 14, alignItems: "center", opacity: enviando ? 0.7 : 1 }}>
+                {precisaReconfigurar && (
+                  <Text accessibilityRole="alert" style={{ fontFamily: "Outfit_700Bold", fontSize: 15, color: COLORS.text, marginBottom: 12 }}>{AVISO_RECONFIGURAR}</Text>
+                )}
+                <Pressable disabled={enviando || cart.length === 0 || precisaReconfigurar} onPress={enviarPedido} style={{ backgroundColor: COLORS.primary, borderRadius: 12, paddingVertical: 14, alignItems: "center", opacity: enviando || precisaReconfigurar ? 0.5 : 1 }}>
                   {enviando ? <ActivityIndicator color="white" /> : <Text style={{ fontFamily: "Outfit_700Bold", fontSize: 15, color: "white" }}>Enviar pedido</Text>}
                 </Pressable>
                 <Pressable onPress={() => setCartVisible(false)} style={{ paddingVertical: 14, alignItems: "center" }}>
