@@ -101,7 +101,7 @@ function EvolucaoRecebido({ refreshKey }: { refreshKey: number }) {
     const inicioAnterior = deslocarDia(inicio, -dias);
     const fimAnterior = deslocarDia(inicio, -1);
     const consultar = (de: string, ate: string) => apiGet<VendasReport>(
-      `/api/relatorios/vendas?periodo=personalizado&data_inicio=${de}&data_fim=${ate}`
+      `/api/relatorios/vendas?periodo=personalizado&dataInicio=${de}&dataFim=${ate}`
     );
     void Promise.all([consultar(inicio, hoje), consultar(inicioAnterior, fimAnterior)])
       .then(([atual, anterior]) => {
