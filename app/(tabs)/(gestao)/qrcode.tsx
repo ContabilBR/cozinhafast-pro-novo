@@ -84,12 +84,12 @@ export default function QRCodeScreen() {
     setGerando(mesa ? mesa.id : "todas");
     try {
       if (mesa) {
-        const atualizada = await apiPost<MesaQR>(`/api/mesas/${mesa.id}/qr-token/regenerar`, undefined);
+        const atualizada = await apiPost<MesaQR>(`/api/mesas/${mesa.id}/qr-token/regenerar`, {});
         if (!atualizada || atualizada.id !== mesa.id || !temToken(atualizada)) throw new Error("Resposta inválida");
         setMesas((atuais) => atuais.map((m) => m.id === mesa.id ? { ...m, qr_token: atualizada.qr_token } : m));
         Alert.alert("Código gerado", `O novo código da Mesa ${mesa.numero} está pronto para compartilhar e imprimir.`);
       } else {
-        const resposta = await apiPost<{ mesas: MesaQR[] }>("/api/mesas/qr-token/regenerar-todas", undefined);
+        const resposta = await apiPost<{ mesas: MesaQR[] }>("/api/mesas/qr-token/regenerar-todas", {});
         if (!Array.isArray(resposta?.mesas) || !resposta.mesas.every((m) => m && typeof m.id === "string" && typeof m.numero === "number" && temToken(m))) throw new Error("Resposta inválida");
         setMesas(resposta.mesas);
         Alert.alert("Códigos gerados", "Os novos códigos estão prontos. Imprima-os novamente e reconfigure os tablets em modo mesa.");
