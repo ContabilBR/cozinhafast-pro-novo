@@ -93,12 +93,13 @@ export function registerTableRoutes(app: App) {
         const mesas = await mesasQuery;
         app.logger.info({ tenantId, count: mesas.length }, "Mesas listed successfully");
 
+        const podeVerToken = ["gerente", "administrador", "admin"].includes(String(authUser.role ?? "").toLowerCase());
         return mesas.map((m) => ({
           id: m.id,
           numero: m.numero,
           status: m.status,
           capacidade: m.capacidade,
-          qr_token: m.qrToken,
+          ...(podeVerToken ? { qr_token: m.qrToken } : {}),
           created_at: m.createdAt.toISOString(),
         }));
       } catch (error) {
@@ -132,7 +133,6 @@ export function registerTableRoutes(app: App) {
               numero: { type: "number" },
               status: { type: "string" },
               capacidade: { type: "number" },
-              qr_token: { type: "string" },
               created_at: { type: "string", format: "date-time" },
             },
           },
@@ -222,7 +222,6 @@ export function registerTableRoutes(app: App) {
           numero: newMesa.numero,
           status: newMesa.status,
           capacidade: newMesa.capacidade,
-          qr_token: newMesa.qrToken,
           created_at: newMesa.createdAt.toISOString(),
         });
       } catch (error) {
@@ -263,8 +262,7 @@ export function registerTableRoutes(app: App) {
                     numero: { type: "number" },
                     status: { type: "string" },
                     capacidade: { type: "number" },
-                    qr_token: { type: "string" },
-                  },
+                        },
                 },
               },
             },
@@ -367,7 +365,7 @@ export function registerTableRoutes(app: App) {
           criadas: criadas.length,
           mesas: criadas
             .sort((a, b) => a.numero - b.numero)
-            .map((m) => ({ id: m.id, numero: m.numero, status: m.status, capacidade: m.capacidade, qr_token: m.qrToken })),
+            .map((m) => ({ id: m.id, numero: m.numero, status: m.status, capacidade: m.capacidade })),
         });
       } catch (error) {
         const codigo = (error as any)?.code ?? (error as any)?.cause?.code;
@@ -403,7 +401,6 @@ export function registerTableRoutes(app: App) {
               numero: { type: "number" },
               status: { type: "string" },
               capacidade: { type: "number" },
-              qr_token: { type: "string" },
               created_at: { type: "string", format: "date-time" },
             },
           },
@@ -441,7 +438,6 @@ export function registerTableRoutes(app: App) {
           numero: mesa[0].numero,
           status: mesa[0].status,
           capacidade: mesa[0].capacidade,
-          qr_token: mesa[0].qrToken,
           created_at: mesa[0].createdAt.toISOString(),
         });
       } catch (error) {
@@ -481,7 +477,6 @@ export function registerTableRoutes(app: App) {
               numero: { type: "number" },
               status: { type: "string" },
               capacidade: { type: "number" },
-              qr_token: { type: "string" },
             },
           },
           401: { type: "object", properties: { error: { type: "string" } } },
@@ -604,7 +599,6 @@ export function registerTableRoutes(app: App) {
           numero: updated.numero,
           status: updated.status,
           capacidade: updated.capacidade,
-          qr_token: updated.qrToken,
         });
       } catch (error) {
         app.logger.error({ err: error }, "Failed to update mesa");
