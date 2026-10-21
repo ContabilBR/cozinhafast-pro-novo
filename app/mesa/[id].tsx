@@ -208,7 +208,14 @@ export default function MesaDetailScreen() {
         backgroundColor: COLORS.surface,
       }}>
         <Pressable
-          onPress={() => { console.log("[Mesa] Botão voltar pressionado"); router.back(); }}
+          onPress={() => {
+            console.log("[Mesa] Botão voltar pressionado");
+            if (router.canGoBack()) {
+              router.back();
+            } else {
+              router.replace("/(tabs)/(mesas)");
+            }
+          }}
           style={{ flexDirection: "row", alignItems: "center", padding: 8, zIndex: 10 }}
           hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
         >
