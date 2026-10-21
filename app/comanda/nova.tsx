@@ -693,13 +693,19 @@ export default function NovaComandaScreen() {
         <AnimatedPressable
           onPress={() => {
             console.log("[Comanda] Botão Voltar pressionado");
-            router.back();
+            if (router.canGoBack()) {
+              router.back();
+            } else {
+              router.replace("/(tabs)/(mesas)");
+            }
           }}
+          hitSlop={10}
           style={{
             flexDirection: "row",
             alignItems: "center",
             padding: 8,
             gap: 4,
+            zIndex: 10,
           }}
         >
           <ArrowLeft size={20} color={COLORS.primary} />
@@ -726,9 +732,9 @@ export default function NovaComandaScreen() {
             letterSpacing: -0.2,
             height: 56,
             lineHeight: 56,
+            pointerEvents: "none",
           }}
           numberOfLines={1}
-          pointerEvents="none"
         >
           {titleText}
         </Text>
