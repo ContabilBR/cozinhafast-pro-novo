@@ -774,12 +774,8 @@ export default function ComandaDetailScreen() {
       {/* Content area */}
       <View style={{ flex: 1 }}>
         {activeTab === 'cardapio' ? (
-          <FlatList
-            data={filteredPratos}
-            keyExtractor={(item) => item.id}
-            contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 12, paddingTop: 0 }}
-            ListHeaderComponent={
-              <View style={{ paddingTop: 12 }}>
+          <View style={{ flex: 1 }}>
+              <View style={{ paddingTop: 12, paddingHorizontal: 12, flexShrink: 0 }}>
                 {/* Search field */}
                 <View
                   style={{
@@ -820,6 +816,8 @@ export default function ComandaDetailScreen() {
                 <ScrollView
                   horizontal
                   showsHorizontalScrollIndicator={false}
+                  keyboardShouldPersistTaps="handled"
+                  style={{ flexGrow: 0 }}
                   contentContainerStyle={{ paddingBottom: 10, gap: 8 }}
                 >
                   {pratoCategories.map((cat) => {
@@ -854,7 +852,12 @@ export default function ComandaDetailScreen() {
                   })}
                 </ScrollView>
               </View>
-            }
+          <FlatList
+            style={{ flex: 1 }}
+            data={filteredPratos}
+            keyExtractor={(item) => item.id}
+            contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 12, paddingTop: 0 }}
+            keyboardShouldPersistTaps="handled"
             renderItem={({ item }) => {
               const staged = stagedItems.find((s) => s.pratoId === item.id);
               return (
@@ -878,6 +881,7 @@ export default function ComandaDetailScreen() {
               </View>
             }
           />
+          </View>
         ) : (
           <ScrollView contentContainerStyle={{ padding: 12 }}>
             <Text style={styles.sectionTitle}>Itens a enviar</Text>

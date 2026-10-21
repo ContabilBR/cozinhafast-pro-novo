@@ -1018,12 +1018,8 @@ export default function NovaComandaScreen() {
               </Text>
             </View>
           ) : (
-            <FlatList
-              data={filteredPratos}
-              keyExtractor={(item) => item.id}
-              contentContainerStyle={{ paddingTop: 12, paddingBottom: 160 }}
-              ListHeaderComponent={
-                <View>
+            <View style={{ flex: 1 }}>
+                <View style={{ paddingTop: 12, flexShrink: 0 }}>
                   {/* Search field */}
                   <View
                     style={{
@@ -1065,6 +1061,8 @@ export default function NovaComandaScreen() {
                   <ScrollView
                     horizontal
                     showsHorizontalScrollIndicator={false}
+                    keyboardShouldPersistTaps="handled"
+                    style={{ flexGrow: 0 }}
                     contentContainerStyle={{
                       paddingHorizontal: 16,
                       paddingBottom: 10,
@@ -1109,7 +1107,12 @@ export default function NovaComandaScreen() {
                     })}
                   </ScrollView>
                 </View>
-              }
+            <FlatList
+              style={{ flex: 1 }}
+              data={filteredPratos}
+              keyExtractor={(item) => item.id}
+              contentContainerStyle={{ paddingBottom: 160 }}
+              keyboardShouldPersistTaps="handled"
               renderItem={({ item, index }) => {
                 const cartItem = cart.find((c) => c.id === item.id);
                 return (
@@ -1157,6 +1160,7 @@ export default function NovaComandaScreen() {
                 </View>
               }
             />
+            </View>
           )
         ) : (
           // ── Meu Pedido Tab ──
