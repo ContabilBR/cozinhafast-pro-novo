@@ -722,29 +722,26 @@ export default function NovaComandaScreen() {
 
         <Text
           style={{
-            position: "absolute",
-            left: 0,
-            right: 0,
+            flex: 1,
+            minWidth: 0,
             textAlign: "center",
             fontFamily: "Outfit_700Bold",
             fontSize: 16,
             color: COLORS.text,
             letterSpacing: -0.2,
-            height: 56,
-            lineHeight: 56,
-            pointerEvents: "none",
           }}
           numberOfLines={1}
+          ellipsizeMode="tail"
         >
           {titleText}
         </Text>
 
         {/* Cart badge */}
-        {cartCount > 0 && (
+        {cartCount > 0 ? (
           <View
             style={{
-              position: "absolute",
-              right: 16,
+              flexShrink: 0,
+              marginRight: 8,
               backgroundColor: COLORS.primary,
               borderRadius: 14,
               paddingHorizontal: 10,
@@ -765,6 +762,8 @@ export default function NovaComandaScreen() {
               {cartCount}
             </Text>
           </View>
+        ) : (
+          <View style={{ width: 80 }} />
         )}
       </View>
 
