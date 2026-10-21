@@ -108,14 +108,14 @@ export function publicarEventoComandaCriada(
 /** Formatação (Cf) e "ignoráveis por padrão" do Unicode: U+200B..U+200F, U+202A..U+202E, U+2060..U+206F, U+FEFF, U+00AD, fillers de Hangul, seletores de variação etc. */
 const RE_INVISIVEIS = /[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu;
 /** Igual a RE_INVISIVEIS, mas poupa o ZWJ (U+200D) e o seletor de emoji (U+FE0F), que podem fazer parte de um emoji. */
-const RE_INVISIVEIS_EXCETO_EMOJI = /(?![‍️])[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu;
+const RE_INVISIVEIS_EXCETO_EMOJI = /(?![\u200D\uFE0F])[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu;
 /** ZWJ que não está entre dois emojis (sozinho, nas pontas, repetido): não liga nada e é invisível. */
 const RE_ZWJ_SOLTO =
-  /(?<![\p{Extended_Pictographic}\u{1F3FB}-\u{1F3FF}️])‍|‍(?!\p{Extended_Pictographic})/gu;
+  /(?<![\p{Extended_Pictographic}\u{1F3FB}-\u{1F3FF}\uFE0F])\u200D|\u200D(?!\p{Extended_Pictographic})/gu;
 /** Seletor de emoji que não vem logo depois de um emoji. */
-const RE_VS16_SOLTO = /(?<!\p{Extended_Pictographic})️/gu;
+const RE_VS16_SOLTO = /(?<!\p{Extended_Pictographic})\uFE0F/gu;
 /** Espaços de qualquer tipo (Unicode, NBSP, quebras) e o "braille em branco" (U+2800), que parece espaço. */
-const RE_ESPACOS = /[\p{Z}\s⠀]+/gu;
+const RE_ESPACOS = /[\p{Z}\s\u2800]+/gu;
 /** Pelo menos um caractere que não seja marca de combinação (acento solto não é nome). */
 const RE_TEM_BASE_VISIVEL = /[^\p{M}]/u;
 
