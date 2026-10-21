@@ -6,8 +6,21 @@
  *    (a comanda é gravada sem nome) e, se já houver comanda aberta, devolve "mesa_ja_tem_comanda";
  *  - modo "individual": várias comandas abertas por mesa, cada uma com NOME obrigatório.
  *    Sem nome -> "nome_obrigatorio"; nome com mais de 40 caracteres -> "nome_muito_longo";
- *    nome já usado por outra comanda ABERTA da mesma mesa (ignorando maiúsculas e espaços
- *    sobrando; "JOÃO" e "joão" são o mesmo nome, mas "João" e "Joao" são diferentes) -> "nome_repetido".
+ *    nome já usado por outra comanda ABERTA da mesma mesa (ignorando maiúsculas, espaços
+ *    sobrando e caracteres invisíveis; "JOÃO" e "joão" são o mesmo nome, mas "João" e "Joao"
+ *    são diferentes) -> "nome_repetido".
+ *
+ * Nomes (normalizarNomeComanda e chaveDeNome):
+ *  - o texto é normalizado em NFC ("é" digitado e "e" + acento viram o mesmo texto);
+ *  - caracteres de controle viram espaço; espaços Unicode (inclusive NBSP) viram espaço comum,
+ *    sequências viram um só e as pontas são cortadas;
+ *  - caracteres invisíveis (espaço de largura zero U+200B, marcas de direção U+200E/U+200F e
+ *    U+202A..U+202E, U+2060..U+2064, U+FEFF, hífen suave, fillers de Hangul etc.) são removidos,
+ *    de modo que "João" e "Jo" + U+200B + "ão" passam a ser o mesmo nome;
+ *  - o ZWJ (U+200D) e o seletor de emoji (U+FE0F) só ficam no texto exibido quando fazem parte de
+ *    um emoji; na chave de comparação todos os invisíveis saem;
+ *  - nome que não tenha nenhum caractere visível (só invisíveis, espaços ou marcas de combinação)
+ *    é tratado como ausente.
  *
  * Por que trava a mesa: sem a trava, dois garçons abrindo comanda ao mesmo tempo na mesma mesa
  * passariam, os dois, pela conferência ("não existe ainda") e criariam comandas duplicadas
@@ -90,17 +103,49 @@ export function publicarEventoComandaCriada(
   }
 }
 
+// --- Normalização de nomes -------------------------------------------------------------------
+
+/** Formatação (Cf) e "ignoráveis por padrão" do Unicode: U+200B..U+200F, U+202A..U+202E, U+2060..U+206F, U+FEFF, U+00AD, fillers de Hangul, seletores de variação etc. */
+const RE_INVISIVEIS = /[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu;
+/** Igual a RE_INVISIVEIS, mas poupa o ZWJ (U+200D) e o seletor de emoji (U+FE0F), que podem fazer parte de um emoji. */
+const RE_INVISIVEIS_EXCETO_EMOJI = /(?![\u200D\uFE0F])[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu;
+/** ZWJ que não está entre dois emojis (sozinho, nas pontas, repetido): não liga nada e é invisível. */
+const RE_ZWJ_SOLTO =
+  /(?<![\p{Extended_Pictographic}\u{1F3FB}-\u{1F3FF}\uFE0F])\u200D|\u200D(?!\p{Extended_Pictographic})/gu;
+/** Seletor de emoji que não vem logo depois de um emoji. */
+const RE_VS16_SOLTO = /(?<!\p{Extended_Pictographic})\uFE0F/gu;
+/** Espaços de qualquer tipo (Unicode, NBSP, quebras) e o "braille em branco" (U+2800), que parece espaço. */
+const RE_ESPACOS = /[\p{Z}\s\u2800]+/gu;
+/** Pelo menos um caractere que não seja marca de combinação (acento solto não é nome). */
+const RE_TEM_BASE_VISIVEL = /[^\p{M}]/u;
+
 /**
- * Normaliza o nome digitado: tira caracteres de controle, junta espaços repetidos em um só e
- * corta as pontas. Devolve null quando não sobra nada (ou quando não é texto).
+ * Normaliza o nome digitado: NFC, controle vira espaço, invisíveis saem, espaços repetidos viram
+ * um só e as pontas são cortadas. Devolve null quando não sobra nenhum caractere visível
+ * (ou quando não é texto). A operação é idempotente: normalizar duas vezes dá o mesmo resultado.
  */
 export function normalizarNomeComanda(bruto: unknown): string | null {
   if (typeof bruto !== "string") return null;
   const limpo = bruto
-    .replace(/[\u0000-\u001f\u007f]/g, " ")
-    .replace(/\s+/g, " ")
+    .normalize("NFC")
+    .replace(/\p{Cc}/gu, " ")
+    .replace(RE_INVISIVEIS_EXCETO_EMOJI, "")
+    .replace(RE_ZWJ_SOLTO, "")
+    .replace(RE_VS16_SOLTO, "")
+    .replace(RE_ESPACOS, " ")
     .trim();
-  return limpo.length > 0 ? limpo : null;
+  return limpo.length > 0 && RE_TEM_BASE_VISIVEL.test(limpo) ? limpo : null;
+}
+
+/**
+ * Chave de comparação de um nome JÁ normalizado (resultado de normalizarNomeComanda):
+ * sem nenhum invisível (nem ZWJ/VS16) e sem diferença de maiúsculas. Mantém os acentos:
+ * "João" e "Joao" continuam sendo nomes diferentes.
+ *
+ * Feita em código (e não com lower() do banco) porque lower() depende do idioma/collation do banco.
+ */
+export function chaveDeNome(nomeNormalizado: string): string {
+  return nomeNormalizado.replace(RE_INVISIVEIS, "").toLowerCase().normalize("NFC");
 }
 
 export async function abrirComandaNaMesa(tx: any, entrada: EntradaAbertura): Promise<ResultadoAbertura> {
@@ -129,8 +174,9 @@ export async function abrirComandaNaMesa(tx: any, entrada: EntradaAbertura): Pro
     if (rotulo === null) return { tipo: "nome_obrigatorio" };
     if (rotulo.length > TAMANHO_MAXIMO_NOME_COMANDA) return { tipo: "nome_muito_longo" };
 
-    // Compara em código (e não com lower() do banco): lower() depende do idioma/collation do banco
-    // e pode não tratar "JOÃO" e "joão" como iguais. São poucas comandas abertas por mesa.
+    // Nomes já gravados podem ter sido normalizados por uma regra mais antiga (sem remover
+    // invisíveis); por isso cada nome aberto passa pela normalização atual antes da comparação.
+    // São poucas comandas abertas por mesa.
     const abertas = linhasDe(
       await tx.execute(
         sql`SELECT rotulo FROM comandas
@@ -138,10 +184,12 @@ export async function abrirComandaNaMesa(tx: any, entrada: EntradaAbertura): Pro
               AND rotulo IS NOT NULL`
       )
     );
-    const chave = rotulo.toLowerCase();
-    if (abertas.some((c: any) => normalizarNomeComanda(c.rotulo)?.toLowerCase() === chave)) {
-      return { tipo: "nome_repetido" };
-    }
+    const chave = chaveDeNome(rotulo);
+    const repetido = abertas.some((c: any) => {
+      const existente = normalizarNomeComanda(c.rotulo);
+      return existente !== null && chaveDeNome(existente) === chave;
+    });
+    if (repetido) return { tipo: "nome_repetido" };
   } else {
     // modo "mesa": uma comanda aberta por mesa; o nome enviado é ignorado
     const jaTem = await tx
