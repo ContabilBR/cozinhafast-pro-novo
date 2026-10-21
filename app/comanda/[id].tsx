@@ -143,6 +143,64 @@ function PratoCardWaiter({
   );
 }
 
+type NavBarProps = {
+  title: string;
+  semConsumo: boolean;
+  canFechar: boolean;
+  encerrando: boolean;
+  comandaId: string;
+  onEncerrar: () => void;
+  onFechar: () => void;
+};
+
+function NavBar({ title, semConsumo, canFechar, encerrando, comandaId, onEncerrar, onFechar }: NavBarProps) {
+  const router = useRouter();
+
+  return (
+    <View style={styles.navBar}>
+      <Pressable onPress={() => {
+        console.log('[ComandaDetail] back pressed');
+        if (router.canGoBack()) {
+          router.back();
+        } else {
+          router.replace('/(tabs)/(mesas)');
+        }
+      }} hitSlop={10} style={styles.backBtn}>
+        <Ionicons name="arrow-back" size={22} color="#007AFF" />
+        <Text style={styles.backText}>Voltar</Text>
+      </Pressable>
+      <Text style={styles.navTitle} numberOfLines={1}>{title}</Text>
+      {semConsumo ? (
+        <Pressable
+          onPress={() =>
+            Alert.alert(
+              'Encerrar sem consumo',
+              'Todos os itens desta comanda foram cancelados. Ela será encerrada sem cobrança e ficará no histórico com total zero. Os cancelamentos continuam registrados.',
+              [
+                { text: 'Cancelar', style: 'cancel' },
+                { text: 'Encerrar', style: 'destructive', onPress: onEncerrar },
+              ]
+            )
+          }
+          style={[styles.fecharHeaderBtn, { backgroundColor: '#6b7280' }]}
+          disabled={encerrando}
+        >
+          <Text style={styles.fecharHeaderBtnText}>{encerrando ? '...' : 'Encerrar'}</Text>
+        </Pressable>
+      ) : canFechar ? (
+        <Pressable
+          onPress={() => { console.log('[ComandaDetail] Fechar header button pressed', { comandaId }); onFechar(); }}
+          style={styles.fecharHeaderBtn}
+        >
+          <Text style={styles.fecharHeaderBtnText}>Fechar</Text>
+        </Pressable>
+      ) : (
+        <View style={{ width: 60 }} />
+      )}
+    </View>
+  );
+}
+
 // ─── Main Screen ─────────────────────────────────────────────────────────────
 
 export default function ComandaDetailScreen() {
@@ -511,47 +569,18 @@ export default function ComandaDetailScreen() {
     });
   }, [pratos, searchQuery, selectedCategory]);
 
-  const NavBar = ({ title }: { title: string }) => (
-    <View style={styles.navBar}>
-      <Pressable onPress={() => { console.log('[ComandaDetail] back pressed'); router.back(); }} style={styles.backBtn}>
-        <Ionicons name="arrow-back" size={22} color="#007AFF" />
-        <Text style={styles.backText}>Voltar</Text>
-      </Pressable>
-      <Text style={styles.navTitle} numberOfLines={1}>{title}</Text>
-      {semConsumo ? (
-        <Pressable
-          onPress={() =>
-            Alert.alert(
-              'Encerrar sem consumo',
-              'Todos os itens desta comanda foram cancelados. Ela será encerrada sem cobrança e ficará no histórico com total zero. Os cancelamentos continuam registrados.',
-              [
-                { text: 'Cancelar', style: 'cancel' },
-                { text: 'Encerrar', style: 'destructive', onPress: handleEncerrarSemConsumo },
-              ]
-            )
-          }
-          style={[styles.fecharHeaderBtn, { backgroundColor: '#6b7280' }]}
-          disabled={encerrando}
-        >
-          <Text style={styles.fecharHeaderBtnText}>{encerrando ? '...' : 'Encerrar'}</Text>
-        </Pressable>
-      ) : canFechar ? (
-        <Pressable
-          onPress={() => { console.log('[ComandaDetail] Fechar header button pressed', { comandaId: id }); router.push({ pathname: '/comanda/fechar-conta', params: { id } }); }}
-          style={styles.fecharHeaderBtn}
-        >
-          <Text style={styles.fecharHeaderBtnText}>Fechar</Text>
-        </Pressable>
-      ) : (
-        <View style={{ width: 60 }} />
-      )}
-    </View>
-  );
-
   if (loading) {
     return (
       <SafeAreaView style={styles.centered} edges={['top', 'left', 'right']}>
-        <NavBar title={headerTitle} />
+        <NavBar
+          title={headerTitle}
+          semConsumo={semConsumo}
+          canFechar={canFechar}
+          encerrando={encerrando}
+          comandaId={id}
+          onEncerrar={handleEncerrarSemConsumo}
+          onFechar={() => router.push({ pathname: '/comanda/fechar-conta', params: { id } })}
+        />
         <ActivityIndicator size="large" color="#007AFF" style={{ marginTop: 40 }} />
         <Text style={{ marginTop: 12, color: '#6b7280' }}>Carregando...</Text>
       </SafeAreaView>
@@ -561,7 +590,15 @@ export default function ComandaDetailScreen() {
   if (error) {
     return (
       <SafeAreaView style={styles.centered} edges={['top', 'left', 'right']}>
-        <NavBar title={headerTitle} />
+        <NavBar
+          title={headerTitle}
+          semConsumo={semConsumo}
+          canFechar={canFechar}
+          encerrando={encerrando}
+          comandaId={id}
+          onEncerrar={handleEncerrarSemConsumo}
+          onFechar={() => router.push({ pathname: '/comanda/fechar-conta', params: { id } })}
+        />
         <Text style={{ color: '#ef4444', marginTop: 40, marginBottom: 16, textAlign: 'center' }}>{error}</Text>
         <Pressable onPress={fetchData} style={styles.retryBtn}>
           <Text style={{ color: 'white', fontWeight: '600' }}>Tentar novamente</Text>
@@ -615,7 +652,15 @@ export default function ComandaDetailScreen() {
   if (isManager) {
     return (
       <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
-        <NavBar title={headerTitle} />
+        <NavBar
+          title={headerTitle}
+          semConsumo={semConsumo}
+          canFechar={canFechar}
+          encerrando={encerrando}
+          comandaId={id}
+          onEncerrar={handleEncerrarSemConsumo}
+          onFechar={() => router.push({ pathname: '/comanda/fechar-conta', params: { id } })}
+        />
         {modalCancelarItem}
         {modalDesconto}
 
@@ -747,7 +792,15 @@ export default function ComandaDetailScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
-      <NavBar title={headerTitle} />
+      <NavBar
+        title={headerTitle}
+        semConsumo={semConsumo}
+        canFechar={canFechar}
+        encerrando={encerrando}
+        comandaId={id}
+        onEncerrar={handleEncerrarSemConsumo}
+        onFechar={() => router.push({ pathname: '/comanda/fechar-conta', params: { id } })}
+      />
       {modalCancelarItem}
       {modalDesconto}
 
