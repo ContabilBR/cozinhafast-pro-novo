@@ -228,15 +228,24 @@ export default function NovoPedidoScreen() {
       {/* Nav bar */}
       <View style={{ flexDirection: "row", alignItems: "center", height: 56, paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: COLORS.border, backgroundColor: COLORS.surface }}>
         <Pressable
-          onPress={() => { console.log("[NovoPedido] Botão voltar pressionado"); router.back(); }}
-          style={{ flexDirection: "row", alignItems: "center", paddingRight: 12 }}
+          onPress={() => {
+            console.log("[NovoPedido] Botão voltar pressionado");
+            if (router.canGoBack()) {
+              router.back();
+            } else {
+              router.replace("/(tabs)/(mesas)");
+            }
+          }}
+          hitSlop={10}
+          style={{ flexDirection: "row", alignItems: "center", paddingRight: 12, paddingVertical: 8 }}
         >
           <Ionicons name="arrow-back" size={22} color="#007AFF" />
           <Text style={{ color: "#007AFF", fontSize: 16, marginLeft: 4 }}>Voltar</Text>
         </Pressable>
-        <Text style={{ position: "absolute", left: 0, right: 0, textAlign: "center", fontSize: 17, fontWeight: "700", color: "#111" }}>
+        <Text style={{ flex: 1, minWidth: 0, textAlign: "center", fontSize: 17, fontWeight: "700", color: "#111" }} numberOfLines={1}>
           Novo Pedido
         </Text>
+        <View style={{ width: 80 }} />
       </View>
 
       {/* Fixed search and category filter */}
