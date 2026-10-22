@@ -352,6 +352,18 @@ init()
         let metadadosLancamento: any = null;
 
         const result = await (db as any).transaction(async (tx: any) => {
+          // Hierarquia de travas: restaurante (FOR SHARE) ANTES da mesa, como em services/abrir-comanda.ts.
+          // Relê o modo já com a trava: se a troca para o modo individual aconteceu depois da leitura
+          // lá de cima, este pedido é recusado com o mesmo 409, em vez de abrir comanda no modo errado.
+          const restauranteLock = await tx.execute(
+            sql`SELECT modo_comanda FROM restaurante WHERE id = ${restaurante_id} FOR SHARE`
+          );
+          const restauranteRows = Array.isArray(restauranteLock) ? restauranteLock : (restauranteLock as any)?.rows || [];
+          if (!restauranteRows.length) throw new DomainError("restaurante_nao_encontrado", "Restaurante nao encontrado");
+          if (restauranteRows[0]?.modo_comanda === "individual") {
+            throw new DomainError("modo_individual", "Este restaurante atende por comanda individual. Chame o garcom para fazer o seu pedido.");
+          }
+
           const mesasLock = await tx.execute(
             sql`SELECT id FROM mesas WHERE numero = ${mesa_numero} AND restaurante_id = ${restaurante_id} FOR UPDATE`
           );
@@ -453,10 +465,10 @@ init()
       } catch (err) {
         if (err instanceof DomainError) {
           const code = (err as DomainError).code;
-          if (code === "mesa_nao_encontrada" || code === "comanda_nao_encontrada") {
+          if (code === "mesa_nao_encontrada" || code === "comanda_nao_encontrada" || code === "restaurante_nao_encontrado") {
             return await reply.code(404).send({ error: err.message });
           }
-          if (code === "mesa_ja_tem_comanda") {
+          if (code === "mesa_ja_tem_comanda" || code === "modo_individual") {
             return await reply.code(409).send({ error: err.message });
           }
           if (code === "prato_indisponivel" || code === "itens_invalidos") {
