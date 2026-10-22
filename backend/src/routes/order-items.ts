@@ -667,12 +667,12 @@ export function registerOrderItemRoutes(app: App) {
   );
 
   // PUT /api/pedidos/:id/cancelar - Cancela um item (item cancelado não é venda)
-  app.fastify.put<{ Params: { id: string }; Body: { motivo: string; detalhe?: string } }>(
+  app.fastify.put<{ Params: { id: string }; Body: { motivo: string; detalhe?: string; quantidade?: number; autorizacao?: any } }>(
     "/api/pedidos/:id/cancelar",
     {
       schema: {
         description:
-          "Cancela um item de uma comanda aberta. Item cancelado não conta como venda. Itens pendentes podem ser cancelados por garçom, gerente ou administrador; itens já em preparo ou prontos, só por gerente ou administrador (ficam marcados como perda). Item entregue não pode ser cancelado.",
+          "Cancela um item de uma comanda aberta. Item cancelado não conta como venda. Itens pendentes podem ser cancelados por garçom, gerente ou administrador; itens em preparo ou prontos, gerente e administrador cancelam direto, garçom precisa de autorização do gerente (email e senha). Suporta cancelamento parcial via campo 'quantidade'. Item entregue não pode ser cancelado.",
         tags: ["pedidos"],
         params: {
           type: "object",
@@ -685,6 +685,8 @@ export function registerOrderItemRoutes(app: App) {
           properties: {
             motivo: { type: "string", enum: [...MOTIVOS_CANCELAMENTO] },
             detalhe: { type: "string", maxLength: 300 },
+            quantidade: { type: "integer", minimum: 1, maximum: 99 },
+            autorizacao: { type: "object" },
           },
         },
         response: {
@@ -693,22 +695,28 @@ export function registerOrderItemRoutes(app: App) {
             properties: {
               success: { type: "boolean" },
               id: { type: "string" },
+              id_cancelado: { type: "string" },
               comanda_id: { type: "string" },
               status: { type: "string" },
               cancelado_apos_inicio: { type: "boolean" },
               subtotal_comanda: { type: "number" },
               total_comanda: { type: "number" },
+              parcial: { type: "boolean" },
+              quantidade_cancelada: { type: "number" },
+              quantidade_restante: { type: "number" },
+              autorizado_por_nome: { type: ["string", "null"] },
             },
           },
           400: { type: "object", properties: { error: { type: "string" } } },
           403: { type: "object", properties: { error: { type: "string" } } },
           404: { type: "object", properties: { error: { type: "string" } } },
           409: { type: "object", properties: { error: { type: "string" } } },
+          429: { type: "object", properties: { error: { type: "string" } } },
         },
       },
     },
     async (
-      request: FastifyRequest<{ Params: { id: string }; Body: { motivo: string; detalhe?: string } }>,
+      request: FastifyRequest<{ Params: { id: string }; Body: { motivo: string; detalhe?: string; quantidade?: number; autorizacao?: any } }>,
       reply: FastifyReply
     ) => {
       const session = await customRequireAuth(app, request, reply);
@@ -728,12 +736,38 @@ export function registerOrderItemRoutes(app: App) {
           return await reply.code(400).send({ error: "Informe o detalhe do motivo quando o motivo for 'outro'." });
         }
 
+        // Import manager authorization validation
+        const { validarAutorizacaoGerente } = await import("../services/autorizacao-gerente.js");
+
+        app.logger.info({ pedidoId: request.params.id, userRole: session.role, quantidade: request.body.quantidade, temAutorizacao: !!request.body.autorizacao }, "Canceling pedido");
+
+        let autorizadorGerente: { id: string; nome: string; role: string } | undefined = undefined;
+
+        // Se garçom está tentando cancelar e enviou autorizacao, validar
+        if (session.role?.toLowerCase() === "garcom" && request.body.autorizacao) {
+          const authResult = await validarAutorizacaoGerente(app.db, restauranteId, session.id, session.email ?? "", request.body.autorizacao);
+          if (authResult.valida === false) {
+            const motivoInvalido = authResult.motivo;
+            if (motivoInvalido === "limite_de_tentativas") {
+              app.logger.warn({ sessionId: session.id, restauranteId }, "Manager auth rate limit exceeded");
+              return await reply.code(429).send({ error: "Muitas tentativas. Tente novamente em 15 minutos." });
+            } else {
+              app.logger.warn({ sessionId: session.id, restauranteId }, "Manager auth failed");
+              return await reply.code(403).send({ error: "Autorização inválida" });
+            }
+          }
+          autorizadorGerente = { id: authResult.id, nome: authResult.nome, role: authResult.role };
+          app.logger.info({ managerId: authResult.id, managerName: authResult.nome }, "Manager authorization validated");
+        }
+
         const resultado = await cancelarPedido(app, {
           restauranteId,
           pedidoId: request.params.id,
           motivo: request.body.motivo as any,
           detalhe,
           canceladoPor: { id: session.id, nome: session.name, role: session.role },
+          quantidade: request.body.quantidade,
+          autorizadorGerente,
         });
 
         if (resultado.tipo !== "cancelado") {
@@ -747,9 +781,17 @@ export function registerOrderItemRoutes(app: App) {
             case "ja_entregue":
               return await reply.code(409).send({ error: "Item já entregue não pode ser cancelado. Cortesia e estorno ainda não estão disponíveis." });
             case "requer_gestor":
-              return await reply.code(403).send({ error: "Só gerente ou administrador pode cancelar um item que já está em preparo ou pronto." });
+              return await reply.code(403).send({ error: "Item em preparo ou pronto: o gerente precisa autorizar o cancelamento com e-mail e senha." });
+            case "quantidade_invalida":
+              if (resultado.quantidadeMaxima === 1) {
+                return await reply.code(400).send({ error: "Este item tem apenas 1 unidade." });
+              } else {
+                return await reply.code(400).send({ error: `A quantidade a cancelar deve ser de 1 a ${resultado.quantidadeMaxima}.` });
+              }
           }
         }
+
+        app.logger.info({ pedidoId: resultado.pedidoId, parcial: resultado.parcial, quantidadeCancelada: resultado.quantidadeCancelada }, "Pedido canceled successfully");
 
         // Publicar delivery.pronto se aplicável (após sucesso da transação)
         if (resultado.tipo === "cancelado") {
@@ -802,11 +844,16 @@ export function registerOrderItemRoutes(app: App) {
         return await reply.code(200).send({
           success: true,
           id: resultado.pedidoId,
+          id_cancelado: resultado.pedidoCanceladoId,
           comanda_id: resultado.comandaId,
           status: "cancelado",
           cancelado_apos_inicio: resultado.canceladoAposInicio,
           subtotal_comanda: resultado.subtotalComanda,
           total_comanda: resultado.totalComanda,
+          parcial: resultado.parcial,
+          quantidade_cancelada: resultado.quantidadeCancelada,
+          quantidade_restante: resultado.quantidadeRestante,
+          autorizado_por_nome: resultado.autorizadoPorNome,
         });
       } catch (error) {
         app.logger.error({ err: error }, "Failed to cancel pedido");
