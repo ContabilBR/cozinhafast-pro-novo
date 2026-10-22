@@ -5,11 +5,22 @@ import type { App } from "../index.js";
 import { requireAuth as customRequireAuth, requireTenant, requireRole } from "../utils/auth.js";
 import * as schema from "../db/schema/schema.js";
 import { subtotalDaComanda, calcularTotalComandaMesaComDesconto } from "../services/total-comanda.js";
+import { fecharComandaEmTransacao, registrarEPublicarFechamento } from "../services/fechamento-comanda.js";
+import type { ResultadoFechamento } from "../services/fechamento-comanda.js";
 
 // Pagamento de comanda (dinheiro, cartão, Pix) é sempre reconciliado manualmente pelo
 // garçom — o restaurante usa a própria maquininha/chave Pix e o app só registra qual
 // forma foi usada. Não há integração de pagamento nativa nesta rota; o Asaas só é
 // usado para a cobrança da assinatura da plataforma (ver backend/src/routes/assinatura.ts).
+//
+// Fechamento automático: o pagamento que quita a conta fecha a comanda na MESMA transação
+// (arquiva, libera a mesa), desde que nenhum item esteja pendente ou em preparo. Se ainda houver
+// item na cozinha, o pagamento é registrado e a comanda continua aberta; a gestão cancela o item
+// (perda, regra de cancelamento de sempre) e fecha pelo /fechar. Delivery e conta zerada ficam de fora.
+
+// Itens que ainda dependem da cozinha. "pronto", "entregue" e "cancelado" não seguram o fechamento.
+const STATUS_ITEM_NA_COZINHA = ["pendente", "em_preparo"] as const;
+type FechamentoConcluido = Extract<ResultadoFechamento, { tipo: "fechada" }>;
 
 export function registerPagamentoRoutes(app: App) {
   const db = app.db as any;
@@ -40,10 +51,15 @@ export function registerPagamentoRoutes(app: App) {
         if (!(await requireRole(authUser, ["garcom", "gerente", "administrador", "admin"], reply))) return;
         const restauranteId = requireTenant(authUser);
 
-        const result = await db.transaction(async (tx: any) => {
+        const result: { status: number; body: any; fechamento?: FechamentoConcluido } = await db.transaction(async (tx: any) => {
           // Verificar se comanda existe e pertence ao tenant
           const comanda = await tx.select({ id: schema.comandas.id, status: schema.comandas.status, total: schema.comandas.total, tipo: schema.comandas.tipo, descontoTipo: schema.comandas.descontoTipo, descontoValor: schema.comandas.descontoValor }).from(schema.comandas).where(and(eq(schema.comandas.id, request.params.id), eq(schema.comandas.restauranteId, restauranteId))).for("update");
-          if (!comanda.length) return { status: 404, body: { error: "Comanda não encontrada" } };
+          if (!comanda.length) {
+            // Já arquivada como fechada (ex.: o pagamento anterior quitou e fechou; toque duplo)
+            const jaFechada = await tx.select({ id: schema.comandasHistorico.id }).from(schema.comandasHistorico).where(and(eq(schema.comandasHistorico.id, request.params.id), eq(schema.comandasHistorico.restauranteId, restauranteId), eq(schema.comandasHistorico.status, "fechada")));
+            if (jaFechada.length) return { status: 409, body: { error: "Esta comanda já foi encerrada.", comanda_fechada: true } };
+            return { status: 404, body: { error: "Comanda não encontrada" } };
+          }
           if (comanda[0].tipo === 'delivery') return { status: 400, body: { error: "Este é um pedido de delivery. Use a tela de Delivery." } };
           if (comanda[0].status !== "aberta") return { status: 400, body: { error: "Comanda não está aberta" } };
 
@@ -95,14 +111,59 @@ export function registerPagamentoRoutes(app: App) {
             restauranteId,
           }).returning();
 
+          // Fechamento automático: este pagamento quita a conta? (conta zerada não passa por aqui)
+          const novoTotalPago = totalPago + valor;
+          const quitada = totalComandaFinal > 0.01 && novoTotalPago >= totalComandaFinal - 0.01;
+          let fechamento: FechamentoConcluido | undefined;
+          let aguardandoItens = false;
+
+          if (quitada) {
+            const naCozinha = await tx
+              .select({ id: schema.pedidos.id })
+              .from(schema.pedidos)
+              .where(and(
+                eq(schema.pedidos.comandaId, request.params.id),
+                eq(schema.pedidos.restauranteId, restauranteId),
+                inArray(schema.pedidos.status, [...STATUS_ITEM_NA_COZINHA])
+              ))
+              .limit(1);
+
+            if (naCozinha.length > 0) {
+              // Pago, mas ainda há item na cozinha: a comanda continua aberta
+              aguardandoItens = true;
+            } else {
+              const fechada = await fecharComandaEmTransacao(app, tx, {
+                restauranteId,
+                comandaId: request.params.id,
+                gorjeta: gorjetaBody,
+                fechadoPor: { id: authUser.id, nome: authUser.name, role: authUser.role },
+              });
+              if (fechada.tipo === "fechada") {
+                fechamento = fechada;
+              } else {
+                // Não deve acontecer (a conta já foi conferida acima). O pagamento fica registrado
+                // e o garçom ainda pode fechar pelo /fechar.
+                app.logger.warn({ comandaId: request.params.id, desfecho: fechada.tipo }, "Pagamento quitou a conta mas o fechamento automático foi recusado");
+              }
+            }
+          }
+
           return {
             status: 201,
+            fechamento,
             body: {
               pagamento,
+              comanda_fechada: !!fechamento,
+              aguardando_itens: aguardandoItens,
               resumo: { total_comanda: totalComandaFinal, desconto_valor: descontoEfetivo, total_pago: totalPago + (statusPagamento === "confirmado" ? valor : 0), restante: restanteFinal - (statusPagamento === "confirmado" ? valor : 0) },
             },
           };
         });
+
+        // Evento de tempo real só depois do commit
+        if (result.fechamento) {
+          registrarEPublicarFechamento(app, restauranteId, request.params.id, result.fechamento);
+        }
 
         return await reply.code(result.status).send(result.body);
       } catch (err) {
