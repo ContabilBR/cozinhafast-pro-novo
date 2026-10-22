@@ -176,22 +176,7 @@ function NavBar({ title, semConsumo, canFechar, encerrando, comandaId, onEncerra
       </Pressable>
       <Text style={styles.navTitle} numberOfLines={1}>{title}</Text>
       {semConsumo ? (
-        <Pressable
-          onPress={() =>
-            Alert.alert(
-              'Encerrar sem consumo',
-              'Todos os itens desta comanda foram cancelados. Ela será encerrada sem cobrança e ficará no histórico com total zero. Os cancelamentos continuam registrados.',
-              [
-                { text: 'Cancelar', style: 'cancel' },
-                { text: 'Encerrar', style: 'destructive', onPress: onEncerrar },
-              ]
-            )
-          }
-          style={[styles.fecharHeaderBtn, { backgroundColor: '#6b7280' }]}
-          disabled={encerrando}
-        >
-          <Text style={styles.fecharHeaderBtnText}>{encerrando ? '...' : 'Encerrar'}</Text>
-        </Pressable>
+        <View style={{ width: 60 }} />
       ) : canFechar ? (
         <Pressable
           onPress={() => { console.log('[ComandaDetail] Fechar header button pressed', { comandaId }); onFechar(); }}
@@ -532,6 +517,35 @@ export default function ComandaDetailScreen() {
     );
   };
 
+  // Aviso + botão no corpo da tela quando todos os itens foram cancelados
+  const renderEncerrarSemConsumo = () =>
+    semConsumo ? (
+      <View style={{ marginBottom: 12 }}>
+        <Text style={{ color: '#6b7280', fontSize: 14, textAlign: 'center', marginBottom: 8 }}>
+          Todos os itens desta comanda foram cancelados
+        </Text>
+        <Pressable
+          onPress={() =>
+            Alert.alert(
+              'Encerrar sem consumo',
+              'Todos os itens desta comanda foram cancelados. Ela será encerrada sem cobrança e ficará no histórico com total zero. Os cancelamentos continuam registrados.',
+              [
+                { text: 'Cancelar', style: 'cancel' },
+                { text: 'Encerrar', style: 'destructive', onPress: handleEncerrarSemConsumo },
+              ]
+            )
+          }
+          disabled={encerrando}
+          style={{ backgroundColor: '#6b7280', borderRadius: 12, padding: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, opacity: encerrando ? 0.6 : 1 }}
+        >
+          <Ionicons name="close-circle-outline" size={20} color="white" />
+          <Text style={{ color: 'white', fontSize: 16, fontWeight: '600' }}>
+            {encerrando ? 'Encerrando...' : 'Encerrar sem consumo'}
+          </Text>
+        </Pressable>
+      </View>
+    ) : null;
+
   const renderExcluirVazia = () =>
     podeExcluirVazia ? (
       <Pressable
@@ -780,6 +794,8 @@ export default function ComandaDetailScreen() {
           {/* Pedidos section */}
           <Text style={mgStyles.sectionTitle}>Pedidos</Text>
 
+          {renderEncerrarSemConsumo()}
+
           {pedidosEnviados.length === 0 ? (
             <View style={mgStyles.emptyBox}>
               <Ionicons name="receipt-outline" size={40} color="#d1d5db" />
@@ -826,29 +842,7 @@ export default function ComandaDetailScreen() {
           )}
           {botaoDesconto}
 
-          {semConsumo ? (
-            <View style={{ paddingHorizontal: 0, marginBottom: 8 }}>
-              <Pressable
-                onPress={() =>
-                  Alert.alert(
-                    'Encerrar sem consumo',
-                    'Todos os itens desta comanda foram cancelados. Ela será encerrada sem cobrança e ficará no histórico com total zero. Os cancelamentos continuam registrados.',
-                    [
-                      { text: 'Cancelar', style: 'cancel' },
-                      { text: 'Encerrar', style: 'destructive', onPress: handleEncerrarSemConsumo },
-                    ]
-                  )
-                }
-                disabled={encerrando}
-                style={{ backgroundColor: '#6b7280', borderRadius: 12, padding: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, opacity: encerrando ? 0.6 : 1 }}
-              >
-                <Ionicons name="close-circle-outline" size={20} color="white" />
-                <Text style={{ color: 'white', fontSize: 16, fontWeight: '600' }}>
-                  {encerrando ? 'Encerrando...' : 'Encerrar sem consumo'}
-                </Text>
-              </Pressable>
-            </View>
-          ) : canFechar ? (
+          {semConsumo ? null : canFechar ? (
             <>
               <View style={{ paddingHorizontal: 0, marginBottom: 8 }}>
                 <Pressable onPress={() => { console.log('[ComandaDetail] Fechar conta footer button pressed', { comandaId: id }); router.push({ pathname: "/comanda/fechar-conta", params: { id } }); }} style={{ backgroundColor: "#E8521A", borderRadius: 12, padding: 16, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8 }}>
@@ -1066,6 +1060,7 @@ export default function ComandaDetailScreen() {
             )}
 
             <Text style={[styles.sectionTitle, { marginTop: 24 }]}>Pedidos Enviados</Text>
+            {renderEncerrarSemConsumo()}
             {pedidosEnviados.length === 0 ? (
               <>
                 <Text style={styles.emptyText}>Nenhum pedido enviado ainda</Text>
