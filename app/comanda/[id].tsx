@@ -214,7 +214,7 @@ export default function ComandaDetailScreen() {
   const [descontoVisible, setDescontoVisible] = useState(false);
   const [pratos, setPratos] = useState<Prato[]>([]);
   const [pedidosEnviados, setPedidosEnviados] = useState<Pedido[]>([]);
-  const [itemParaCancelar, setItemParaCancelar] = useState<{ id: string; nome: string; aposInicio: boolean } | null>(null);
+  const [itemParaCancelar, setItemParaCancelar] = useState<{ id: string; nome: string; aposInicio: boolean; quantidade: number; exigeAutorizacao: boolean } | null>(null);
   const [stagedItems, setStagedItems] = useState<StagedItem[]>([]);
   const [activeTab, setActiveTab] = useState<'cardapio' | 'pedido'>('cardapio');
   const [loading, setLoading] = useState(true);
@@ -514,7 +514,15 @@ export default function ComandaDetailScreen() {
     if (permissao.pode) {
       return (
         <Pressable
-          onPress={() => setItemParaCancelar({ id: p.id, nome: pratoNome, aposInicio: permissao.aposInicio })}
+          onPress={() =>
+            setItemParaCancelar({
+              id: p.id,
+              nome: pratoNome,
+              aposInicio: permissao.aposInicio,
+              quantidade: p.quantidade ?? 1,
+              exigeAutorizacao: permissao.exigeAutorizacao,
+            })
+          }
           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           style={{ marginLeft: 8, padding: 2 }}
         >
@@ -541,10 +549,12 @@ export default function ComandaDetailScreen() {
       visible={itemParaCancelar !== null}
       pratoNome={itemParaCancelar?.nome ?? ''}
       aposInicio={itemParaCancelar?.aposInicio ?? false}
+      quantidadeItem={itemParaCancelar?.quantidade ?? 1}
+      exigeAutorizacao={itemParaCancelar?.exigeAutorizacao ?? false}
       onClose={() => setItemParaCancelar(null)}
-      onConfirm={async (motivo, detalhe) => {
+      onConfirm={async (motivo, detalhe, quantidade, autorizacao) => {
         if (!itemParaCancelar) return;
-        await cancelarItem(itemParaCancelar.id, motivo, detalhe);
+        await cancelarItem(itemParaCancelar.id, motivo, detalhe, quantidade, autorizacao);
         await fetchData();
       }}
     />
