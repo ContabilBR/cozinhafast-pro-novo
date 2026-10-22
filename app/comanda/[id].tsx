@@ -16,7 +16,7 @@ import { Image } from 'expo-image';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { apiGet, apiPost } from '@/utils/api';
+import { apiGet, apiPost, apiDelete } from '@/utils/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { useColors } from '@/hooks/useColors';
 import { CancelarItemModal } from '@/components/CancelarItemModal';
@@ -494,6 +494,65 @@ export default function ComandaDetailScreen() {
     pedidosEnviados.every((p) => p.status === 'cancelado');
 
   const [encerrando, setEncerrando] = useState(false);
+  const [excluindoVazia, setExcluindoVazia] = useState(false);
+
+  // Comanda aberta sem nenhum pedido (nem cancelado): única saída é excluir
+  const podeExcluirVazia =
+    comanda?.status === 'aberta' &&
+    pedidosEnviados.length === 0 &&
+    user?.role !== 'cozinheiro';
+
+  const executarExclusaoVazia = async () => {
+    if (!id || excluindoVazia) return;
+    setExcluindoVazia(true);
+    try {
+      await apiDelete(`/api/comandas/${id}`);
+      if (router.canGoBack()) {
+        router.back();
+      } else {
+        router.replace('/(tabs)/(mesas)');
+      }
+      Alert.alert('Comanda excluída');
+    } catch (e: any) {
+      const msg = typeof e?.message === 'string' ? e.message.trim() : '';
+      Alert.alert('Erro', msg ? msg : 'Não foi possível excluir a comanda. Tente novamente.');
+    } finally {
+      setExcluindoVazia(false);
+    }
+  };
+
+  const handleExcluirVazia = () => {
+    Alert.alert(
+      'Excluir comanda vazia?',
+      'Esta comanda não tem itens e será removida. A mesa será liberada se não houver outra comanda aberta nela.',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        { text: 'Excluir', style: 'destructive', onPress: executarExclusaoVazia },
+      ]
+    );
+  };
+
+  const renderExcluirVazia = () =>
+    podeExcluirVazia ? (
+      <Pressable
+        onPress={handleExcluirVazia}
+        disabled={excluindoVazia}
+        style={{
+          marginTop: 16,
+          alignSelf: 'center',
+          paddingVertical: 10,
+          paddingHorizontal: 16,
+          borderRadius: 8,
+          borderWidth: 1,
+          borderColor: '#fca5a5',
+          opacity: excluindoVazia ? 0.5 : 1,
+        }}
+      >
+        <Text style={{ color: '#dc2626', fontSize: 14, fontWeight: '600' }}>
+          {excluindoVazia ? 'Excluindo...' : 'Excluir comanda vazia'}
+        </Text>
+      </Pressable>
+    ) : null;
 
   const handleEncerrarSemConsumo = async () => {
     if (!id) return;
@@ -725,6 +784,7 @@ export default function ComandaDetailScreen() {
             <View style={mgStyles.emptyBox}>
               <Ionicons name="receipt-outline" size={40} color="#d1d5db" />
               <Text style={mgStyles.emptyText}>Nenhum pedido nesta comanda</Text>
+              {renderExcluirVazia()}
             </View>
           ) : (
             pedidosEnviados.map((p) => {
@@ -1007,7 +1067,10 @@ export default function ComandaDetailScreen() {
 
             <Text style={[styles.sectionTitle, { marginTop: 24 }]}>Pedidos Enviados</Text>
             {pedidosEnviados.length === 0 ? (
-              <Text style={styles.emptyText}>Nenhum pedido enviado ainda</Text>
+              <>
+                <Text style={styles.emptyText}>Nenhum pedido enviado ainda</Text>
+                {renderExcluirVazia()}
+              </>
             ) : (
               pedidosEnviados.map((p) => {
                 const pratoNome = pratos.find((pr) => pr.id === p.prato_id)?.nome ?? p.prato_id;
