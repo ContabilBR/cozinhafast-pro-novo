@@ -1707,7 +1707,9 @@ export function registerOrderRoutes(app: App) {
         response: {
           204: { description: "Comanda deleted successfully" },
           401: { type: "object", properties: { error: { type: "string" } } },
+          403: { type: "object", properties: { error: { type: "string" } } },
           404: { type: "object", properties: { error: { type: "string" } } },
+          409: { type: "object", properties: { error: { type: "string" } } },
         },
       },
     },
@@ -1755,6 +1757,15 @@ export function registerOrderRoutes(app: App) {
         const activeItemsCount = Number(activeItemsResult[0]?.count ?? 0);
         if (activeItemsCount > 0) {
           return await reply.code(409).send({ error: "Não é possível excluir uma comanda com itens. Cancele os itens primeiro." });
+        }
+
+        // Cancelled items check: comanda with cancelled pedidos cannot be deleted (loss record preservation)
+        const cancelledItemsResult = await (app.db as any).execute(
+          sql`SELECT COUNT(*) as count FROM pedidos WHERE comanda_id = ${request.params.id} AND restaurante_id = ${restauranteId} AND status = 'cancelado'`
+        ) as any[];
+        const cancelledItemsCount = Number(cancelledItemsResult[0]?.count ?? 0);
+        if (cancelledItemsCount > 0) {
+          return await reply.code(409).send({ error: "Esta comanda tem itens cancelados que ficam registrados como perda e não podem ser apagados. Use \"Encerrar sem consumo\" para encerrar a comanda." });
         }
 
         // Delete pedidos and comanda and, na mesma transação, libera a mesa só se não restar
