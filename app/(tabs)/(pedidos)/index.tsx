@@ -1047,7 +1047,7 @@ export default function PedidosGarcomScreen() {
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error("[Pedidos] Erro ao deletar comanda:", msg);
-      Alert.alert("Erro", "Não foi possível remover o pedido. Tente novamente.");
+      Alert.alert("Erro", msg.trim() ? msg : "Não foi possível remover o pedido. Tente novamente.");
     }
   }, [fetchPedidos, showToast]);
 
