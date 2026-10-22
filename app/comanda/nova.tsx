@@ -12,6 +12,7 @@ import {
   ImageSourcePropType,
   Platform,
   UIManager,
+  KeyboardAvoidingView,
 } from "react-native";
 import { Image } from "expo-image";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -113,6 +114,7 @@ function PratoCard({
   onIncrement,
   onDecrement,
   onObservacaoChange,
+  onFocusObservacao,
   index,
 }: {
   prato: ApiPrato;
@@ -121,6 +123,7 @@ function PratoCard({
   onIncrement: () => void;
   onDecrement: () => void;
   onObservacaoChange: (text: string) => void;
+  onFocusObservacao?: () => void;
   index: number;
 }) {
   const COLORS = useColors();
@@ -344,6 +347,7 @@ function PratoCard({
               setPendingObservacao(text);
             }
           }}
+          onFocus={onFocusObservacao}
           placeholder="Observação (ex: sem cebola)"
           placeholderTextColor={COLORS.textTertiary}
           style={{
@@ -450,6 +454,7 @@ export default function NovaComandaScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [activeTab, setActiveTab] = useState<"cardapio" | "pedido">("cardapio");
   const [showSuccess, setShowSuccess] = useState(false);
+  const pratosListRef = useRef<FlatList<ApiPrato>>(null);
   const successOpacity = useRef(new Animated.Value(0)).current;
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<string>("Todos");
@@ -624,6 +629,7 @@ export default function NovaComandaScreen() {
       style={{ flex: 1, backgroundColor: COLORS.background }}
       edges={["top", "left", "right"]}
     >
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
       {/* ── Success Modal ── */}
       <Modal visible={showSuccess} transparent animationType="none" statusBarTranslucent>
         <Animated.View
@@ -1113,7 +1119,9 @@ export default function NovaComandaScreen() {
                   </ScrollView>
                 </View>
             <FlatList
+              ref={pratosListRef}
               style={{ flex: 1 }}
+              onScrollToIndexFailed={() => {}}
               data={filteredPratos}
               keyExtractor={(item) => item.id}
               contentContainerStyle={{ paddingBottom: 160 }}
@@ -1128,6 +1136,12 @@ export default function NovaComandaScreen() {
                     onIncrement={() => incrementItem(item.id)}
                     onDecrement={() => decrementItem(item.id)}
                     onObservacaoChange={(text) => setObservacao(item.id, text)}
+                    onFocusObservacao={() => {
+                      // Espera o teclado abrir e leva o prato para a parte visível da lista
+                      setTimeout(() => {
+                        pratosListRef.current?.scrollToIndex({ index, viewPosition: 0.1, animated: true });
+                      }, 250);
+                    }}
                     index={index}
                   />
                 );
@@ -1379,6 +1393,7 @@ export default function NovaComandaScreen() {
           )}
         </AnimatedPressable>
       </View>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }

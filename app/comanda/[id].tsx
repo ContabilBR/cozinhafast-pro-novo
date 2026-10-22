@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,8 @@ import {
   ActivityIndicator,
   Alert,
   StyleSheet,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -79,12 +81,14 @@ function PratoCardWaiter({
   stagedObservacao,
   onAdd,
   onUpdateObservacao,
+  onFocusObservacao,
   COLORS,
 }: {
   item: Prato;
   stagedObservacao: string | undefined;
   onAdd: (observacao: string) => void;
   onUpdateObservacao: (text: string) => void;
+  onFocusObservacao?: () => void;
   COLORS: any;
 }) {
   const [pendingObservacao, setPendingObservacao] = useState('');
@@ -123,6 +127,7 @@ function PratoCardWaiter({
               setPendingObservacao(text);
             }
           }}
+          onFocus={onFocusObservacao}
           placeholder="Observação (opcional)"
           placeholderTextColor="#9ca3af"
         />
@@ -210,6 +215,7 @@ export default function ComandaDetailScreen() {
   const isManager = user?.role === 'gerente' || user?.role === 'admin' || user?.role === 'administrador';
 
   const COLORS = useColors();
+  const pratosListRef = useRef<FlatList<Prato>>(null);
   const [comanda, setComanda] = useState<Comanda | null>(null);
   const [descontoVisible, setDescontoVisible] = useState(false);
   const [pratos, setPratos] = useState<Prato[]>([]);
@@ -802,6 +808,7 @@ export default function ComandaDetailScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <NavBar
         title={headerTitle}
         semConsumo={semConsumo}
@@ -916,12 +923,14 @@ export default function ComandaDetailScreen() {
                 </ScrollView>
               </View>
           <FlatList
+            ref={pratosListRef}
             style={{ flex: 1 }}
+            onScrollToIndexFailed={() => {}}
             data={filteredPratos}
             keyExtractor={(item) => item.id}
             contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 12, paddingTop: 0 }}
             keyboardShouldPersistTaps="handled"
-            renderItem={({ item }) => {
+            renderItem={({ item, index }) => {
               const staged = stagedItems.find((s) => s.pratoId === item.id);
               return (
                 <PratoCardWaiter
@@ -929,6 +938,12 @@ export default function ComandaDetailScreen() {
                   stagedObservacao={staged?.observacao}
                   onAdd={(observacao) => addToStaging(item, observacao)}
                   onUpdateObservacao={(text) => updateObservacao(item.id, text)}
+                  onFocusObservacao={() => {
+                    // Espera o teclado abrir e leva o prato para a parte visível da lista
+                    setTimeout(() => {
+                      pratosListRef.current?.scrollToIndex({ index, viewPosition: 0.1, animated: true });
+                    }, 250);
+                  }}
                   COLORS={COLORS}
                 />
               );
@@ -1048,6 +1063,7 @@ export default function ComandaDetailScreen() {
         </Text>
       </Pressable>
 
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
