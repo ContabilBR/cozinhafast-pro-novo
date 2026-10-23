@@ -23,6 +23,7 @@
       }
     },
     "android": {
+      "softwareKeyboardLayoutMode": "resize",
       "package": "com.contabilbr.cozinhafastpro",
       "permissions": [
         "BLUETOOTH",

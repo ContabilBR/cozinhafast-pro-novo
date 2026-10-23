@@ -41,6 +41,7 @@ export default function ComprovanteScreen() {
   const params = useLocalSearchParams<{
     mesa_numero: string;
     subtotal: string;
+    desconto?: string;
     gorjeta: string;
     total_final: string;
     num_pessoas: string;
@@ -52,6 +53,7 @@ export default function ComprovanteScreen() {
 
   const mesaNumero = params.mesa_numero ?? '';
   const subtotal = Number(params.subtotal ?? 0);
+  const desconto = Number(params.desconto ?? 0);
   const gorjeta = Number(params.gorjeta ?? 0);
   const totalFinal = Number(params.total_final ?? 0);
   const numPessoas = Number(params.num_pessoas ?? 1);
@@ -91,6 +93,7 @@ export default function ComprovanteScreen() {
     });
     lines.push('--------------------------------');
     lines.push(`Subtotal: ${subtotalDisplay}`);
+    if (desconto > 0) lines.push(`Desconto: - ${formatBRL(desconto)}`);
     if (showGorjeta) {
       lines.push(`Gorjeta: ${gorjetaDisplay}`);
     }
@@ -175,10 +178,17 @@ export default function ComprovanteScreen() {
           <Text style={styles.totalVal}>{subtotalDisplay}</Text>
         </View>
 
+        {desconto > 0 ? (
+          <View style={styles.totalRow}>
+            <Text style={styles.totalKey}>Desconto:</Text>
+            <Text style={styles.totalVal}>- {formatBRL(desconto)}</Text>
+          </View>
+        ) : null}
+
         {/* Gorjeta */}
         {showGorjeta ? (
           <View style={styles.totalRow}>
-            <Text style={styles.totalKey}>Gorjeta (10%)</Text>
+            <Text style={styles.totalKey}>Gorjeta</Text>
             <Text style={styles.totalVal}>{gorjetaDisplay}</Text>
           </View>
         ) : null}

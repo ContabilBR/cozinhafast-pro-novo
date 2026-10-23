@@ -73,11 +73,17 @@ export async function requireAuth(
             if (rid) {
               // Verificar que o restaurante referenciado existe
               const restauranteCheck = await app.db
-                .select({ id: schema.restaurante.id })
+                .select({ id: schema.restaurante.id, ativo: schema.restaurante.ativo })
                 .from(schema.restaurante)
                 .where(eq(schema.restaurante.id, rid))
                 .limit(1);
               if (restauranteCheck.length > 0) {
+                // Check if restaurant is inactive (but exempt platform restaurant)
+                if (rid !== '00000000000000' && restauranteCheck[0].ativo === false) {
+                  app.logger.warn({ restauranteId: rid, usuarioId: user.id }, "Inactive restaurant");
+                  await reply.code(403).send({ error: "Restaurante desativado. Entre em contato com o suporte." });
+                  return null;
+                }
                 app.logger.debug({ userId: user.id, restauranteId: rid }, "User authenticated via Better Auth");
                 authContextOrNull = {
                   id: user.id,
@@ -136,8 +142,28 @@ export async function requireAuth(
 
         if (usuarioResults && usuarioResults.length > 0) {
           const usuario = usuarioResults[0];
+
+          // Check if user is inactive
+          if (usuario.ativo === false) {
+            app.logger.warn({ restauranteId: usuario.restauranteId, usuarioId: usuario.id }, "Inactive user");
+            await reply.code(403).send({ error: "Usuário desativado. Entre em contato com o gerente." });
+            return null;
+          }
+
           const rid = usuario.restauranteId ? String(usuario.restauranteId) : null;
           if (rid) {
+            // Check if restaurant is inactive (but exempt platform restaurant)
+            const restauranteCheck = await app.db
+              .select({ ativo: schema.restaurante.ativo })
+              .from(schema.restaurante)
+              .where(eq(schema.restaurante.id, rid))
+              .limit(1);
+            if (restauranteCheck.length > 0 && rid !== '00000000000000' && restauranteCheck[0].ativo === false) {
+              app.logger.warn({ restauranteId: rid, usuarioId: usuario.id }, "Inactive restaurant");
+              await reply.code(403).send({ error: "Restaurante desativado. Entre em contato com o suporte." });
+              return null;
+            }
+
             app.logger.debug({ usuarioId: usuario.id }, "User authenticated via custom auth");
             return {
               id: usuario.id.toString(),

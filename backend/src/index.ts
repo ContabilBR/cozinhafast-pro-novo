@@ -28,7 +28,7 @@ import { registerSuperAdminRoutes } from './routes/superadmin.js';
 import { registerRenovacaoDeImagens } from './utils/imagem-assinada.js';
 import { seedDatabase } from './db/seed.js';
 import { enableSelectRetry } from './db/withRetry.js';
-import { garantirColunasDeCancelamento, garantirColunasDeModoComanda } from './db/ensure-schema.js';
+import { garantirColunasDeCancelamento, garantirColunasDeModoComanda, garantirColunasContinuasDeDesconto, backfillQrTokens } from './db/ensure-schema.js';
 import { garantirRestauranteIdTexto } from './db/ensure-restaurante-id.js';
 
 // Combine schemas
@@ -78,6 +78,17 @@ try {
   app.logger.error({ err: error }, 'Failed to ensure modo_comanda columns');
   // Don't exit - this is not critical
 }
+
+// Garante as colunas de desconto/cortesia (etapa 1a)
+try {
+  await garantirColunasContinuasDeDesconto(app);
+} catch (error) {
+  app.logger.error({ err: error }, 'Failed to ensure discount columns');
+  // Don't exit - this is not critical
+}
+
+// Backfill QR tokens for existing mesas (non-critical; handles errors internally)
+await backfillQrTokens(app);
 
 // Seed test admin and restaurante if test mode is enabled
 try {

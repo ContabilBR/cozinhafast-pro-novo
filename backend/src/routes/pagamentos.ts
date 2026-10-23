@@ -4,12 +4,23 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import type { App } from "../index.js";
 import { requireAuth as customRequireAuth, requireTenant, requireRole } from "../utils/auth.js";
 import * as schema from "../db/schema/schema.js";
-import { subtotalDaComanda } from "../services/total-comanda.js";
+import { subtotalDaComanda, calcularTotalComandaMesaComDesconto } from "../services/total-comanda.js";
+import { fecharComandaEmTransacao, registrarEPublicarFechamento } from "../services/fechamento-comanda.js";
+import type { ResultadoFechamento } from "../services/fechamento-comanda.js";
 
 // Pagamento de comanda (dinheiro, cartão, Pix) é sempre reconciliado manualmente pelo
 // garçom — o restaurante usa a própria maquininha/chave Pix e o app só registra qual
 // forma foi usada. Não há integração de pagamento nativa nesta rota; o Asaas só é
 // usado para a cobrança da assinatura da plataforma (ver backend/src/routes/assinatura.ts).
+//
+// Fechamento automático: o pagamento que quita a conta fecha a comanda na MESMA transação
+// (arquiva, libera a mesa), desde que nenhum item esteja pendente ou em preparo. Se ainda houver
+// item na cozinha, o pagamento é registrado e a comanda continua aberta; a gestão cancela o item
+// (perda, regra de cancelamento de sempre) e fecha pelo /fechar. Delivery e conta zerada ficam de fora.
+
+// Itens que ainda dependem da cozinha. "pronto", "entregue" e "cancelado" não seguram o fechamento.
+const STATUS_ITEM_NA_COZINHA = ["pendente", "em_preparo"] as const;
+type FechamentoConcluido = Extract<ResultadoFechamento, { tipo: "fechada" }>;
 
 export function registerPagamentoRoutes(app: App) {
   const db = app.db as any;
@@ -40,64 +51,121 @@ export function registerPagamentoRoutes(app: App) {
         if (!(await requireRole(authUser, ["garcom", "gerente", "administrador", "admin"], reply))) return;
         const restauranteId = requireTenant(authUser);
 
-        // Verificar se comanda existe e pertence ao tenant
-        const comanda = await db.select({ id: schema.comandas.id, status: schema.comandas.status, total: schema.comandas.total, tipo: schema.comandas.tipo }).from(schema.comandas).where(and(eq(schema.comandas.id, request.params.id), eq(schema.comandas.restauranteId, restauranteId)));
-        if (!comanda.length) return await reply.code(404).send({ error: "Comanda não encontrada" });
-        if (comanda[0].tipo === 'delivery') return await reply.code(400).send({ error: "Este é um pedido de delivery. Use a tela de Delivery." });
-        if (comanda[0].status !== "aberta") return await reply.code(400).send({ error: "Comanda não está aberta" });
+        const result: { status: number; body: any; fechamento?: FechamentoConcluido } = await db.transaction(async (tx: any) => {
+          // Verificar se comanda existe e pertence ao tenant
+          const comanda = await tx.select({ id: schema.comandas.id, status: schema.comandas.status, total: schema.comandas.total, tipo: schema.comandas.tipo, descontoTipo: schema.comandas.descontoTipo, descontoValor: schema.comandas.descontoValor }).from(schema.comandas).where(and(eq(schema.comandas.id, request.params.id), eq(schema.comandas.restauranteId, restauranteId))).for("update");
+          if (!comanda.length) {
+            // Já arquivada como fechada (ex.: o pagamento anterior quitou e fechou; toque duplo)
+            const jaFechada = await tx.select({ id: schema.comandasHistorico.id }).from(schema.comandasHistorico).where(and(eq(schema.comandasHistorico.id, request.params.id), eq(schema.comandasHistorico.restauranteId, restauranteId), eq(schema.comandasHistorico.status, "fechada")));
+            if (jaFechada.length) return { status: 409, body: { error: "Esta comanda já foi encerrada.", comanda_fechada: true } };
+            return { status: 404, body: { error: "Comanda não encontrada" } };
+          }
+          if (comanda[0].tipo === 'delivery') return { status: 400, body: { error: "Este é um pedido de delivery. Use a tela de Delivery." } };
+          if (comanda[0].status !== "aberta") return { status: 400, body: { error: "Comanda não está aberta" } };
 
-        const { forma_pagamento, valor, troco, referencia } = request.body;
+          const { forma_pagamento, valor, troco, referencia } = request.body;
 
-        if (!isFinite(valor) || valor <= 0) {
-          return await reply.code(400).send({ error: "O valor do pagamento deve ser um número maior que zero." });
-        }
-        if (troco !== undefined && (!isFinite(troco) || troco < 0)) {
-          return await reply.code(400).send({ error: "O troco deve ser um número maior ou igual a zero." });
-        }
-        const _gorjetaCheck = (request.body as any).gorjeta;
-        if (_gorjetaCheck !== undefined && (!isFinite(_gorjetaCheck) || _gorjetaCheck < 0)) {
-          return await reply.code(400).send({ error: "A gorjeta deve ser um número maior ou igual a zero." });
-        }
+          if (!isFinite(valor) || valor <= 0) {
+            return { status: 400, body: { error: "O valor do pagamento deve ser um número maior que zero." } };
+          }
+          if (troco !== undefined && (!isFinite(troco) || troco < 0)) {
+            return { status: 400, body: { error: "O troco deve ser um número maior ou igual a zero." } };
+          }
+          const _gorjetaCheck = (request.body as any).gorjeta;
+          if (_gorjetaCheck !== undefined && (!isFinite(_gorjetaCheck) || _gorjetaCheck < 0)) {
+            return { status: 400, body: { error: "A gorjeta deve ser um número maior ou igual a zero." } };
+          }
 
-        // Calcular total já pago
-        const pagamentosExistentes = await db.select({ valor: schema.pagamentos.valor }).from(schema.pagamentos).where(and(eq(schema.pagamentos.comandaId, request.params.id), eq(schema.pagamentos.status, "confirmado")));
-        const totalPago = pagamentosExistentes.reduce((sum: number, p: any) => sum + parseFloat(p.valor), 0);
-        const totalComanda = await subtotalDaComanda(db, request.params.id);
-        const restante = totalComanda - totalPago;
+          // Calcular total já pago
+          const pagamentosExistentes = await tx.select({ valor: schema.pagamentos.valor }).from(schema.pagamentos).where(and(eq(schema.pagamentos.comandaId, request.params.id), eq(schema.pagamentos.status, "confirmado")));
+          const totalPago = pagamentosExistentes.reduce((sum: number, p: any) => sum + parseFloat(p.valor), 0);
+          const totalComanda = await subtotalDaComanda(tx, request.params.id);
+          const restante = totalComanda - totalPago;
 
-        // Considerar a gorjeta no cálculo do valor devido, sem persistir no total
-        // da comanda. Quem soma a gorjeta ao total, uma única vez, é o /fechar —
-        // gravar aqui inflava o total a cada pagamento (e compunha ainda mais em
-        // contas divididas entre várias pessoas).
-        const gorjetaBody = (request.body as any).gorjeta || 0;
-        const totalComandaFinal = totalComanda + gorjetaBody;
+          // Considerar a gorjeta no cálculo do valor devido, sem persistir no total
+          // da comanda. Quem soma a gorjeta ao total, uma única vez, é o /fechar —
+          // gravar aqui inflava o total a cada pagamento (e compunha ainda mais em
+          // contas divididas entre várias pessoas).
+          const gorjetaBody = (request.body as any).gorjeta || 0;
+          const { total: totalComandaFinal, descontoEfetivo } = calcularTotalComandaMesaComDesconto(totalComanda, gorjetaBody, comanda[0].descontoTipo, comanda[0].descontoValor);
 
-        // Only validate overpayment if comanda has a total
-        const restanteFinal = totalComandaFinal - totalPago;
-        if (totalComandaFinal > 0 && valor > restanteFinal + 0.01) {
-          return await reply.code(400).send({ error: `Valor excede o restante da comanda. Restante: R$ ${restanteFinal.toFixed(2)}` });
-        }
+          // Only validate overpayment if comanda has a total
+          const restanteFinal = totalComandaFinal - totalPago;
+          if (totalComandaFinal > 0 && valor > restanteFinal + 0.01) {
+            return { status: 400, body: { error: `Valor excede o restante da comanda. Restante: R$ ${restanteFinal.toFixed(2)}` } };
+          }
 
-        // Todas as formas de pagamento (dinheiro, cartão, Pix) são reconciliação manual
-        // do garçom e confirmam imediatamente — não há integração de gateway aqui.
-        const statusPagamento = "confirmado";
-        const confirmadoEm = new Date();
+          // Todas as formas de pagamento (dinheiro, cartão, Pix) são reconciliação manual
+          // do garçom e confirmam imediatamente — não há integração de gateway aqui.
+          const statusPagamento = "confirmado";
+          const confirmadoEm = new Date();
 
-        const [pagamento] = await db.insert(schema.pagamentos).values({
-          comandaId: request.params.id,
-          formaPagamento: forma_pagamento,
-          status: statusPagamento,
-          valor: valor.toString(),
-          troco: (troco || 0).toString(),
-          referencia: referencia || null,
-          confirmadoEm,
-          restauranteId,
-        }).returning();
+          const [pagamento] = await tx.insert(schema.pagamentos).values({
+            comandaId: request.params.id,
+            formaPagamento: forma_pagamento,
+            status: statusPagamento,
+            valor: valor.toString(),
+            troco: (troco || 0).toString(),
+            referencia: referencia || null,
+            confirmadoEm,
+            restauranteId,
+          }).returning();
 
-        return await reply.code(201).send({
-          pagamento,
-          resumo: { total_comanda: totalComandaFinal, total_pago: totalPago + (statusPagamento === "confirmado" ? valor : 0), restante: restanteFinal - (statusPagamento === "confirmado" ? valor : 0) },
+          // Fechamento automático: este pagamento quita a conta? (conta zerada não passa por aqui)
+          const novoTotalPago = totalPago + valor;
+          const quitada = totalComandaFinal > 0.01 && novoTotalPago >= totalComandaFinal - 0.01;
+          let fechamento: FechamentoConcluido | undefined;
+          let aguardandoItens = false;
+
+          if (quitada) {
+            const naCozinha = await tx
+              .select({ id: schema.pedidos.id })
+              .from(schema.pedidos)
+              .where(and(
+                eq(schema.pedidos.comandaId, request.params.id),
+                eq(schema.pedidos.restauranteId, restauranteId),
+                inArray(schema.pedidos.status, [...STATUS_ITEM_NA_COZINHA])
+              ))
+              .limit(1);
+
+            if (naCozinha.length > 0) {
+              // Pago, mas ainda há item na cozinha: a comanda continua aberta
+              aguardandoItens = true;
+            } else {
+              const fechada = await fecharComandaEmTransacao(app, tx, {
+                restauranteId,
+                comandaId: request.params.id,
+                gorjeta: gorjetaBody,
+                fechadoPor: { id: authUser.id, nome: authUser.name, role: authUser.role },
+              });
+              if (fechada.tipo === "fechada") {
+                fechamento = fechada;
+              } else {
+                // Não deve acontecer (a conta já foi conferida acima). O pagamento fica registrado
+                // e o garçom ainda pode fechar pelo /fechar.
+                app.logger.warn({ comandaId: request.params.id, desfecho: fechada.tipo }, "Pagamento quitou a conta mas o fechamento automático foi recusado");
+              }
+            }
+          }
+
+          return {
+            status: 201,
+            fechamento,
+            body: {
+              pagamento,
+              comanda_fechada: !!fechamento,
+              aguardando_itens: aguardandoItens,
+              resumo: { total_comanda: totalComandaFinal, desconto_valor: descontoEfetivo, total_pago: totalPago + (statusPagamento === "confirmado" ? valor : 0), restante: restanteFinal - (statusPagamento === "confirmado" ? valor : 0) },
+            },
+          };
         });
+
+        // Evento de tempo real só depois do commit
+        if (result.fechamento) {
+          registrarEPublicarFechamento(app, restauranteId, request.params.id, result.fechamento);
+        }
+
+        return await reply.code(result.status).send(result.body);
       } catch (err) {
         app.logger.error({ error: (err as any).message }, "Erro ao registrar pagamento");
         return await reply.code(500).send({ error: "Erro interno do servidor" });
@@ -154,7 +222,7 @@ export function registerPagamentoRoutes(app: App) {
         if (!pagamento.length) return await reply.code(404).send({ error: "Pagamento não encontrado" });
         if (pagamento[0].status === "confirmado") return await reply.code(400).send({ error: "Pagamento já confirmado não pode ser cancelado" });
 
-        await db.update(schema.pagamentos).set({ status: "cancelado" }).where(eq(schema.pagamentos.id, request.params.id));
+        await db.update(schema.pagamentos).set({ status: "cancelado" }).where(and(eq(schema.pagamentos.id, request.params.id), eq(schema.pagamentos.restauranteId, restauranteId)));
 
         return await reply.code(200).send({ success: true, message: "Pagamento cancelado" });
       } catch (err) {
@@ -189,18 +257,21 @@ export function registerPagamentoRoutes(app: App) {
         const restauranteId = requireTenant(authUser);
 
         // Verificar comanda
-        const comanda = await db.select({ id: schema.comandas.id, status: schema.comandas.status, total: schema.comandas.total, tipo: schema.comandas.tipo }).from(schema.comandas).where(and(eq(schema.comandas.id, request.params.id), eq(schema.comandas.restauranteId, restauranteId)));
+        const comanda = await db.select({ id: schema.comandas.id, status: schema.comandas.status, total: schema.comandas.total, tipo: schema.comandas.tipo, descontoTipo: schema.comandas.descontoTipo, descontoValor: schema.comandas.descontoValor }).from(schema.comandas).where(and(eq(schema.comandas.id, request.params.id), eq(schema.comandas.restauranteId, restauranteId)));
         if (!comanda.length) return await reply.code(404).send({ error: "Comanda não encontrada" });
         if (comanda[0].tipo === 'delivery') return await reply.code(400).send({ error: "Este é um pedido de delivery. Use a tela de Delivery." });
 
         const totalComanda = await subtotalDaComanda(db, request.params.id);
         const gorjeta = request.body.gorjeta || 0;
-        const totalComGorjeta = totalComanda + gorjeta;
+        const { total: totalComGorjeta, descontoEfetivo } = calcularTotalComandaMesaComDesconto(totalComanda, gorjeta, comanda[0].descontoTipo, comanda[0].descontoValor);
 
         // Buscar pagamentos já feitos
         const pagamentosExistentes = await db.select({ valor: schema.pagamentos.valor }).from(schema.pagamentos).where(and(eq(schema.pagamentos.comandaId, request.params.id), eq(schema.pagamentos.status, "confirmado")));
         const totalPago = pagamentosExistentes.reduce((sum: number, p: any) => sum + parseFloat(p.valor), 0);
         const restante = totalComGorjeta - totalPago;
+
+        // Check if total due is less than 0.01 (effectively free or cortesia)
+        const totalSemCobranca = totalComGorjeta < 0.01;
 
         // Buscar todos os pedidos da comanda
         const pedidosDaComanda = await db.select({
@@ -221,21 +292,31 @@ export function registerPagamentoRoutes(app: App) {
           const numPessoas = request.body.num_pessoas || 2;
           if (numPessoas < 2) return await reply.code(400).send({ error: "Número de pessoas deve ser pelo menos 2" });
 
-          const valorPorPessoa = Math.ceil(restante / numPessoas * 100) / 100;
-          const ajuste = Math.round((valorPorPessoa * numPessoas - restante) * 100) / 100;
+          let divisao: any[];
+          if (totalSemCobranca) {
+            // Total é zero ou muito pequeno — sem cobrança
+            divisao = Array.from({ length: numPessoas }, (_, i) => ({
+              pessoa: i + 1,
+              valor: 0,
+            }));
+          } else {
+            const valorPorPessoa = Math.ceil(restante / numPessoas * 100) / 100;
+            const ajuste = Math.round((valorPorPessoa * numPessoas - restante) * 100) / 100;
 
-          const divisao = Array.from({ length: numPessoas }, (_, i) => ({
-            pessoa: i + 1,
-            valor: i === numPessoas - 1 ? Math.round((valorPorPessoa - ajuste) * 100) / 100 : valorPorPessoa,
-          }));
+            divisao = Array.from({ length: numPessoas }, (_, i) => ({
+              pessoa: i + 1,
+              valor: i === numPessoas - 1 ? Math.round((valorPorPessoa - ajuste) * 100) / 100 : valorPorPessoa,
+            }));
+          }
 
           return await reply.code(200).send({
             tipo: "igual",
             total_comanda: totalComanda,
+            desconto_valor: descontoEfetivo,
             gorjeta,
             total_com_gorjeta: totalComGorjeta,
             total_pago: totalPago,
-            restante,
+            restante: totalSemCobranca ? 0 : restante,
             num_pessoas: numPessoas,
             divisao,
           });
@@ -265,7 +346,7 @@ export function registerPagamentoRoutes(app: App) {
             return { nome: pessoa.nome, itens, subtotal };
           });
 
-          // Distribuir gorjeta proporcionalmente
+          // Distribuir gorjeta e desconto proporcionalmente
           const totalItensAtribuidos = divisao.reduce((sum: number, d: any) => sum + d.subtotal, 0);
           const itensNaoAtribuidos = totalComanda - totalItensAtribuidos;
 
@@ -273,23 +354,34 @@ export function registerPagamentoRoutes(app: App) {
             const proporcao = totalItensAtribuidos > 0 ? d.subtotal / totalItensAtribuidos : 1 / divisao.length;
             const gorjetaProporcional = Math.round(gorjeta * proporcao * 100) / 100;
             const rateiNaoAtribuido = Math.round(itensNaoAtribuidos * proporcao * 100) / 100;
+            const descontoProporcional = Math.round(descontoEfetivo * proporcao * 100) / 100;
+
+            let totalAPagar = 0;
+            if (totalSemCobranca) {
+              totalAPagar = 0;
+            } else {
+              totalAPagar = Math.round((d.subtotal + gorjetaProporcional + rateiNaoAtribuido - descontoProporcional) * 100) / 100;
+            }
+
             return {
               nome: d.nome,
               itens: d.itens,
               subtotal_itens: d.subtotal,
               rateio_itens_nao_atribuidos: rateiNaoAtribuido,
               gorjeta_proporcional: gorjetaProporcional,
-              total_a_pagar: Math.round((d.subtotal + gorjetaProporcional + rateiNaoAtribuido) * 100) / 100,
+              desconto_proporcional: descontoProporcional,
+              total_a_pagar: totalAPagar,
             };
           });
 
           return await reply.code(200).send({
             tipo: "por_itens",
             total_comanda: totalComanda,
+            desconto_valor: descontoEfetivo,
             gorjeta,
             total_com_gorjeta: totalComGorjeta,
             total_pago: totalPago,
-            restante,
+            restante: totalSemCobranca ? 0 : restante,
             itens_nao_atribuidos: itensNaoAtribuidos,
             num_pessoas: pessoas.length,
             divisao: divisaoFinal,

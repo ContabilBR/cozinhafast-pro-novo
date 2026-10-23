@@ -80,6 +80,10 @@ export default function MesaClienteSetupScreen() {
   };
 
   const aplicarConfiguracao = async (mesa: any) => {
+    if (typeof mesa.qr_token !== "string" || !mesa.qr_token.trim()) {
+      Alert.alert("Mesa sem código", "Esta mesa ainda não tem código. Abra QR Code Cardápio e gere um novo.");
+      return;
+    }
     setSaving(mesa.id);
     try {
       await saveMesaClienteConfig({
@@ -87,6 +91,7 @@ export default function MesaClienteSetupScreen() {
         restauranteNome,
         mesaId: mesa.id,
         mesaNumero: mesa.numero,
+        qrToken: mesa.qr_token,
         configuradoEm: new Date().toISOString(),
       });
       await signOut();

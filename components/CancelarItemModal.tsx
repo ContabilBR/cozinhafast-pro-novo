@@ -2,22 +2,46 @@ import React, { useEffect, useRef, useState } from "react";
 import { View, Text, Modal, Pressable, ScrollView, TextInput, ActivityIndicator } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useColors } from "@/hooks/useColors";
-import { MOTIVOS_CANCELAMENTO, type MotivoCancelamento } from "@/utils/cancelamento";
+import {
+  MOTIVOS_CANCELAMENTO,
+  type AutorizacaoCancelamento,
+  type MotivoCancelamento,
+} from "@/utils/cancelamento";
 
 interface CancelarItemModalProps {
   visible: boolean;
   pratoNome: string;
   /** true quando o item já está em preparo ou pronto: o cancelamento vira perda */
   aposInicio: boolean;
+  /** quantidade do item no pedido */
+  quantidadeItem: number;
+  /** true quando um gerente precisa autorizar com e-mail e senha (garçom em item iniciado) */
+  exigeAutorizacao: boolean;
   onClose: () => void;
   /** Deve lançar erro se o servidor recusar; a mensagem aparece no modal. O modal fecha sozinho no sucesso. */
-  onConfirm: (motivo: MotivoCancelamento, detalhe: string | null) => Promise<void>;
+  onConfirm: (
+    motivo: MotivoCancelamento,
+    detalhe: string | null,
+    quantidade: number,
+    autorizacao?: AutorizacaoCancelamento
+  ) => Promise<void>;
 }
 
-export function CancelarItemModal({ visible, pratoNome, aposInicio, onClose, onConfirm }: CancelarItemModalProps) {
+export function CancelarItemModal({
+  visible,
+  pratoNome,
+  aposInicio,
+  quantidadeItem,
+  exigeAutorizacao,
+  onClose,
+  onConfirm,
+}: CancelarItemModalProps) {
   const COLORS = useColors();
   const [motivo, setMotivo] = useState<MotivoCancelamento | null>(null);
   const [detalhe, setDetalhe] = useState("");
+  const [qtdCancelar, setQtdCancelar] = useState(1);
+  const [emailGerente, setEmailGerente] = useState("");
+  const [senhaGerente, setSenhaGerente] = useState("");
   const [enviando, setEnviando] = useState(false);
   const [erro, setErro] = useState("");
   // Garante que a confirmação dispara no máximo uma vez por abertura do modal
@@ -27,14 +51,24 @@ export function CancelarItemModal({ visible, pratoNome, aposInicio, onClose, onC
     if (visible) {
       setMotivo(null);
       setDetalhe("");
+      setQtdCancelar(1);
+      setEmailGerente("");
+      setSenhaGerente("");
       setEnviando(false);
       setErro("");
       confirmouRef.current = false;
     }
   }, [visible]);
 
+  const maxQtd = Math.max(1, quantidadeItem);
+  const mostraSeletor = maxQtd > 1;
+  const qtdEscolhida = mostraSeletor ? Math.min(Math.max(1, qtdCancelar), maxQtd) : 1;
+  const parcial = qtdEscolhida < maxQtd;
   const precisaDetalhe = motivo === "outro";
-  const podeConfirmar = motivo !== null && (!precisaDetalhe || detalhe.trim().length > 0) && !enviando;
+  const autorizacaoValida =
+    !exigeAutorizacao || (/^[^\s@]+@[^\s@]+$/.test(emailGerente.trim()) && senhaGerente.trim().length > 0);
+  const podeConfirmar =
+    motivo !== null && (!precisaDetalhe || detalhe.trim().length > 0) && autorizacaoValida && !enviando;
 
   const handleConfirmar = async () => {
     if (!podeConfirmar || motivo === null || confirmouRef.current) return;
@@ -42,18 +76,38 @@ export function CancelarItemModal({ visible, pratoNome, aposInicio, onClose, onC
     setEnviando(true);
     setErro("");
     try {
-      await onConfirm(motivo, detalhe.trim() ? detalhe.trim() : null);
+      await onConfirm(
+        motivo,
+        detalhe.trim() ? detalhe.trim() : null,
+        qtdEscolhida,
+        exigeAutorizacao ? { email: emailGerente.trim(), senha: senhaGerente } : undefined
+      );
+      setSenhaGerente("");
       onClose();
     } catch (e: unknown) {
       confirmouRef.current = false;
+      setSenhaGerente("");
       setErro(e instanceof Error && e.message ? e.message : "Não foi possível cancelar o item. Tente novamente.");
     } finally {
       setEnviando(false);
     }
   };
 
+  const inputAutorizacao = {
+    fontFamily: "Outfit_400Regular",
+    fontSize: 14,
+    color: COLORS.text,
+    backgroundColor: COLORS.surfaceSecondary ?? "#f5f5f5",
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.border ?? "#e5e5e5",
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+  } as const;
+
   const handleFechar = () => {
     if (enviando) return;
+    setSenhaGerente("");
     onClose();
   };
 
@@ -101,7 +155,78 @@ export function CancelarItemModal({ visible, pratoNome, aposInicio, onClose, onC
             >
               <Ionicons name="warning-outline" size={18} color="#F59E0B" />
               <Text style={{ flex: 1, fontFamily: "Outfit_400Regular", fontSize: 13, color: COLORS.text, lineHeight: 18 }}>
-                Este item já está em preparo. Ele não será cobrado, mas fica registrado como perda.
+                {exigeAutorizacao
+                  ? "Este item já está em preparo. O gerente precisa autorizar com e-mail e senha. A perda fica registrada em nome dele."
+                  : "Este item já está em preparo. Ele não será cobrado, mas fica registrado como perda."}
+              </Text>
+            </View>
+          ) : null}
+
+          {mostraSeletor ? (
+            <View style={{ marginBottom: 12 }}>
+              <Text
+                style={{
+                  fontFamily: "Outfit_600SemiBold",
+                  fontSize: 12,
+                  color: COLORS.textSecondary,
+                  textTransform: "uppercase",
+                  letterSpacing: 0.4,
+                  marginBottom: 6,
+                }}
+              >
+                Quantidade a cancelar
+              </Text>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+                <Pressable
+                  onPress={() => setQtdCancelar(Math.max(1, qtdEscolhida - 1))}
+                  disabled={enviando || qtdEscolhida <= 1}
+                  accessibilityLabel="Diminuir quantidade a cancelar"
+                  hitSlop={6}
+                  style={{
+                    width: 36,
+                    height: 36,
+                    borderRadius: 10,
+                    backgroundColor: COLORS.surfaceSecondary,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    opacity: enviando || qtdEscolhida <= 1 ? 0.4 : 1,
+                  }}
+                >
+                  <Ionicons name="remove" size={20} color={COLORS.text} />
+                </Pressable>
+                <Text
+                  style={{ fontFamily: "Outfit_700Bold", fontSize: 18, color: COLORS.text, minWidth: 28, textAlign: "center" }}
+                >
+                  {qtdEscolhida}
+                </Text>
+                <Pressable
+                  onPress={() => setQtdCancelar(Math.min(maxQtd, qtdEscolhida + 1))}
+                  disabled={enviando || qtdEscolhida >= maxQtd}
+                  accessibilityLabel="Aumentar quantidade a cancelar"
+                  hitSlop={6}
+                  style={{
+                    width: 36,
+                    height: 36,
+                    borderRadius: 10,
+                    backgroundColor: COLORS.surfaceSecondary,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    opacity: enviando || qtdEscolhida >= maxQtd ? 0.4 : 1,
+                  }}
+                >
+                  <Ionicons name="add" size={20} color={COLORS.text} />
+                </Pressable>
+                <Pressable
+                  onPress={() => setQtdCancelar(maxQtd)}
+                  disabled={enviando}
+                  hitSlop={6}
+                  style={{ marginLeft: "auto", paddingVertical: 6, paddingHorizontal: 10, opacity: enviando ? 0.4 : 1 }}
+                >
+                  <Text style={{ fontFamily: "Outfit_600SemiBold", fontSize: 14, color: "#EF4444" }}>Todas ({maxQtd})</Text>
+                </Pressable>
+              </View>
+              <Text style={{ fontFamily: "Outfit_500Medium", fontSize: 13, color: COLORS.textSecondary, marginTop: 6 }}>
+                Cancelar {qtdEscolhida} de {maxQtd}
               </Text>
             </View>
           ) : null}
@@ -171,6 +296,43 @@ export function CancelarItemModal({ visible, pratoNome, aposInicio, onClose, onC
                 }}
               />
             ) : null}
+
+            {exigeAutorizacao ? (
+              <View style={{ marginTop: 14, gap: 8 }}>
+                <Text style={{ fontFamily: "Outfit_600SemiBold", fontSize: 14, color: COLORS.text }}>Autorização do gerente</Text>
+                <TextInput
+                  value={emailGerente}
+                  onChangeText={setEmailGerente}
+                  editable={!enviando}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  autoComplete="off"
+                  textContentType="none"
+                  importantForAutofill="no"
+                  accessibilityLabel="E-mail do gerente"
+                  placeholder="E-mail do gerente"
+                  placeholderTextColor={COLORS.textTertiary ?? "#bbb"}
+                  style={inputAutorizacao}
+                />
+                <TextInput
+                  value={senhaGerente}
+                  onChangeText={setSenhaGerente}
+                  editable={!enviando}
+                  secureTextEntry
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  spellCheck={false}
+                  autoComplete="off"
+                  textContentType="none"
+                  importantForAutofill="noExcludeDescendants"
+                  accessibilityLabel="Senha do gerente"
+                  placeholder="Senha do gerente"
+                  placeholderTextColor={COLORS.textTertiary ?? "#bbb"}
+                  style={inputAutorizacao}
+                />
+              </View>
+            ) : null}
           </ScrollView>
 
           {erro ? (
@@ -208,7 +370,9 @@ export function CancelarItemModal({ visible, pratoNome, aposInicio, onClose, onC
               {enviando ? (
                 <ActivityIndicator size="small" color="#fff" />
               ) : (
-                <Text style={{ fontFamily: "Outfit_600SemiBold", fontSize: 15, color: "#fff" }}>Cancelar item</Text>
+                <Text style={{ fontFamily: "Outfit_600SemiBold", fontSize: 15, color: "#fff" }}>
+                  {parcial ? `Cancelar ${qtdEscolhida} de ${maxQtd}` : "Cancelar item"}
+                </Text>
               )}
             </Pressable>
           </View>

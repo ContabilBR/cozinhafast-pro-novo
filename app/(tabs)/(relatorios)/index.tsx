@@ -12,6 +12,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useColors } from "@/hooks/useColors";
+import { useAuth } from "@/contexts/AuthContext";
 import { AnimatedPressable } from "@/components/AnimatedPressable";
 import { SkeletonLine } from "@/components/SkeletonLoader";
 import { apiGet } from "@/utils/api";
@@ -54,6 +55,7 @@ const PERIODOS: { key: PeriodoKey; label: string }[] = [
 export default function RelatoriosScreen() {
   const COLORS = useColors();
   const router = useRouter();
+  const { user } = useAuth();
 
   const [periodo, setPeriodo] = useState<PeriodoKey>("hoje");
   const [summary, setSummary] = useState<ReportSummary>({});
@@ -102,7 +104,7 @@ export default function RelatoriosScreen() {
     console.log("[Relatorios] Exportando Excel");
     setExportandoExcel(true);
     try {
-      await exportarRelatorioExcel(summary, summary.periodo_label || "Hoje", mesas);
+      await exportarRelatorioExcel(summary, summary.periodo_label || "Hoje", mesas, { periodo, role: user?.role });
     } catch (e: any) {
       console.error("[Relatorios] Erro ao exportar Excel:", e instanceof Error ? e.message : String(e));
       Alert.alert("Erro ao exportar", e?.message || "Não foi possível gerar o arquivo Excel. Tente novamente.");
@@ -213,6 +215,119 @@ export default function RelatoriosScreen() {
             );
           })}
         </View>
+
+        {(user?.role === 'gerente' || user?.role === 'administrador') && (
+          <View style={{ gap: 10 }}>
+            <Text style={{ fontFamily: 'Outfit_700Bold', fontSize: 18, color: COLORS.text }}>
+              Relatórios detalhados
+            </Text>
+            <AnimatedPressable
+              accessibilityRole="button"
+              accessibilityLabel="Fechamento do dia. Conferir vendas, pagamentos e pendências"
+              onPress={() => router.push('/relatorio-detalhe/fechamento-dia' as any)}
+              style={{ flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: COLORS.surface, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: COLORS.border }}
+            >
+              <View style={{ padding: 10, borderRadius: 12, backgroundColor: COLORS.primaryMuted }}>
+                <Ionicons name="receipt-outline" size={24} color={COLORS.primary} />
+              </View>
+              <View style={{ flex: 1, gap: 4 }}>
+                <Text style={{ fontFamily: 'Outfit_600SemiBold', fontSize: 16, color: COLORS.text }}>Fechamento do dia</Text>
+                <Text style={{ fontFamily: 'Outfit_400Regular', fontSize: 13, color: COLORS.textSecondary }}>Vendas, pagamentos, perdas e pendências do dia.</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={COLORS.textSecondary} />
+            </AnimatedPressable>
+            <AnimatedPressable
+              accessibilityRole="button"
+              accessibilityLabel="Vendas. Ver relatório detalhado do período selecionado"
+              onPress={() => router.push({ pathname: '/relatorio-detalhe/vendas', params: { periodo } } as any)}
+              style={{ flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: COLORS.surface, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: COLORS.border }}
+            >
+              <View style={{ padding: 10, borderRadius: 12, backgroundColor: COLORS.primaryMuted }}>
+                <Ionicons name="bar-chart-outline" size={24} color={COLORS.primary} />
+              </View>
+              <View style={{ flex: 1, gap: 4 }}>
+                <Text style={{ fontFamily: 'Outfit_600SemiBold', fontSize: 16, color: COLORS.text }}>Vendas</Text>
+                <Text style={{ fontFamily: 'Outfit_400Regular', fontSize: 13, color: COLORS.textSecondary }}>Recebimentos por canal e por dia.</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={COLORS.textSecondary} />
+            </AnimatedPressable>
+            <AnimatedPressable
+              accessibilityRole="button"
+              accessibilityLabel="Cancelamentos. Itens cancelados, perdas e motivos no período selecionado"
+              onPress={() => router.push({ pathname: '/relatorio-detalhe/cancelamentos', params: { periodo } } as any)}
+              style={{ flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: COLORS.surface, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: COLORS.border }}
+            >
+              <View style={{ padding: 10, borderRadius: 12, backgroundColor: COLORS.primaryMuted }}>
+                <Ionicons name="close-circle-outline" size={24} color={COLORS.primary} />
+              </View>
+              <View style={{ flex: 1, gap: 4 }}>
+                <Text style={{ fontFamily: 'Outfit_600SemiBold', fontSize: 16, color: COLORS.text }}>Cancelamentos</Text>
+                <Text style={{ fontFamily: 'Outfit_400Regular', fontSize: 13, color: COLORS.textSecondary }}>Itens cancelados, perdas e motivos</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={COLORS.textSecondary} />
+            </AnimatedPressable>
+            <AnimatedPressable
+              accessibilityRole="button"
+              accessibilityLabel="Mix de pratos. Curva ABC, mais vendidos e pratos sem venda no período selecionado"
+              onPress={() => router.push({ pathname: '/relatorio-detalhe/mix-pratos', params: { periodo } } as any)}
+              style={{ flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: COLORS.surface, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: COLORS.border }}
+            >
+              <View style={{ padding: 10, borderRadius: 12, backgroundColor: COLORS.primaryMuted }}>
+                <Ionicons name="restaurant-outline" size={24} color={COLORS.primary} />
+              </View>
+              <View style={{ flex: 1, gap: 4 }}>
+                <Text style={{ fontFamily: 'Outfit_600SemiBold', fontSize: 16, color: COLORS.text }}>Mix de pratos</Text>
+                <Text style={{ fontFamily: 'Outfit_400Regular', fontSize: 13, color: COLORS.textSecondary }}>Curva ABC, mais vendidos e pratos sem venda</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={COLORS.textSecondary} />
+            </AnimatedPressable>
+            <AnimatedPressable
+              accessibilityRole="button"
+              accessibilityLabel="Margem por prato. Custo e lucro de cada prato no período selecionado"
+              onPress={() => router.push({ pathname: '/relatorio-detalhe/margem-pratos', params: { periodo } } as any)}
+              style={{ minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: COLORS.surface, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: COLORS.border }}
+            >
+              <View style={{ padding: 10, borderRadius: 12, backgroundColor: COLORS.primaryMuted }}>
+                <Ionicons name="trending-up-outline" size={24} color={COLORS.primary} />
+              </View>
+              <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
+                <Text style={{ fontFamily: 'Outfit_600SemiBold', fontSize: 16, color: COLORS.text }}>Margem por prato</Text>
+                <Text style={{ fontFamily: 'Outfit_400Regular', fontSize: 13, color: COLORS.textSecondary }}>Custo e lucro de cada prato</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={COLORS.textSecondary} />
+            </AnimatedPressable>
+            <AnimatedPressable
+              accessibilityRole="button"
+              accessibilityLabel="Cozinha. Tempo de preparo por prato e por hora no período selecionado"
+              onPress={() => router.push({ pathname: '/relatorio-detalhe/cozinha-tempos', params: { periodo } } as any)}
+              style={{ flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: COLORS.surface, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: COLORS.border }}
+            >
+              <View style={{ padding: 10, borderRadius: 12, backgroundColor: COLORS.primaryMuted }}>
+                <Ionicons name="timer-outline" size={24} color={COLORS.primary} />
+              </View>
+              <View style={{ flex: 1, gap: 4 }}>
+                <Text style={{ fontFamily: 'Outfit_600SemiBold', fontSize: 16, color: COLORS.text }}>Cozinha</Text>
+                <Text style={{ fontFamily: 'Outfit_400Regular', fontSize: 13, color: COLORS.textSecondary }}>Tempo de preparo por prato e por hora</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={COLORS.textSecondary} />
+            </AnimatedPressable>
+            <AnimatedPressable
+              accessibilityRole="button"
+              accessibilityLabel="Delivery por bairro. Pedidos, taxa e tempo de entrega no período selecionado"
+              onPress={() => router.push({ pathname: '/relatorio-detalhe/delivery-bairros', params: { periodo } } as any)}
+              style={{ flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: COLORS.surface, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: COLORS.border }}
+            >
+              <View style={{ padding: 10, borderRadius: 12, backgroundColor: COLORS.primaryMuted }}>
+                <Ionicons name="bicycle-outline" size={24} color={COLORS.primary} />
+              </View>
+              <View style={{ flex: 1, gap: 4 }}>
+                <Text style={{ fontFamily: 'Outfit_600SemiBold', fontSize: 16, color: COLORS.text }}>Delivery por bairro</Text>
+                <Text style={{ fontFamily: 'Outfit_400Regular', fontSize: 13, color: COLORS.textSecondary }}>Pedidos, taxa e tempo de entrega</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={COLORS.textSecondary} />
+            </AnimatedPressable>
+          </View>
+        )}
 
         {error ? (
           <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 32, gap: 12 }}>
