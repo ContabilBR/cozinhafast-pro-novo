@@ -8,6 +8,7 @@ import { apiGet, apiPost } from "@/utils/api";
 import { formatCurrency } from "@/utils/helpers";
 import { CampoMoeda } from "@/components/CampoMoeda";
 import { formatReceipt } from "@/utils/printer";
+import { useAuth } from "@/contexts/AuthContext";
 import { useReceiptPreview } from "@/components/ReceiptPreview";
 import { calcularTotalComDesconto } from "@/utils/desconto";
 
@@ -42,6 +43,8 @@ export default function FecharContaScreen() {
   const [pagamentos, setPagamentos] = useState<any[]>([]);
   const [totalPago, setTotalPago] = useState(0);
   const [pessoaAtual, setPessoaAtual] = useState(0);
+  const { user } = useAuth();
+  const [restaurante, setRestaurante] = useState<any>(null);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -57,6 +60,11 @@ export default function FecharContaScreen() {
     };
     fetchData();
   }, [id]);
+
+  // Dados do restaurante para o cabeçalho da conferência: carga separada, sem bloquear a tela.
+  useEffect(() => {
+    apiGet<any>("/api/restaurante").then((r) => setRestaurante(r?.restaurante || r)).catch(() => setRestaurante(null));
+  }, []);
 
   // Item cancelado não é venda: fica fora do subtotal (e da gorjeta calculada sobre ele)
   const subtotal = pedidos
@@ -142,6 +150,35 @@ export default function FecharContaScreen() {
   const cardStyle = { backgroundColor: COLORS.surface, borderRadius: 12, padding: 14, borderWidth: 0.5, borderColor: COLORS.surfaceSecondary, marginBottom: 12 };
   const labelStyle = { fontSize: 12, fontWeight: "600" as const, color: COLORS.primary, marginBottom: 8, textTransform: "uppercase" as const, letterSpacing: 0.5 };
   const btnPrimary = { backgroundColor: COLORS.primary, borderRadius: 12, padding: 16, alignItems: "center" as const };
+
+  const imprimirConferencia = async () => {
+    const itensRecibo = pedidos.filter((p: any) => p.status !== "cancelado").map((p: any) => {
+      const unit = parseFloat(p.precoUnitario || p.preco_unitario || "0");
+      const q = p.quantidade || 1;
+      return { quantidade: q, nome: p.pratoNome || p.prato_nome || p.prato?.nome || "Item", preco: unit * q, precoUnitario: unit };
+    });
+    const texto = formatReceipt({
+      restaurante,
+      mesa: comanda?.mesa_numero,
+      rotulo: comanda?.rotulo,
+      abertura: comanda?.created_at || comanda?.createdAt,
+      impressoPor: user?.nome,
+      itens: itensRecibo,
+      subtotal,
+      desconto: descontoEfetivo,
+      descontoRotulo: comanda?.desconto_tipo === "cortesia" ? "Cortesia" : "Desconto",
+      gorjeta: gorjetaValue,
+      total: totalFinal,
+      divisao: dividir && numPessoas > 1 ? { pessoas: numPessoas, valorPorPessoa } : null,
+    });
+    await previewReceipt(texto, "Conferência de conta da mesa");
+  };
+  const botaoConferencia = (
+    <Pressable onPress={imprimirConferencia} style={{ borderWidth: 1, borderColor: COLORS.primary, borderRadius: 12, padding: 14, alignItems: "center", flexDirection: "row", justifyContent: "center", gap: 8, marginBottom: 10 }}>
+      <Ionicons name="print-outline" size={20} color={COLORS.primary} />
+      <Text style={{ color: COLORS.primary, fontSize: 15, fontWeight: "600" }}>Imprimir conferência</Text>
+    </Pressable>
+  );
 
   const linhaDesconto = temDesconto ? (
     <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 12, marginVertical: 6 }}>
@@ -293,18 +330,7 @@ export default function FecharContaScreen() {
             <View><Text style={{ fontSize: 13, color: COLORS.textSecondary }}>Total com gorjeta</Text>{gorjetaValue > 0 && <Text style={{ fontSize: 12, color: COLORS.textSecondary }}>Gorjeta: {formatCurrency(gorjetaValue)}</Text>}</View>
             <Text style={{ fontSize: 22, fontWeight: "700", color: COLORS.primary }}>{formatCurrency(totalFinal)}</Text>
           </View>
-          <Pressable onPress={async () => {
-            const itensRecibo = pedidos.filter((p: any) => p.status !== "cancelado").map((p: any) => ({
-              quantidade: p.quantidade || 1,
-              nome: p.pratoNome || p.prato_nome || p.prato?.nome || "Item",
-              preco: parseFloat(p.precoUnitario || p.preco_unitario || "0") * (p.quantidade || 1),
-            }));
-            const texto = formatReceipt({ restaurante: comanda?.restaurante_nome, mesa: comanda?.mesa_numero, itens: itensRecibo, subtotal, desconto: descontoEfetivo, gorjeta: gorjetaValue, total: totalFinal });
-            await previewReceipt(texto, "Conferência de conta da mesa");
-          }} style={{ borderWidth: 1, borderColor: COLORS.primary, borderRadius: 12, padding: 14, alignItems: "center", flexDirection: "row", justifyContent: "center", gap: 8, marginBottom: 10 }}>
-            <Ionicons name="print-outline" size={20} color={COLORS.primary} />
-            <Text style={{ color: COLORS.primary, fontSize: 15, fontWeight: "600" }}>Imprimir conferência</Text>
-          </Pressable>
+          {botaoConferencia}
           {semCobranca ? avisoSemCobranca : <Pressable onPress={() => setEtapa("divisao")} style={btnPrimary}><Text style={{ color: "white", fontSize: 16, fontWeight: "600" }}>Próximo: Divisão</Text></Pressable>}
         </>)}
 
@@ -339,6 +365,7 @@ export default function FecharContaScreen() {
               <Text style={{ fontSize: 28, fontWeight: "700", color: COLORS.primary }}>{formatCurrency(valorPorPessoa)}</Text>
             </View>
           </>)}
+          {botaoConferencia}
           <Pressable onPress={() => { if (dividir) calcularDivisao(); setEtapa("pagamento"); }} style={btnPrimary}><Text style={{ color: "white", fontSize: 16, fontWeight: "600" }}>Próximo: Pagamento</Text></Pressable>
           </>)}
         </>)}
