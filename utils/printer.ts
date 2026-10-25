@@ -1,10 +1,10 @@
 import { Alert } from "react-native";
 
 // Shared paper geometry for Bluetooth text, on-screen paper and device printing.
-// 40 colunas usam a fonte B da impressora termica (menor). Se a impressora ignorar a fonte B,
-// volte RECEIPT_COLUMNS para 32 e RECEIPT_FONT_B para false.
-export const RECEIPT_COLUMNS = 40;
-export const RECEIPT_FONT_B = true;
+// 40 colunas com fonte B (menor) causaram papel em branco na impressora testada;
+// por isso o padrao agora e 32 colunas sem fonte B.
+export const RECEIPT_COLUMNS = 32;
+export const RECEIPT_FONT_B = false;
 export const RECEIPT_WIDTH_MM = 58;
 
 let ThermalPrinterModule: any = null;
@@ -33,7 +33,9 @@ export async function printBluetooth(payload: string): Promise<boolean> {
       return false;
     }
     if (!mod || !mod.printBluetooth) return false;
-    await mod.printBluetooth({ payload: toBluetoothText(payload), printerWidthMM: RECEIPT_WIDTH_MM, printerNbrCharactersPerLine: 48 });
+    const config: any = { payload: toBluetoothText(payload), printerWidthMM: RECEIPT_WIDTH_MM };
+    if (RECEIPT_FONT_B) config.printerNbrCharactersPerLine = 48;
+    await mod.printBluetooth(config);
     return true;
   } catch (err: any) {
     return false;
