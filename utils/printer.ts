@@ -1,7 +1,10 @@
 import { Alert } from "react-native";
 
 // Shared paper geometry for Bluetooth text, on-screen paper and device printing.
-export const RECEIPT_COLUMNS = 32;
+// 40 colunas usam a fonte B da impressora termica (menor). Se a impressora ignorar a fonte B,
+// volte RECEIPT_COLUMNS para 32 e RECEIPT_FONT_B para false.
+export const RECEIPT_COLUMNS = 40;
+export const RECEIPT_FONT_B = true;
 export const RECEIPT_WIDTH_MM = 58;
 
 let ThermalPrinterModule: any = null;
@@ -15,6 +18,12 @@ export async function loadPrinterModule() {
   }
 }
 
+// Texto para a impressora Bluetooth: ASCII puro (as tabelas de caracteres das termicas imprimem lixo nos acentos).
+export function toBluetoothText(text: string): string {
+  const plain = String(text ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^\n\x20-\x7e]/g, "");
+  return (RECEIPT_FONT_B ? "\x1bM\x01" : "") + plain;
+}
+
 export async function printBluetooth(payload: string): Promise<boolean> {
   try {
     let mod: any = null;
@@ -24,7 +33,7 @@ export async function printBluetooth(payload: string): Promise<boolean> {
       return false;
     }
     if (!mod || !mod.printBluetooth) return false;
-    await mod.printBluetooth({ payload, printerWidthMM: RECEIPT_WIDTH_MM });
+    await mod.printBluetooth({ payload: toBluetoothText(payload), printerWidthMM: RECEIPT_WIDTH_MM, printerNbrCharactersPerLine: 48 });
     return true;
   } catch (err: any) {
     return false;
@@ -51,7 +60,7 @@ export type ReceiptParams = {
   divisao?: { pessoas: number; valorPorPessoa: number } | null;
 };
 
-const ascii = (t: any) => String(t ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^\x20-\x7e]/g, "").replace(/\s+/g, " ").trim();
+const ascii = (t: any) => String(t ?? "").normalize("NFC").replace(/[\s]+/g, " ").replace(/[^\x20-\x7e\u00a0-\u00ff]/g, "").trim();
 
 const money = (n: number) => {
   const [int, dec] = Math.abs(n).toFixed(2).split(".");
@@ -97,11 +106,11 @@ export function formatReceipt(params: ReceiptParams): string {
   const digits = (v: any) => String(v ?? "").replace(/\D/g, "");
 
   lines.push(eq());
-  lines.push(...center((ascii(r.nome) || "Cozinha Fast Pro").toUpperCase()));
+  lines.push(...center((ascii(r.nome) || "Cozinha Fast Pro").toLocaleUpperCase("pt-BR")));
   const logr = ascii(r.logradouro) || ascii(r.endereco);
   const num = ascii(r.numero_endereco);
   if (logr) lines.push(...center(ascii(r.logradouro) && num ? logr + ", " + num : logr));
-  const bairro = ascii(r.bairro), uf = ascii(r.uf).toUpperCase();
+  const bairro = ascii(r.bairro), uf = ascii(r.uf).toLocaleUpperCase("pt-BR");
   if (bairro || uf) lines.push(...center(bairro && uf ? bairro + " - " + uf : bairro || uf));
   const cep = digits(r.cep);
   if (cep.length === 8) lines.push(...center("CEP " + cep.slice(0, 5) + "-" + cep.slice(5)));
@@ -111,8 +120,8 @@ export function formatReceipt(params: ReceiptParams): string {
   if (tel.length === 11) lines.push(...center("Tel (" + tel.slice(0, 2) + ") " + tel.slice(2, 7) + "-" + tel.slice(7)));
   else if (tel.length === 10) lines.push(...center("Tel (" + tel.slice(0, 2) + ") " + tel.slice(2, 6) + "-" + tel.slice(6)));
   lines.push(eq());
-  lines.push(...center("CONFERENCIA DE CONTA"));
-  lines.push(...center("*** NAO E DOCUMENTO FISCAL ***"));
+  lines.push(...center("CONFERÊNCIA DE CONTA"));
+  lines.push(...center("*** NÃO É DOCUMENTO FISCAL ***"));
   lines.push(eq());
 
   const ident: string[] = [];
@@ -120,14 +129,14 @@ export function formatReceipt(params: ReceiptParams): string {
   if (ascii(params.rotulo)) ident.push("Comanda: " + ascii(params.rotulo));
   const ab = dataHora(params.abertura);
   if (ab) ident.push("Abertura:  " + ab);
-  ident.push("Impressao: " + dataHora(new Date()));
+  ident.push("Impressão: " + dataHora(new Date()));
   if (ascii(params.impressoPor)) ident.push("Impresso por: " + ascii(params.impressoPor));
   for (const l of ident) {
     if (l.length <= w) lines.push(l);
     else lines.push(...wrap(l, (i) => (i === 0 ? w : w - 2)).map((x, i) => (i === 0 ? x : "  " + x)));
   }
   lines.push(dash());
-  lines.push(row("QTD DESCRICAO", "VALOR"));
+  lines.push(row("QTD DESCRIÇÃO", "VALOR"));
   lines.push(dash());
 
   let unidades = 0;
