@@ -6,9 +6,10 @@ import { Alert } from "react-native";
 export const RECEIPT_COLUMNS = 32;
 export const RECEIPT_FONT_B = false;
 export const RECEIPT_WIDTH_MM = 58;
-// Espaco entre linhas em pontos (203 dpi). A letra tem 24 pontos de altura; o padrao da impressora
-// costuma ser 30 a 34. Se as linhas encostarem, suba para 26 ou 28. Com 0 o comando nao e enviado.
-export const RECEIPT_LINE_SPACING_DOTS = 24;
+// Espaco entre linhas no Bluetooth (comando ESC 3); a unidade depende da impressora. No teste com 24
+// o espaco saiu perto de 10 mm (cerca de 0,4 mm por unidade), bem maior que a letra (3 mm), por isso 8
+// (cerca de 3 mm). Se as linhas encostarem, suba de 1 em 1; se ainda estiver muito espacado, desca de 1 em 1; 0 nao envia o comando.
+export const RECEIPT_LINE_SPACING_DOTS = 8;
 
 let ThermalPrinterModule: any = null;
 
