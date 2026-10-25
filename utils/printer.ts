@@ -6,6 +6,9 @@ import { Alert } from "react-native";
 export const RECEIPT_COLUMNS = 32;
 export const RECEIPT_FONT_B = false;
 export const RECEIPT_WIDTH_MM = 58;
+// Espaco entre linhas em pontos (203 dpi). A letra tem 24 pontos de altura; o padrao da impressora
+// costuma ser 30 a 34. Se as linhas encostarem, suba para 26 ou 28. Com 0 o comando nao e enviado.
+export const RECEIPT_LINE_SPACING_DOTS = 24;
 
 let ThermalPrinterModule: any = null;
 
@@ -21,7 +24,8 @@ export async function loadPrinterModule() {
 // Texto para a impressora Bluetooth: ASCII puro (as tabelas de caracteres das termicas imprimem lixo nos acentos).
 export function toBluetoothText(text: string): string {
   const plain = String(text ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^\n\x20-\x7e]/g, "");
-  return (RECEIPT_FONT_B ? "\x1bM\x01" : "") + plain;
+  const spacing = RECEIPT_LINE_SPACING_DOTS > 0 ? "\x1b3" + String.fromCharCode(Math.min(255, RECEIPT_LINE_SPACING_DOTS)) : "";
+  return spacing + (RECEIPT_FONT_B ? "\x1bM\x01" : "") + plain;
 }
 
 export async function printBluetooth(payload: string): Promise<boolean> {
