@@ -6,10 +6,9 @@ import { Alert } from "react-native";
 export const RECEIPT_COLUMNS = 32;
 export const RECEIPT_FONT_B = false;
 export const RECEIPT_WIDTH_MM = 58;
-// Espaco entre linhas no Bluetooth (comando ESC 3); a unidade depende da impressora. No teste com 24
-// o espaco saiu perto de 10 mm (cerca de 0,4 mm por unidade), bem maior que a letra (3 mm), por isso 8
-// (cerca de 3 mm). Se as linhas encostarem, suba de 1 em 1; se ainda estiver muito espacado, desca de 1 em 1; 0 nao envia o comando. 8 ainda saiu espacado demais na impressora testada. O valor definido pelo usuario e 2.
-export const RECEIPT_LINE_SPACING_DOTS = 2;
+// Espaco entre linhas no Bluetooth (comando ESC 3). 0 envia espacamento zero (a impressora usa a altura da letra);
+// valores maiores afastam as linhas; -1 nao envia o comando (padrao da impressora). 8 e 4 ainda sairam espacados demais na impressora testada.
+export const RECEIPT_LINE_SPACING_DOTS = 0;
 
 let ThermalPrinterModule: any = null;
 
@@ -25,7 +24,7 @@ export async function loadPrinterModule() {
 // Texto para a impressora Bluetooth: ASCII puro (as tabelas de caracteres das termicas imprimem lixo nos acentos).
 export function toBluetoothText(text: string): string {
   const plain = String(text ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^\n\x20-\x7e]/g, "");
-  const spacing = RECEIPT_LINE_SPACING_DOTS > 0 ? "\x1b3" + String.fromCharCode(Math.min(255, RECEIPT_LINE_SPACING_DOTS)) : "";
+  const spacing = RECEIPT_LINE_SPACING_DOTS >= 0 ? "\x1b3" + String.fromCharCode(Math.min(255, RECEIPT_LINE_SPACING_DOTS)) : "";
   return spacing + (RECEIPT_FONT_B ? "\x1bM\x01" : "") + plain;
 }
 
