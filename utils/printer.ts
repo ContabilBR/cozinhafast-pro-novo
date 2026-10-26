@@ -8,8 +8,8 @@ export const RECEIPT_FONT_B = false;
 export const RECEIPT_WIDTH_MM = 58;
 // Espaco entre linhas no Bluetooth (comando ESC 3); a unidade depende da impressora. No teste com 24
 // o espaco saiu perto de 10 mm (cerca de 0,4 mm por unidade), bem maior que a letra (3 mm), por isso 8
-// (cerca de 3 mm). Se as linhas encostarem, suba de 1 em 1; se ainda estiver muito espacado, desca de 1 em 1; 0 nao envia o comando.
-export const RECEIPT_LINE_SPACING_DOTS = 8;
+// (cerca de 3 mm). Se as linhas encostarem, suba de 1 em 1; se ainda estiver muito espacado, desca de 1 em 1; 0 nao envia o comando. 8 ainda saiu espacado demais na impressora testada.
+export const RECEIPT_LINE_SPACING_DOTS = 4;
 
 let ThermalPrinterModule: any = null;
 
