@@ -9,6 +9,10 @@ import {
 import { useColors } from '@/hooks/useColors';
 import { formatCurrency } from '@/utils/helpers';
 import { MOTIVOS_DESCONTO } from '@/utils/desconto';
+import { SeletorPeriodo, periodoDoEstado, periodoInicial } from '@/components/SeletorPeriodo';
+import { BotoesExportar } from '@/components/BotoesExportar';
+import { carregarContexto } from '@/utils/exportacao/exportar';
+import { carregarFechamentos, montarFechamento } from '@/utils/exportacao/fechamento';
 
 const TIME_ZONE = 'America/Sao_Paulo';
 type Canal = { comandas_fechadas: number; total_recebido: number };
@@ -144,6 +148,12 @@ export default function FechamentoDiaScreen() {
   // Nunca mostra valores do dia anterior durante a troca de data.
   const data = state.data?.data === selecionada ? state.data : null;
   const frameState = { ...state, loading: state.loading || (!!state.data && !data) };
+  const [periodoExport, setPeriodoExport] = useState(periodoInicial);
+  const gerarExportacao = async () => {
+    const periodo = periodoDoEstado(periodoExport);
+    const [contexto, dias] = await Promise.all([carregarContexto(), carregarFechamentos(periodo)]);
+    return montarFechamento(dias, periodo, contexto);
+  };
   const mudarData = (next: string) => {
     const limite = hojeBrasilia();
     setHoje(limite);
@@ -164,6 +174,9 @@ export default function FechamentoDiaScreen() {
         <Text style={[reportStyles.label, { fontSize: 13, color: colors.primary }]}>{button.label}</Text>
       </AnimatedPressable>)}
     </View>
+    <ReportTitle>Exportar</ReportTitle>
+    <SeletorPeriodo value={periodoExport} onChange={setPeriodoExport} />
+    <BotoesExportar gerar={gerarExportacao} />
   </View>;
   const conciliacao = data?.pagamentos.conciliacao;
   const conferido = !!data && !!conciliacao && [conciliacao.comandas_pago_menor, conciliacao.valor_faltante,
