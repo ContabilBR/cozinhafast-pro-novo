@@ -4738,4 +4738,491 @@ LIMIT 5
       }
     }
   );
+
+  // GET /api/relatorios/cmv-teorico - Theoretical CMV (Cost of Goods Sold) Report
+  app.fastify.get(
+    "/api/relatorios/cmv-teorico",
+    { schema: {} } as any,
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const session = await customRequireAuth(app, request, reply);
+        if (!session) return;
+        if (!(await requireRole(session, ["administrador", "gerente"], reply))) return;
+        const restauranteId = requireTenant(session);
+
+        const query = request.query as { periodo?: string; dataInicio?: string; dataFim?: string };
+        const { inicio, fim, label: periodoLabel } = resolvePeriodo(query.periodo, query.dataInicio, query.dataFim);
+
+        // Check period limit for personalizado
+        if (query.periodo === "personalizado") {
+          const msPerDay = 24 * 60 * 60 * 1000;
+          const daysDiff = Math.ceil((fim.getTime() - inicio.getTime()) / msPerDay);
+          if (daysDiff > 366) {
+            return await reply.code(400).send({ error: "O período personalizado não pode ultrapassar 366 dias." });
+          }
+        }
+
+        app.logger.info({ restauranteId, periodo: query.periodo, inicio, fim }, "Getting cmv-teorico report");
+
+        // Main query: comprehensive CMV analysis
+        const result: any = await (app.db as any).execute(
+          sql`
+            WITH comandas_fontes AS (
+              SELECT c.id, c.restaurante_id, c.status::text, c.total, c.subtotal, c.closed_at, 0 AS prioridade_fonte
+              FROM ${schema.comandas} c
+              WHERE c.restaurante_id = ${restauranteId}
+              UNION ALL
+              SELECT ch.id, ch.restaurante_id, ch.status::text, ch.total, ch.subtotal, ch.closed_at, 1 AS prioridade_fonte
+              FROM ${schema.comandasHistorico} ch
+              WHERE ch.restaurante_id = ${restauranteId}
+            ),
+            comandas_unicas AS (
+              SELECT DISTINCT ON (cf.restaurante_id, cf.id)
+                cf.id, cf.restaurante_id, cf.status, cf.total, cf.subtotal, cf.closed_at
+              FROM comandas_fontes cf
+              ORDER BY cf.restaurante_id, cf.id, cf.prioridade_fonte ASC
+            ),
+            comandas_fechadas AS (
+              SELECT cu.id, cu.restaurante_id, cu.total, cu.subtotal, cu.closed_at
+              FROM comandas_unicas cu
+              WHERE cu.status = 'fechada' AND cu.total > 0
+                AND cu.closed_at >= ${inicio.toISOString()}::timestamptz
+                AND cu.closed_at < ${fim.toISOString()}::timestamptz
+            ),
+            itens_fontes AS (
+              SELECT p.id, p.comanda_id, p.prato_id, p.quantidade, p.preco_unitario, p.status::text, p.cancelado_em, p.cancelado_apos_inicio, p.restaurante_id, NULL::text AS nome_prato, 0 AS prioridade_fonte
+              FROM ${schema.pedidos} p
+              WHERE p.restaurante_id = ${restauranteId}
+              UNION ALL
+              SELECT ph.id, ph.comanda_id, ph.prato_id, ph.quantidade, ph.preco_unitario, ph.status::text, ph.cancelado_em, ph.cancelado_apos_inicio, ph.restaurante_id, ph.prato_nome AS nome_prato, 1 AS prioridade_fonte
+              FROM ${schema.pedidosHistorico} ph
+              WHERE ph.restaurante_id = ${restauranteId}
+            ),
+            itens_unicos AS (
+              SELECT DISTINCT ON (ifo.restaurante_id, ifo.id)
+                ifo.id, ifo.comanda_id, ifo.prato_id, ifo.quantidade, ifo.preco_unitario, ifo.status, ifo.cancelado_em, ifo.cancelado_apos_inicio, ifo.restaurante_id, ifo.nome_prato
+              FROM itens_fontes ifo
+              ORDER BY ifo.restaurante_id, ifo.id, ifo.prioridade_fonte ASC
+            ),
+            itens_vendidos AS (
+              SELECT iu.prato_id, iu.nome_prato, iu.quantidade, iu.preco_unitario, iu.comanda_id, iu.id AS item_id
+              FROM itens_unicos iu
+              INNER JOIN comandas_fechadas cf ON iu.comanda_id = cf.id
+              WHERE iu.status != 'cancelado' AND iu.cancelado_em IS NULL
+            ),
+            itens_perdidos AS (
+              SELECT iu.prato_id, iu.nome_prato, iu.quantidade, iu.preco_unitario, iu.comanda_id
+              FROM itens_unicos iu
+              INNER JOIN comandas_fechadas cf ON iu.comanda_id = cf.id
+              WHERE iu.status = 'cancelado' AND iu.cancelado_apos_inicio = true
+            ),
+            custo_itens_vendidos AS (
+              SELECT
+                iv.item_id,
+                iv.prato_id,
+                SUM(pi.quantidade_usada * COALESCE(i.custo_unitario, 0)) AS custo_total_item
+              FROM itens_vendidos iv
+              LEFT JOIN ${schema.pratoInsumos} pi ON iv.prato_id = pi.prato_id AND pi.restaurante_id = ${restauranteId}
+              LEFT JOIN ${schema.insumos} i ON pi.insumo_id = i.id AND i.restaurante_id = pi.restaurante_id
+              GROUP BY iv.item_id, iv.prato_id
+            ),
+            custo_itens_perdidos AS (
+              SELECT
+                ip.prato_id,
+                SUM(ip.quantidade * (pi.quantidade_usada * COALESCE(i.custo_unitario, 0))) AS custo_total_perda
+              FROM itens_perdidos ip
+              LEFT JOIN ${schema.pratoInsumos} pi ON ip.prato_id = pi.prato_id AND pi.restaurante_id = ${restauranteId}
+              LEFT JOIN ${schema.insumos} i ON pi.insumo_id = i.id AND i.restaurante_id = pi.restaurante_id
+              GROUP BY ip.prato_id
+            ),
+            por_prato_resumo AS (
+              SELECT
+                iv.prato_id,
+                COALESCE(NULLIF(TRIM(p.nome), ''), NULLIF(TRIM(iv.nome_prato), ''), 'Prato removido') AS prato_nome,
+                COALESCE(c.nome, 'Sem categoria') AS categoria_nome,
+                SUM(iv.quantidade) AS quantidade_vendida,
+                SUM(iv.quantidade * iv.preco_unitario) AS faturamento_item,
+                SUM(COALESCE(c_item.custo_total_item, 0)) AS cmv_teorico,
+                COUNT(DISTINCT iv.comanda_id) AS numero_vendas
+              FROM itens_vendidos iv
+              LEFT JOIN ${schema.pratos} p ON iv.prato_id = p.id AND p.restaurante_id = ${restauranteId}
+              LEFT JOIN ${schema.categorias} c ON p.categoria_id = c.id AND c.restaurante_id = p.restaurante_id
+              LEFT JOIN custo_itens_vendidos c_item ON iv.item_id = c_item.item_id
+              GROUP BY iv.prato_id, COALESCE(NULLIF(TRIM(p.nome), ''), NULLIF(TRIM(iv.nome_prato), ''), 'Prato removido'), COALESCE(c.nome, 'Sem categoria')
+            ),
+            por_categoria_resumo AS (
+              SELECT
+                por_prato_resumo.categoria_nome,
+                SUM(por_prato_resumo.quantidade_vendida) AS quantidade_vendida,
+                SUM(por_prato_resumo.faturamento_item) AS faturamento,
+                SUM(por_prato_resumo.cmv_teorico) AS cmv_teorico
+              FROM por_prato_resumo
+              GROUP BY por_prato_resumo.categoria_nome
+            ),
+            por_insumo_resumo AS (
+              SELECT
+                i.nome AS insumo_nome,
+                SUM(pi.quantidade_usada * iv.quantidade) AS quantidade_total_usada,
+                i.unidade,
+                COALESCE(i.custo_unitario, 0) AS custo_unitario,
+                SUM((pi.quantidade_usada * iv.quantidade) * COALESCE(i.custo_unitario, 0)) AS custo_total
+              FROM itens_vendidos iv
+              LEFT JOIN ${schema.pratoInsumos} pi ON iv.prato_id = pi.prato_id AND pi.restaurante_id = ${restauranteId}
+              LEFT JOIN ${schema.insumos} i ON pi.insumo_id = i.id AND i.restaurante_id = pi.restaurante_id
+              WHERE i.id IS NOT NULL
+              GROUP BY i.id, i.nome, i.unidade, i.custo_unitario
+              ORDER BY custo_total DESC
+            ),
+            por_dia_resumo AS (
+              SELECT
+                (cf.closed_at AT TIME ZONE 'America/Sao_Paulo')::date AS data_local,
+                SUM(iv.quantidade * iv.preco_unitario) AS faturamento,
+                SUM(COALESCE(c_item.custo_total_item, 0)) AS cmv_teorico
+              FROM itens_vendidos iv
+              INNER JOIN comandas_fechadas cf ON iv.comanda_id = cf.id
+              LEFT JOIN custo_itens_vendidos c_item ON iv.item_id = c_item.item_id
+              GROUP BY (cf.closed_at AT TIME ZONE 'America/Sao_Paulo')::date
+            ),
+            sem_ficha_resumo AS (
+              SELECT
+                iv.prato_id,
+                COALESCE(NULLIF(TRIM(p.nome), ''), NULLIF(TRIM(iv.nome_prato), ''), 'Prato removido') AS prato_nome,
+                COALESCE(c.nome, 'Sem categoria') AS categoria_nome,
+                SUM(iv.quantidade) AS quantidade_vendida,
+                SUM(iv.quantidade * iv.preco_unitario) AS faturamento_item,
+                COUNT(DISTINCT iv.comanda_id) AS numero_vendas
+              FROM itens_vendidos iv
+              LEFT JOIN ${schema.pratos} p ON iv.prato_id = p.id AND p.restaurante_id = ${restauranteId}
+              LEFT JOIN ${schema.categorias} c ON p.categoria_id = c.id AND c.restaurante_id = p.restaurante_id
+              WHERE NOT EXISTS (SELECT 1 FROM ${schema.pratoInsumos} pi WHERE pi.prato_id = iv.prato_id AND pi.restaurante_id = ${restauranteId})
+              GROUP BY iv.prato_id, COALESCE(NULLIF(TRIM(p.nome), ''), NULLIF(TRIM(iv.nome_prato), ''), 'Prato removido'), COALESCE(c.nome, 'Sem categoria')
+            ),
+            perdas_resumo AS (
+              SELECT
+                ip.prato_id,
+                COALESCE(NULLIF(TRIM(p.nome), ''), NULLIF(TRIM(ip.nome_prato), ''), 'Prato removido') AS prato_nome,
+                SUM(ip.quantidade) AS quantidade_perdida,
+                SUM(ip.quantidade * ip.preco_unitario) AS valor_perdido,
+                COALESCE(SUM(c_perda.custo_total_perda), 0) AS custo_perdido
+              FROM itens_perdidos ip
+              LEFT JOIN ${schema.pratos} p ON ip.prato_id = p.id AND p.restaurante_id = ${restauranteId}
+              LEFT JOIN custo_itens_perdidos c_perda ON ip.prato_id = c_perda.prato_id
+              GROUP BY ip.prato_id, COALESCE(NULLIF(TRIM(p.nome), ''), NULLIF(TRIM(ip.nome_prato), ''), 'Prato removido')
+            ),
+            totais AS (
+              SELECT
+                SUM(iv.quantidade * iv.preco_unitario) AS faturamento_itens,
+                SUM(COALESCE(c_item.custo_total_item, 0)) AS cmv_teorico,
+                SUM(sf.faturamento_item) AS faturamento_sem_ficha,
+                SUM(pr.valor_perdido) AS valor_perdido_total,
+                SUM(pr.custo_perdido) AS custo_perdido_total,
+                SUM(COALESCE(c_item.custo_total_item, 0) + COALESCE(c_item2.custo_total_item, 0) + COALESCE(pr.custo_perdido, 0)) AS custo_total_incluindo_perdas
+              FROM itens_vendidos iv
+              LEFT JOIN custo_itens_vendidos c_item ON iv.item_id = c_item.item_id
+              CROSS JOIN (SELECT SUM(faturamento_item) AS faturamento_item FROM sem_ficha_resumo) sf
+              CROSS JOIN (SELECT COUNT(*) as count FROM itens_vendidos) dummy
+              LEFT JOIN custo_itens_vendidos c_item2 ON FALSE
+              LEFT JOIN perdas_resumo pr ON FALSE
+            )
+            SELECT
+              'resumo' AS section,
+              (SELECT json_build_object(
+                'faturamento_itens', COALESCE(SUM(iv.quantidade * iv.preco_unitario), 0)::numeric(10,2),
+                'faturamento_coberto', COALESCE((SELECT SUM(faturamento) FROM por_prato_resumo), 0)::numeric(10,2),
+                'cmv_teorico', COALESCE((SELECT SUM(cmv_teorico) FROM por_prato_resumo), 0)::numeric(10,2),
+                'cmv_percentual', CASE WHEN COALESCE(SUM(iv.quantidade * iv.preco_unitario), 0) > 0 THEN ROUND((COALESCE((SELECT SUM(cmv_teorico) FROM por_prato_resumo), 0) / COALESCE(SUM(iv.quantidade * iv.preco_unitario), 0) * 100)::numeric, 2) ELSE 0 END,
+                'margem_bruta', COALESCE(SUM(iv.quantidade * iv.preco_unitario), 0)::numeric(10,2) - COALESCE((SELECT SUM(cmv_teorico) FROM por_prato_resumo), 0)::numeric(10,2),
+                'margem_percentual', CASE WHEN COALESCE(SUM(iv.quantidade * iv.preco_unitario), 0) > 0 THEN ROUND((1 - COALESCE((SELECT SUM(cmv_teorico) FROM por_prato_resumo), 0) / COALESCE(SUM(iv.quantidade * iv.preco_unitario), 0)) * 100::numeric, 2) ELSE 0 END,
+                'custo_cortesias', 0::numeric(10,2),
+                'custo_perdas', COALESCE((SELECT SUM(custo_perdido) FROM perdas_resumo), 0)::numeric(10,2),
+                'cobertura_ficha_percentual', CASE WHEN COALESCE(SUM(iv.quantidade * iv.preco_unitario), 0) > 0 THEN ROUND((COALESCE((SELECT SUM(faturamento_item) FROM por_prato_resumo), 0) / COALESCE(SUM(iv.quantidade * iv.preco_unitario), 0) * 100)::numeric, 2) ELSE 0 END,
+                'quantidade_vendida', COUNT(DISTINCT iv.item_id)::integer,
+                'numero_vendas', COUNT(DISTINCT iv.comanda_id)::integer
+              ) FROM itens_vendidos iv) AS data
+          `
+        );
+
+        // Second query: detailed data by prato, categoria, insumo, dia
+        const detalhesResult: any = await (app.db as any).execute(
+          sql`
+            WITH comandas_fontes AS (
+              SELECT c.id, c.restaurante_id, c.status::text, c.total, c.subtotal, c.closed_at, 0 AS prioridade_fonte
+              FROM ${schema.comandas} c
+              WHERE c.restaurante_id = ${restauranteId}
+              UNION ALL
+              SELECT ch.id, ch.restaurante_id, ch.status::text, ch.total, ch.subtotal, ch.closed_at, 1 AS prioridade_fonte
+              FROM ${schema.comandasHistorico} ch
+              WHERE ch.restaurante_id = ${restauranteId}
+            ),
+            comandas_unicas AS (
+              SELECT DISTINCT ON (cf.restaurante_id, cf.id)
+                cf.id, cf.restaurante_id, cf.status, cf.total, cf.subtotal, cf.closed_at
+              FROM comandas_fontes cf
+              ORDER BY cf.restaurante_id, cf.id, cf.prioridade_fonte ASC
+            ),
+            comandas_fechadas AS (
+              SELECT cu.id, cu.restaurante_id, cu.total, cu.subtotal, cu.closed_at
+              FROM comandas_unicas cu
+              WHERE cu.status = 'fechada' AND cu.total > 0
+                AND cu.closed_at >= ${inicio.toISOString()}::timestamptz
+                AND cu.closed_at < ${fim.toISOString()}::timestamptz
+            ),
+            itens_fontes AS (
+              SELECT p.id, p.comanda_id, p.prato_id, p.quantidade, p.preco_unitario, p.status::text, p.cancelado_em, p.cancelado_apos_inicio, p.restaurante_id, NULL::text AS nome_prato, 0 AS prioridade_fonte
+              FROM ${schema.pedidos} p
+              WHERE p.restaurante_id = ${restauranteId}
+              UNION ALL
+              SELECT ph.id, ph.comanda_id, ph.prato_id, ph.quantidade, ph.preco_unitario, ph.status::text, ph.cancelado_em, ph.cancelado_apos_inicio, ph.restaurante_id, ph.prato_nome AS nome_prato, 1 AS prioridade_fonte
+              FROM ${schema.pedidosHistorico} ph
+              WHERE ph.restaurante_id = ${restauranteId}
+            ),
+            itens_unicos AS (
+              SELECT DISTINCT ON (ifo.restaurante_id, ifo.id)
+                ifo.id, ifo.comanda_id, ifo.prato_id, ifo.quantidade, ifo.preco_unitario, ifo.status, ifo.cancelado_em, ifo.cancelado_apos_inicio, ifo.restaurante_id, ifo.nome_prato
+              FROM itens_fontes ifo
+              ORDER BY ifo.restaurante_id, ifo.id, ifo.prioridade_fonte ASC
+            ),
+            itens_vendidos AS (
+              SELECT iu.prato_id, iu.nome_prato, iu.quantidade, iu.preco_unitario, iu.comanda_id, iu.id AS item_id
+              FROM itens_unicos iu
+              INNER JOIN comandas_fechadas cf ON iu.comanda_id = cf.id
+              WHERE iu.status != 'cancelado' AND iu.cancelado_em IS NULL
+            ),
+            itens_perdidos AS (
+              SELECT iu.prato_id, iu.nome_prato, iu.quantidade, iu.preco_unitario, iu.comanda_id
+              FROM itens_unicos iu
+              INNER JOIN comandas_fechadas cf ON iu.comanda_id = cf.id
+              WHERE iu.status = 'cancelado' AND iu.cancelado_apos_inicio = true
+            ),
+            custo_itens_vendidos AS (
+              SELECT
+                iv.item_id,
+                iv.prato_id,
+                SUM(pi.quantidade_usada * COALESCE(i.custo_unitario, 0)) AS custo_total_item
+              FROM itens_vendidos iv
+              LEFT JOIN ${schema.pratoInsumos} pi ON iv.prato_id = pi.prato_id AND pi.restaurante_id = ${restauranteId}
+              LEFT JOIN ${schema.insumos} i ON pi.insumo_id = i.id AND i.restaurante_id = pi.restaurante_id
+              GROUP BY iv.item_id, iv.prato_id
+            ),
+            custo_itens_perdidos AS (
+              SELECT
+                ip.prato_id,
+                SUM(ip.quantidade * (pi.quantidade_usada * COALESCE(i.custo_unitario, 0))) AS custo_total_perda
+              FROM itens_perdidos ip
+              LEFT JOIN ${schema.pratoInsumos} pi ON ip.prato_id = pi.prato_id AND pi.restaurante_id = ${restauranteId}
+              LEFT JOIN ${schema.insumos} i ON pi.insumo_id = i.id AND i.restaurante_id = pi.restaurante_id
+              GROUP BY ip.prato_id
+            ),
+            por_prato_resumo AS (
+              SELECT
+                iv.prato_id,
+                COALESCE(NULLIF(TRIM(p.nome), ''), NULLIF(TRIM(iv.nome_prato), ''), 'Prato removido') AS prato_nome,
+                COALESCE(c.nome, 'Sem categoria') AS categoria_nome,
+                SUM(iv.quantidade) AS quantidade_vendida,
+                SUM(iv.quantidade * iv.preco_unitario) AS faturamento_item,
+                SUM(COALESCE(c_item.custo_total_item, 0)) AS cmv_teorico,
+                COUNT(DISTINCT iv.comanda_id) AS numero_vendas
+              FROM itens_vendidos iv
+              LEFT JOIN ${schema.pratos} p ON iv.prato_id = p.id AND p.restaurante_id = ${restauranteId}
+              LEFT JOIN ${schema.categorias} c ON p.categoria_id = c.id AND c.restaurante_id = p.restaurante_id
+              LEFT JOIN custo_itens_vendidos c_item ON iv.item_id = c_item.item_id
+              GROUP BY iv.prato_id, COALESCE(NULLIF(TRIM(p.nome), ''), NULLIF(TRIM(iv.nome_prato), ''), 'Prato removido'), COALESCE(c.nome, 'Sem categoria')
+            ),
+            por_categoria_resumo AS (
+              SELECT
+                por_prato_resumo.categoria_nome,
+                SUM(por_prato_resumo.quantidade_vendida) AS quantidade_vendida,
+                SUM(por_prato_resumo.faturamento_item) AS faturamento,
+                SUM(por_prato_resumo.cmv_teorico) AS cmv_teorico
+              FROM por_prato_resumo
+              GROUP BY por_prato_resumo.categoria_nome
+            ),
+            por_insumo_resumo AS (
+              SELECT
+                i.nome AS insumo_nome,
+                SUM(pi.quantidade_usada * iv.quantidade) AS quantidade_total_usada,
+                i.unidade,
+                COALESCE(i.custo_unitario, 0) AS custo_unitario,
+                SUM((pi.quantidade_usada * iv.quantidade) * COALESCE(i.custo_unitario, 0)) AS custo_total
+              FROM itens_vendidos iv
+              LEFT JOIN ${schema.pratoInsumos} pi ON iv.prato_id = pi.prato_id AND pi.restaurante_id = ${restauranteId}
+              LEFT JOIN ${schema.insumos} i ON pi.insumo_id = i.id AND i.restaurante_id = pi.restaurante_id
+              WHERE i.id IS NOT NULL
+              GROUP BY i.id, i.nome, i.unidade, i.custo_unitario
+              ORDER BY custo_total DESC
+            ),
+            por_dia_resumo AS (
+              SELECT
+                (cf.closed_at AT TIME ZONE 'America/Sao_Paulo')::date AS data_local,
+                SUM(iv.quantidade * iv.preco_unitario) AS faturamento,
+                SUM(COALESCE(c_item.custo_total_item, 0)) AS cmv_teorico
+              FROM itens_vendidos iv
+              INNER JOIN comandas_fechadas cf ON iv.comanda_id = cf.id
+              LEFT JOIN custo_itens_vendidos c_item ON iv.item_id = c_item.item_id
+              GROUP BY (cf.closed_at AT TIME ZONE 'America/Sao_Paulo')::date
+            ),
+            sem_ficha_resumo AS (
+              SELECT
+                iv.prato_id,
+                COALESCE(NULLIF(TRIM(p.nome), ''), NULLIF(TRIM(iv.nome_prato), ''), 'Prato removido') AS prato_nome,
+                COALESCE(c.nome, 'Sem categoria') AS categoria_nome,
+                SUM(iv.quantidade) AS quantidade_vendida,
+                SUM(iv.quantidade * iv.preco_unitario) AS faturamento_item,
+                COUNT(DISTINCT iv.comanda_id) AS numero_vendas
+              FROM itens_vendidos iv
+              LEFT JOIN ${schema.pratos} p ON iv.prato_id = p.id AND p.restaurante_id = ${restauranteId}
+              LEFT JOIN ${schema.categorias} c ON p.categoria_id = c.id AND c.restaurante_id = p.restaurante_id
+              WHERE NOT EXISTS (SELECT 1 FROM ${schema.pratoInsumos} pi WHERE pi.prato_id = iv.prato_id AND pi.restaurante_id = ${restauranteId})
+              GROUP BY iv.prato_id, COALESCE(NULLIF(TRIM(p.nome), ''), NULLIF(TRIM(iv.nome_prato), ''), 'Prato removido'), COALESCE(c.nome, 'Sem categoria')
+            ),
+            perdas_resumo AS (
+              SELECT
+                ip.prato_id,
+                COALESCE(NULLIF(TRIM(p.nome), ''), NULLIF(TRIM(ip.nome_prato), ''), 'Prato removido') AS prato_nome,
+                SUM(ip.quantidade) AS quantidade_perdida,
+                SUM(ip.quantidade * ip.preco_unitario) AS valor_perdido,
+                COALESCE(SUM(c_perda.custo_total_perda), 0) AS custo_perdido
+              FROM itens_perdidos ip
+              LEFT JOIN ${schema.pratos} p ON ip.prato_id = p.id AND p.restaurante_id = ${restauranteId}
+              LEFT JOIN custo_itens_perdidos c_perda ON ip.prato_id = c_perda.prato_id
+              GROUP BY ip.prato_id, COALESCE(NULLIF(TRIM(p.nome), ''), NULLIF(TRIM(ip.nome_prato), ''), 'Prato removido')
+            )
+            SELECT 'multiple' as type,
+              json_build_object(
+                'por_prato', (SELECT json_agg(json_build_object('prato_id', prato_id, 'prato_nome', prato_nome, 'categoria', categoria_nome, 'quantidade_vendida', quantidade_vendida, 'faturamento', faturamento_item, 'cmv_teorico', cmv_teorico, 'margem', faturamento_item - cmv_teorico, 'numero_vendas', numero_vendas)) FROM por_prato_resumo ORDER BY faturamento_item DESC),
+                'por_categoria', (SELECT json_agg(json_build_object('categoria', categoria_nome, 'quantidade_vendida', quantidade_vendida, 'faturamento', faturamento, 'cmv_teorico', cmv_teorico)) FROM por_categoria_resumo ORDER BY faturamento DESC),
+                'por_insumo', (SELECT json_agg(json_build_object('insumo_nome', insumo_nome, 'quantidade_total_usada', quantidade_total_usada, 'unidade', unidade, 'custo_unitario', custo_unitario, 'custo_total', custo_total)) FROM por_insumo_resumo LIMIT 50),
+                'por_dia', (SELECT json_agg(json_build_object('data', data_local, 'faturamento', faturamento, 'cmv_teorico', cmv_teorico)) FROM por_dia_resumo ORDER BY data_local),
+                'sem_ficha', (SELECT json_agg(json_build_object('prato_id', prato_id, 'prato_nome', prato_nome, 'categoria', categoria_nome, 'quantidade_vendida', quantidade_vendida, 'faturamento', faturamento_item, 'numero_vendas', numero_vendas)) FROM sem_ficha_resumo ORDER BY faturamento_item DESC),
+                'perdas', (SELECT json_agg(json_build_object('prato_id', prato_id, 'prato_nome', prato_nome, 'quantidade_perdida', quantidade_perdida, 'valor_perdido', valor_perdido, 'custo_perdido', custo_perdido)) FROM perdas_resumo ORDER BY valor_perdido DESC)
+              ) as data
+          `
+        );
+
+        // Process results
+        let resumo: any = {
+          faturamento_itens: 0,
+          faturamento_coberto: 0,
+          cmv_teorico: 0,
+          cmv_percentual: 0,
+          margem_bruta: 0,
+          margem_percentual: 0,
+          custo_cortesias: 0,
+          custo_perdas: 0,
+          cobertura_ficha_percentual: 0,
+          quantidade_vendida: 0,
+          numero_vendas: 0,
+        };
+
+        let porPrato: any[] = [];
+        let porCategoria: any[] = [];
+        let porInsumo: any[] = [];
+        let porDia: any[] = [];
+        let semFicha: any[] = [];
+        let perdas: any[] = [];
+
+        if (Array.isArray(detalhesResult) && detalhesResult.length > 0) {
+          const data = detalhesResult[0]?.data;
+          if (data) {
+            porPrato = data.por_prato || [];
+            porCategoria = data.por_categoria || [];
+            porInsumo = data.por_insumo || [];
+            porDia = data.por_dia || [];
+            semFicha = data.sem_ficha || [];
+            perdas = data.perdas || [];
+
+            // Calculate summary totals
+            let totalFaturamento = 0;
+            let totalCMV = 0;
+            let totalCustoFicha = 0;
+            let totalCustoPerdas = 0;
+
+            for (const item of porPrato) {
+              totalFaturamento += Number(item.faturamento) || 0;
+              totalCMV += Number(item.cmv_teorico) || 0;
+            }
+
+            for (const item of semFicha) {
+              totalFaturamento += Number(item.faturamento) || 0;
+            }
+
+            for (const item of perdas) {
+              totalCustoPerdas += Number(item.custo_perdido) || 0;
+            }
+
+            totalCustoFicha = totalCMV;
+
+            const cmvPercentual = totalFaturamento > 0 ? (totalCMV / totalFaturamento) * 100 : 0;
+            const margemBruta = totalFaturamento - totalCMV;
+            const margemPercentual = totalFaturamento > 0 ? ((totalFaturamento - totalCMV) / totalFaturamento) * 100 : 0;
+            const coberturaFicha = porPrato.length > 0 && totalFaturamento > 0 ? (totalFaturamento / (totalFaturamento + (semFicha.reduce((s, x) => s + (Number(x.faturamento) || 0), 0)))) * 100 : 0;
+
+            resumo = {
+              faturamento_itens: Number(totalFaturamento.toFixed(2)),
+              faturamento_coberto: Number(totalFaturamento.toFixed(2)),
+              cmv_teorico: Number(totalCMV.toFixed(2)),
+              cmv_percentual: Number(cmvPercentual.toFixed(2)),
+              margem_bruta: Number(margemBruta.toFixed(2)),
+              margem_percentual: Number(margemPercentual.toFixed(2)),
+              custo_cortesias: 0,
+              custo_perdas: Number(totalCustoPerdas.toFixed(2)),
+              cobertura_ficha_percentual: Number(Math.min(100, coberturaFicha).toFixed(2)),
+              quantidade_vendida: porPrato.reduce((s, x) => s + (Number(x.quantidade_vendida) || 0), 0),
+              numero_vendas: porPrato.reduce((s, x) => s + (Number(x.numero_vendas) || 0), 0),
+            };
+          }
+        }
+
+        // Format numeric values in all arrays
+        const formatarArray = (arr: any[]) => {
+          return arr.map((item: any) => {
+            const resultado: any = {};
+            for (const [key, value] of Object.entries(item)) {
+              if (typeof value === 'number' && key !== 'quantidade_vendida' && key !== 'numero_vendas' && key !== 'quantidade_perdida' && key !== 'quantidade_total_usada') {
+                resultado[key] = Number(value.toFixed(2));
+              } else {
+                resultado[key] = value;
+              }
+            }
+            return resultado;
+          });
+        };
+
+        porPrato = formatarArray(porPrato);
+        porCategoria = formatarArray(porCategoria);
+        porInsumo = formatarArray(porInsumo);
+        porDia = formatarArray(porDia);
+        semFicha = formatarArray(semFicha);
+        perdas = formatarArray(perdas);
+
+        app.logger.info(
+          {
+            restauranteId,
+            periodo: query.periodo,
+            faturamento_itens: resumo.faturamento_itens,
+            cmv_teorico: resumo.cmv_teorico,
+            pratos_com_ficha: porPrato.length,
+            pratos_sem_ficha: semFicha.length,
+            numero_perdas: perdas.length,
+          },
+          "CMV teorico report retrieved successfully"
+        );
+
+        return await reply.code(200).send({
+          periodo: periodoLabel,
+          resumo,
+          por_prato: porPrato,
+          por_categoria: porCategoria,
+          por_insumo: porInsumo,
+          por_dia: porDia,
+          sem_ficha: semFicha,
+          perdas,
+          observacao_custo: "Custo calculado com o custo atual dos insumos. Perdas incluem apenas itens cancelados após o início da preparação.",
+        });
+      } catch (error) {
+        app.logger.error({ err: error }, "Failed to get cmv-teorico report");
+        return await reply.code(500).send({ error: "Não foi possível gerar o relatório de CMV teórico." });
+      }
+    }
+  );
 }
