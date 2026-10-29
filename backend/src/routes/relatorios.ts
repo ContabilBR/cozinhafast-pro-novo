@@ -4899,6 +4899,7 @@ LIMIT 5
         }
 
         // Process sold items
+        // IMPORTANT: Cortesia items' cost counts toward CMV, but their revenue value does NOT count toward receita totals
         const porPratoMap = new Map<string | null, {
           quantidade: number;
           quantidadeCortesia: number;
@@ -4923,28 +4924,36 @@ LIMIT 5
             pratosMap.set(pratoId, { nome: row.nome_prato || 'Prato removido', categoria: 'Sem categoria' });
           }
 
-          // Update por_prato
+          // Update por_prato: receita only counts non-cortesia items
           if (!porPratoMap.has(pratoId)) {
             porPratoMap.set(pratoId, { quantidade: 0, quantidadeCortesia: 0, receita: 0, receitaCortesia: 0 });
           }
           const pratoData = porPratoMap.get(pratoId)!;
           if (isCortesia) {
             pratoData.quantidadeCortesia += Number(row.quantidade);
-            pratoData.receitaCortesia += receita;
+            pratoData.receitaCortesia += receita; // informational only, not included in CMV receita totals
           } else {
             pratoData.quantidade += Number(row.quantidade);
-            pratoData.receita += receita;
+            pratoData.receita += receita; // non-cortesia receita counts toward CMV
           }
 
-          // Update por_dia
+          // Update por_dia: receita only counts non-cortesia; cmv includes all (cortesia cost is counted)
           if (!porDiaMap.has(dia)) {
             porDiaMap.set(dia, { receita: 0, receitaCoberta: 0, cmv: 0 });
           }
           const diaData = porDiaMap.get(dia)!;
-          diaData.receita += receita;
           const classInfo = pratoClassMap.get(pratoId)!;
+
+          // Only non-cortesia items count toward receita and receita_coberta
+          if (!isCortesia) {
+            diaData.receita += receita;
+            if (classInfo.classe === 'com_ficha') {
+              diaData.receitaCoberta += receita;
+            }
+          }
+
+          // CMV always includes all items (cortesia cost is counted)
           if (classInfo.classe === 'com_ficha') {
-            diaData.receitaCoberta += receita;
             const cmvItem = Number(row.quantidade) * classInfo.custoUnitario;
             diaData.cmv += cmvItem;
           }
@@ -4976,7 +4985,7 @@ LIMIT 5
         let totalReceitaCoberta = 0;
         let totalCMV = 0;
         let totalCortesias = 0;
-        let receitaCortesias = 0;
+        let receitaCortesias = 0; // informational: menu value of all cortesias, not included in receita totals
         let quantidadeItens = 0;
 
         for (const [pratoId, data] of porPratoMap.entries()) {
@@ -4984,28 +4993,27 @@ LIMIT 5
           const pratoInfo = pratosMap.get(pratoId) || { nome: 'Prato removido', categoria: 'Sem categoria' };
           const quantidade = data.quantidade;
           const quantidadeCortesia = data.quantidadeCortesia;
-          const receitaNormal = data.receita;
-          const receitaCort = data.receitaCortesia;
-          const receitaTotal = receitaNormal + receitaCort;
+          const receita = data.receita; // non-cortesia receita only
+          const receitaCort = data.receitaCortesia; // informational only
 
-          totalReceitaGeral += receitaTotal;
-          quantidadeItens += quantidade + quantidadeCortesia;
+          totalReceitaGeral += receita; // only non-cortesia receita counts
+          quantidadeItens += quantidade + quantidadeCortesia; // quantity includes cortesia
 
           const item: any = {
             id: pratoId,
             nome: pratoInfo.nome,
             categoria: pratoInfo.categoria,
-            quantidade_vendida: quantidade + quantidadeCortesia,
+            quantidade_vendida: quantidade + quantidadeCortesia, // includes cortesia qty
             quantidade_cortesia: quantidadeCortesia,
-            receita: receitaTotal,
+            receita: receita, // non-cortesia receita only
           };
 
           if (classInfo.classe === 'com_ficha') {
             const custoUnitario = classInfo.custoUnitario;
-            const cmv = (quantidade + quantidadeCortesia) * custoUnitario;
-            const margem = receitaTotal - cmv;
-            const cmvPercentual = receitaTotal > 0 ? (cmv / receitaTotal) * 100 : null;
-            const margemPercentual = receitaTotal > 0 ? ((receitaTotal - cmv) / receitaTotal) * 100 : null;
+            const cmv = (quantidade + quantidadeCortesia) * custoUnitario; // includes cortesia cost
+            const margem = receita - cmv; // may be negative if only cortesia
+            const cmvPercentual = receita > 0 ? (cmv / receita) * 100 : null;
+            const margemPercentual = receita > 0 ? ((receita - cmv) / receita) * 100 : null;
 
             item.custo_unitario_ficha = custoUnitario;
             item.cmv = cmv;
@@ -5014,10 +5022,10 @@ LIMIT 5
             item.margem_percentual = margemPercentual;
 
             comFicha.push(item);
-            totalReceitaCoberta += receitaTotal;
-            totalCMV += cmv;
-            totalCortesias += quantidadeCortesia * custoUnitario;
-            receitaCortesias += receitaCort;
+            totalReceitaCoberta += receita; // non-cortesia receita
+            totalCMV += cmv; // includes cortesia cost
+            totalCortesias += quantidadeCortesia * custoUnitario; // cortesia cost
+            receitaCortesias += receitaCort; // informational: menu value of cortesias
           } else if (classInfo.classe === 'custo_incompleto') {
             item.insumos_sem_custo = classInfo.insumosSemCusto;
             custoIncompleto.push(item);
@@ -5051,22 +5059,22 @@ LIMIT 5
           item.participacao_cmv_percentual = totalCMV > 0 ? ((item.cmv || 0) / totalCMV) * 100 : 0;
         });
 
-        // Build por_categoria
+        // Build por_categoria: receita is non-cortesia only, cmv includes cortesia cost
         const porCategoriaMap = new Map<string, { quantidade: number; receita: number; cmv: number }>();
         for (const item of comFicha) {
           const cat = item.categoria;
           if (!porCategoriaMap.has(cat)) porCategoriaMap.set(cat, { quantidade: 0, receita: 0, cmv: 0 });
           const data = porCategoriaMap.get(cat)!;
           data.quantidade += item.quantidade_vendida;
-          data.receita += item.receita;
-          data.cmv += item.cmv;
+          data.receita += item.receita; // non-cortesia receita only
+          data.cmv += item.cmv; // includes cortesia cost
         }
 
         const porCategoria = Array.from(porCategoriaMap.entries()).map(([categoria, data]) => ({
           categoria,
           quantidade_vendida: data.quantidade,
-          receita: data.receita,
-          cmv: data.cmv,
+          receita: data.receita, // non-cortesia receita only
+          cmv: data.cmv, // includes cortesia cost
           cmv_percentual: data.receita > 0 ? (data.cmv / data.receita) * 100 : null,
           margem: data.receita - data.cmv,
           margem_percentual: data.receita > 0 ? ((data.receita - data.cmv) / data.receita) * 100 : null,
@@ -5128,11 +5136,12 @@ LIMIT 5
 
         const porDia = allDates.map(dataStr => {
           const data = porDiaMap.get(dataStr) || { receita: 0, receitaCoberta: 0, cmv: 0 };
+          // receita and receita_coberta are non-cortesia only; cmv includes cortesia cost
           return {
             data: dataStr,
-            receita: data.receita,
-            receita_coberta: data.receitaCoberta,
-            cmv: data.cmv,
+            receita: data.receita, // non-cortesia only
+            receita_coberta: data.receitaCoberta, // non-cortesia only, com_ficha dishes
+            cmv: data.cmv, // includes cortesia cost
             cmv_percentual: data.receita > 0 ? (data.cmv / data.receita) * 100 : null,
           };
         });
@@ -5162,17 +5171,18 @@ LIMIT 5
 
         porPerdaArray.sort((a, b) => (b.custo || 0) - (a.custo || 0));
 
+        // resumo: receita totals are non-cortesia only; cmv includes cortesia cost
         const resumo = {
-          receita_total_geral: totalReceitaGeral,
-          receita_coberta: totalReceitaCoberta,
-          cmv: totalCMV,
+          receita_total_geral: totalReceitaGeral, // non-cortesia only
+          receita_coberta: totalReceitaCoberta, // non-cortesia only, com_ficha dishes
+          cmv: totalCMV, // includes cortesia cost
           cmv_percentual: totalReceitaGeral > 0 ? (totalCMV / totalReceitaGeral) * 100 : null,
           cmv_percentual_coberto: totalReceitaCoberta > 0 ? (totalCMV / totalReceitaCoberta) * 100 : null,
-          margem_bruta: totalReceitaCoberta - totalCMV,
+          margem_bruta: totalReceitaCoberta - totalCMV, // may be negative if significant cortesia
           margem_percentual: totalReceitaCoberta > 0 ? (((totalReceitaCoberta - totalCMV) / totalReceitaCoberta) * 100) : null,
           cobertura_percentual: totalReceitaGeral > 0 ? ((totalReceitaCoberta / totalReceitaGeral) * 100) : null,
-          custo_cortesias: totalCortesias,
-          receita_cortesias: receitaCortesias,
+          custo_cortesias: totalCortesias, // cost of cortesia items (com_ficha only)
+          receita_cortesias: receitaCortesias, // menu value of cortesias (informational, not in receita totals)
           custo_perdas: totalCustoPerdas,
           quantidade_perdas: totalQuantidadePerdas,
           quantidade_itens_vendidos: quantidadeItens,
