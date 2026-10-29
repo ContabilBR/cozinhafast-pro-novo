@@ -296,6 +296,23 @@ export default function RelatoriosScreen() {
               </View>
               <Ionicons name="chevron-forward" size={20} color={COLORS.textSecondary} />
             </AnimatedPressable>
+            {(user?.role === 'gerente' || user?.role === 'administrador') && (
+              <AnimatedPressable
+                accessibilityRole="button"
+                accessibilityLabel="CMV teórico. Custo das mercadorias vendidas pela ficha técnica no período"
+                onPress={() => router.push({ pathname: '/relatorio-detalhe/cmv-teorico', params: { periodo } } as any)}
+                style={{ minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: COLORS.surface, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: COLORS.border }}
+              >
+                <View style={{ padding: 10, borderRadius: 12, backgroundColor: COLORS.primaryMuted }}>
+                  <Ionicons name="pie-chart-outline" size={24} color={COLORS.primary} />
+                </View>
+                <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
+                  <Text style={{ fontFamily: 'Outfit_600SemiBold', fontSize: 16, color: COLORS.text }}>CMV teórico</Text>
+                  <Text style={{ fontFamily: 'Outfit_400Regular', fontSize: 13, color: COLORS.textSecondary }}>Custo das mercadorias pela ficha técnica</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color={COLORS.textSecondary} />
+              </AnimatedPressable>
+            )}
             <AnimatedPressable
               accessibilityRole="button"
               accessibilityLabel="Cozinha. Tempo de preparo por prato e por hora no período selecionado"

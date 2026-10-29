@@ -56,7 +56,7 @@ export function gerarHtmlPdf(r: RelatorioDef): string {
 <strong style="color:#${corValor}">${valor}</strong>${ind.nota ? `<span class="nota">${esc(ind.nota)}</span>` : ''}</div>`;
   }).join('');
   const pendentes = r.pendentes?.length
-    ? `<p class="obs"><b>Não disponível neste relatório:</b></p>${r.pendentes.map(p => `<p class="obs">• ${esc(p)}</p>`).join('')}` : '';
+    ? `<p class="obs"><b>${esc(r.pendentesTitulo ?? 'Não disponível neste relatório:')}</b></p>${r.pendentes.map(p => `<p class="obs">• ${esc(p)}</p>`).join('')}` : '';
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
 @page { size: A4; margin: 14mm 10mm; }
 * { box-sizing: border-box; }
@@ -82,5 +82,5 @@ section { page-break-inside: auto; } .rodape { margin-top: 18px; border-top: 1px
 <div class="info"><b>${esc(r.titulo)}</b><br>Período: ${esc(periodoTexto(r.periodo))}<br>Gerado em ${esc(r.geradoEm)} (horário de Brasília) por ${esc(r.contexto.geradoPor)}</div>
 <h2>${esc(r.resumoTitulo ?? 'Resumo')}</h2>${blocos}${pendentes}
 ${r.tabelas.map(t => tabelaHtml(r, t)).join('')}
-<div class="rodape">${LEGENDA.map(esc).join('<br>')}</div></body></html>`;
+<div class="rodape">${(r.legenda ?? LEGENDA).map(esc).join('<br>')}</div></body></html>`;
 }

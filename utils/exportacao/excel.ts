@@ -75,7 +75,7 @@ function configurarPagina(ws: ExcelJSTipos.Worksheet, r: RelatorioDef, paisagem:
     ...(linhaTitulos ? { printTitlesRow: `${linhaTitulos}:${linhaTitulos}` } : {}),
   };
   ws.headerFooter = {
-    oddFooter: `&L&8${LEGENDA[1]}&C&8${r.titulo} · ${periodoTexto(r.periodo)}&R&8Página &P de &N`,
+    oddFooter: `&L&8${r.legenda ? 'Veja a legenda na aba Resumo.' : LEGENDA[1]}&C&8${r.titulo} · ${periodoTexto(r.periodo)}&R&8Página &P de &N`,
   };
 }
 
@@ -157,7 +157,7 @@ function montarResumo(wb: ExcelJSTipos.Workbook, r: RelatorioDef, usados: Set<st
     c.font = fonte({ color: { argb: argb(CORES.cinza) } }); c.alignment = { horizontal: 'left', vertical: 'middle' };
   });
   linha++;
-  [...LEGENDA, ...(r.pendentes?.length ? ['Não disponível neste relatório:', ...r.pendentes.map(p => `• ${p}`)] : [])].forEach(texto => {
+  [...(r.legenda ?? LEGENDA), ...(r.pendentes?.length ? [r.pendentesTitulo ?? 'Não disponível neste relatório:', ...r.pendentes.map(p => `• ${p}`)] : [])].forEach(texto => {
     const cell = ws.getRow(linha++).getCell(1);
     cell.value = texto; cell.font = fonte({ color: { argb: argb(CORES.cinza) } });
     cell.alignment = { horizontal: 'left', vertical: 'middle' };

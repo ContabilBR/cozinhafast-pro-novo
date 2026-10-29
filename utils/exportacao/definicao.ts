@@ -85,6 +85,10 @@ export interface RelatorioDef {
   tabelas: TabelaDef[];
   /** Linhas "o que não foi possível trazer" exibidas no fim do Resumo/PDF. */
   pendentes?: string[];
+  /** Título do bloco de `pendentes`; padrão: "Não disponível neste relatório:". */
+  pendentesTitulo?: string;
+  /** Legenda própria do relatório; sem ela vale a LEGENDA padrão (Bruto/Líquido). */
+  legenda?: string[];
 }
 
 export const LEGENDA = [
