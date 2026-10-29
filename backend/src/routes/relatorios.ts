@@ -4789,7 +4789,7 @@ LIMIT 5
               ORDER BY cf.restaurante_id, cf.id, cf.prioridade_fonte ASC
             ),
             comandas_validas AS (
-              SELECT cu.id, cu.restaurante_id, cu.desconto_tipo
+              SELECT cu.id, cu.restaurante_id, cu.desconto_tipo, (cu.closed_at AT TIME ZONE 'America/Sao_Paulo')::date::text AS dia
               FROM comandas_unicas cu
               WHERE cu.status = 'fechada'
                 AND cu.closed_at >= ${dataInicioStr}::date::timestamp AT TIME ZONE 'America/Sao_Paulo'
@@ -4811,7 +4811,7 @@ LIMIT 5
               FROM itens_fontes ifo
               ORDER BY ifo.restaurante_id, ifo.id, ifo.prioridade_fonte ASC
             )
-            SELECT iu.prato_id, iu.nome_prato, iu.quantidade, iu.preco_unitario, cv.desconto_tipo, iu.id AS item_id
+            SELECT iu.prato_id, iu.nome_prato, iu.quantidade, iu.preco_unitario, cv.desconto_tipo, cv.dia, iu.id AS item_id
             FROM itens_unicos iu
             INNER JOIN comandas_validas cv ON iu.comanda_id = cv.id
             WHERE iu.status != 'cancelado' AND iu.cancelado_em IS NULL
@@ -4898,13 +4898,6 @@ LIMIT 5
           pratoClassMap.set(pratoId, { classe, custoUnitario, insumosSemCusto });
         }
 
-        // Categorize pratos without recipes
-        for (const [pratoId, insumos] of fichaMap.entries()) {
-          if (!pratoClassMap.has(pratoId)) {
-            pratoClassMap.set(pratoId, { classe: 'sem_ficha', custoUnitario: 0, insumosSemCusto: [] });
-          }
-        }
-
         // Process sold items
         const porPratoMap = new Map<string | null, {
           quantidade: number;
@@ -4913,35 +4906,54 @@ LIMIT 5
           receitaCortesia: number;
         }>();
 
+        const porDiaMap = new Map<string, { receita: number; receitaCoberta: number; cmv: number }>();
+
         for (const row of vendasResult) {
           const pratoId = row.prato_id || null;
-          const nome = row.prato_id ? row.prato_id : (row.nome_prato || 'Prato removido');
           const receita = Number(row.quantidade) * Number(row.preco_unitario);
           const isCortesia = row.desconto_tipo === 'cortesia';
+          const dia = row.dia;
 
+          // Initialize prato class if not exists
           if (!pratoClassMap.has(pratoId)) {
             pratoClassMap.set(pratoId, { classe: 'sem_ficha', custoUnitario: 0, insumosSemCusto: [] });
           }
+          // Initialize prato info if not exists
           if (!pratosMap.has(pratoId)) {
-            const categoria = 'Sem categoria';
-            pratosMap.set(pratoId, { nome: row.nome_prato || 'Prato removido', categoria });
+            pratosMap.set(pratoId, { nome: row.nome_prato || 'Prato removido', categoria: 'Sem categoria' });
           }
 
+          // Update por_prato
           if (!porPratoMap.has(pratoId)) {
             porPratoMap.set(pratoId, { quantidade: 0, quantidadeCortesia: 0, receita: 0, receitaCortesia: 0 });
           }
-          const data = porPratoMap.get(pratoId)!;
+          const pratoData = porPratoMap.get(pratoId)!;
           if (isCortesia) {
-            data.quantidadeCortesia += Number(row.quantidade);
-            data.receitaCortesia += receita;
+            pratoData.quantidadeCortesia += Number(row.quantidade);
+            pratoData.receitaCortesia += receita;
           } else {
-            data.quantidade += Number(row.quantidade);
-            data.receita += receita;
+            pratoData.quantidade += Number(row.quantidade);
+            pratoData.receita += receita;
+          }
+
+          // Update por_dia
+          if (!porDiaMap.has(dia)) {
+            porDiaMap.set(dia, { receita: 0, receitaCoberta: 0, cmv: 0 });
+          }
+          const diaData = porDiaMap.get(dia)!;
+          diaData.receita += receita;
+          const classInfo = pratoClassMap.get(pratoId)!;
+          if (classInfo.classe === 'com_ficha') {
+            diaData.receitaCoberta += receita;
+            const cmvItem = Number(row.quantidade) * classInfo.custoUnitario;
+            diaData.cmv += cmvItem;
           }
         }
 
         // Process losses
         const porPerdaMap = new Map<string | null, number>();
+        let totalQuantidadePerdas = 0;
+
         for (const row of perdasResult) {
           const pratoId = row.prato_id || null;
           if (!pratoClassMap.has(pratoId)) {
@@ -4953,6 +4965,7 @@ LIMIT 5
 
           if (!porPerdaMap.has(pratoId)) porPerdaMap.set(pratoId, 0);
           porPerdaMap.set(pratoId, porPerdaMap.get(pratoId)! + Number(row.quantidade));
+          totalQuantidadePerdas += Number(row.quantidade);
         }
 
         // Build response sections
@@ -4971,10 +4984,11 @@ LIMIT 5
           const pratoInfo = pratosMap.get(pratoId) || { nome: 'Prato removido', categoria: 'Sem categoria' };
           const quantidade = data.quantidade;
           const quantidadeCortesia = data.quantidadeCortesia;
-          const receita = data.receita;
+          const receitaNormal = data.receita;
           const receitaCort = data.receitaCortesia;
+          const receitaTotal = receitaNormal + receitaCort;
 
-          totalReceitaGeral += receita + receitaCort;
+          totalReceitaGeral += receitaTotal;
           quantidadeItens += quantidade + quantidadeCortesia;
 
           const item: any = {
@@ -4983,24 +4997,27 @@ LIMIT 5
             categoria: pratoInfo.categoria,
             quantidade_vendida: quantidade + quantidadeCortesia,
             quantidade_cortesia: quantidadeCortesia,
-            receita: receita + receitaCort,
+            receita: receitaTotal,
           };
 
           if (classInfo.classe === 'com_ficha') {
             const custoUnitario = classInfo.custoUnitario;
             const cmv = (quantidade + quantidadeCortesia) * custoUnitario;
-            const margem = receita - (quantidade * custoUnitario);
+            const margem = receitaTotal - cmv;
+            const cmvPercentual = receitaTotal > 0 ? (cmv / receitaTotal) * 100 : null;
+            const margemPercentual = receitaTotal > 0 ? ((receitaTotal - cmv) / receitaTotal) * 100 : null;
 
             item.custo_unitario_ficha = custoUnitario;
             item.cmv = cmv;
-            item.cmv_percentual = receita > 0 ? (quantidade * custoUnitario) / receita * 100 : null;
+            item.cmv_percentual = cmvPercentual;
             item.margem = margem;
-            item.margem_percentual = receita > 0 ? ((receita - (quantidade * custoUnitario)) / receita) * 100 : null;
+            item.margem_percentual = margemPercentual;
 
             comFicha.push(item);
-            totalReceitaCoberta += receita;
-            totalCMV += quantidade * custoUnitario;
+            totalReceitaCoberta += receitaTotal;
+            totalCMV += cmv;
             totalCortesias += quantidadeCortesia * custoUnitario;
+            receitaCortesias += receitaCort;
           } else if (classInfo.classe === 'custo_incompleto') {
             item.insumos_sem_custo = classInfo.insumosSemCusto;
             custoIncompleto.push(item);
@@ -5028,7 +5045,7 @@ LIMIT 5
           return a.nome.localeCompare(b.nome, 'pt-BR');
         });
 
-        // Add position and participation
+        // Add position and participation to com_ficha
         comFicha.forEach((item, idx) => {
           item.posicao = idx + 1;
           item.participacao_cmv_percentual = totalCMV > 0 ? ((item.cmv || 0) / totalCMV) * 100 : 0;
@@ -5057,7 +5074,7 @@ LIMIT 5
         })).sort((a, b) => (b.cmv || 0) - (a.cmv || 0));
 
         // Build por_insumo
-        const porInsumoMap = new Map<string, { consumo: number; custo: number; unidade: string }>();
+        const porInsumoMap = new Map<string, { consumo: number; custo: number; unidade: string; custoUnitario: number }>();
         for (const item of comFicha) {
           const pratoId = item.id;
           const quantidade = item.quantidade_vendida;
@@ -5065,7 +5082,7 @@ LIMIT 5
           for (const insumo of insumos) {
             const key = insumo.insumoId;
             if (!porInsumoMap.has(key)) {
-              porInsumoMap.set(key, { consumo: 0, custo: 0, unidade: insumo.unidade });
+              porInsumoMap.set(key, { consumo: 0, custo: 0, unidade: insumo.unidade, custoUnitario: insumo.custo });
             }
             const data = porInsumoMap.get(key)!;
             data.consumo += quantidade * insumo.qtdUsada;
@@ -5078,6 +5095,11 @@ LIMIT 5
           insumoNomeMap.set(row.id, row.nome);
         }
 
+        let totalCustoInsumos = 0;
+        for (const data of porInsumoMap.values()) {
+          totalCustoInsumos += data.custo;
+        }
+
         const porInsumo = Array.from(porInsumoMap.entries()).map(([insumoId, data]) => {
           const nome = insumoNomeMap.get(insumoId) || '';
           return {
@@ -5085,44 +5107,40 @@ LIMIT 5
             nome,
             unidade: data.unidade,
             consumo: Number(data.consumo.toFixed(3)),
-            custo_unitario: 0,
+            custo_unitario: data.custoUnitario,
             custo: data.custo,
-            participacao_percentual: totalCMV > 0 ? (data.custo / totalCMV) * 100 : 0,
+            participacao_percentual: totalCustoInsumos > 0 ? (data.custo / totalCustoInsumos) * 100 : 0,
           };
         }).sort((a, b) => (b.custo || 0) - (a.custo || 0));
 
         // Build por_dia (generate all dates in period)
-        const porDiaMap = new Map<string, { receita: number; receitaCoberta: number; cmv: number }>();
-        const allDates = [];
-        const d = new Date(dataInicioStr + 'T00:00:00Z');
-        const dEnd = new Date(dataFimStr + 'T00:00:00Z');
-        while (d <= dEnd) {
+        const allDates: string[] = [];
+        const dStart = Date.UTC(diaInicio.ano, diaInicio.mes0, diaInicio.dia);
+        const dEndTime = Date.UTC(diaFim.ano, diaFim.mes0, diaFim.dia);
+        for (let t = dStart; t <= dEndTime; t += 24 * 60 * 60 * 1000) {
+          const d = new Date(t);
           const dateStr = d.toISOString().split('T')[0];
           allDates.push(dateStr);
-          porDiaMap.set(dateStr, { receita: 0, receitaCoberta: 0, cmv: 0 });
-          d.setDate(d.getDate() + 1);
-        }
-
-        for (const item of comFicha) {
-          for (const date of allDates) {
-            if (!porDiaMap.has(date)) porDiaMap.set(date, { receita: 0, receitaCoberta: 0, cmv: 0 });
+          if (!porDiaMap.has(dateStr)) {
+            porDiaMap.set(dateStr, { receita: 0, receitaCoberta: 0, cmv: 0 });
           }
         }
 
-        const porDia = Array.from(porDiaMap.entries()).map(([data, values]) => ({
-          data,
-          receita: values.receita,
-          receita_coberta: values.receitaCoberta,
-          cmv: values.cmv,
-          cmv_percentual: values.receitaCoberta > 0 ? (values.cmv / values.receitaCoberta) * 100 : null,
-        })).sort((a, b) => a.data.localeCompare(b.data));
+        const porDia = allDates.map(dataStr => {
+          const data = porDiaMap.get(dataStr) || { receita: 0, receitaCoberta: 0, cmv: 0 };
+          return {
+            data: dataStr,
+            receita: data.receita,
+            receita_coberta: data.receitaCoberta,
+            cmv: data.cmv,
+            cmv_percentual: data.receita > 0 ? (data.cmv / data.receita) * 100 : null,
+          };
+        });
 
         // Build perdas
         const porPerdaArray: any[] = [];
-        let totalPerdas = 0;
         let totalCustoPerdas = 0;
-        let totalQuantidadePerdas = 0;
-        let itensEmFichaPerdidos = 0;
+        let totalQuantidadePerdasSemFicha = 0;
 
         for (const [pratoId, quantidade] of porPerdaMap.entries()) {
           const classInfo = pratoClassMap.get(pratoId);
@@ -5137,9 +5155,8 @@ LIMIT 5
               custo,
             });
             totalCustoPerdas += custo;
-            itensEmFichaPerdidos += quantidade;
           } else {
-            totalQuantidadePerdas += quantidade;
+            totalQuantidadePerdasSemFicha += quantidade;
           }
         }
 
@@ -5157,7 +5174,7 @@ LIMIT 5
           custo_cortesias: totalCortesias,
           receita_cortesias: receitaCortesias,
           custo_perdas: totalCustoPerdas,
-          quantidade_perdas: itensEmFichaPerdidos,
+          quantidade_perdas: totalQuantidadePerdas,
           quantidade_itens_vendidos: quantidadeItens,
           total_pratos_vendidos: comFicha.length + semFicha.length + custoIncompleto.length,
           pratos_com_ficha: comFicha.length,
@@ -5165,12 +5182,19 @@ LIMIT 5
           pratos_custo_incompleto: custoIncompleto.length,
         };
 
-        // Format all numeric values
+        // Format all numeric values (except integer counters)
         const formatNum = (obj: any): any => {
           const result: any = {};
+          const integerFields = new Set(['quantidade_vendida', 'quantidade_cortesia', 'quantidade', 'quantidade_perdida', 'pratos_com_ficha', 'pratos_sem_ficha', 'pratos_custo_incompleto', 'total_pratos_vendidos', 'quantidade_itens_vendidos', 'posicao', 'quantidade_perdas', 'itens_sem_ficha_quantidade']);
           for (const [key, value] of Object.entries(obj)) {
-            if (typeof value === 'number' && !key.includes('quantidade') && !key.includes('pratos')) {
-              result[key] = Number(value.toFixed(2));
+            if (typeof value === 'number') {
+              if (integerFields.has(key)) {
+                result[key] = value;
+              } else if (key === 'consumo') {
+                result[key] = Number(value.toFixed(3));
+              } else {
+                result[key] = Number(value.toFixed(2));
+              }
             } else {
               result[key] = value;
             }
@@ -5188,7 +5212,7 @@ LIMIT 5
         const formattedPerdas = {
           quantidade: totalQuantidadePerdas,
           custo: Number(totalCustoPerdas.toFixed(2)),
-          itens_sem_ficha_quantidade: totalQuantidadePerdas,
+          itens_sem_ficha_quantidade: totalQuantidadePerdasSemFicha,
           por_prato: porPerdaArray.map(formatNum),
         };
 
@@ -5198,6 +5222,7 @@ LIMIT 5
             receita_total_geral: formattedResumo.receita_total_geral,
             cmv: formattedResumo.cmv,
             pratos_com_ficha: formattedResumo.pratos_com_ficha,
+            dias: allDates.length,
           },
           "CMV teorico report retrieved successfully"
         );
