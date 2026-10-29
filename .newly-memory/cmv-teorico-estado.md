@@ -11,3 +11,5 @@ Regra (commit 5b240f7): receita exclui o valor bruto das cortesias (só itens de
 Etapa 2 (app/relatorio-detalhe/cmv-teorico.tsx, utils/exportacao/cmv.ts) NÃO começou; só em outro turno, após o usuário pedir.
 **Why:** o usuário exige especificação exata e uma mudança por turno no backend.
 **How to apply:** na Etapa 2, ler o formato acima no código da rota; se algo falhar na prática, nova specular_change pontual.
+
+**Etapa 2 (app):** tela app/relatorio-detalhe/cmv-teorico.tsx, utils/exportacao/cmv.ts, cartão no índice de relatórios, `legenda`/`pendentesTitulo` opcionais no módulo de exportação. Commit 8939b36 na dev. NÃO validada em dispositivo: login demo do Gerente falha ("E-mail ou senha incorretos") no backend dev; gravação de caminhada dá 502.
