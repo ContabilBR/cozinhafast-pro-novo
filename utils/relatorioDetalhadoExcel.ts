@@ -1,6 +1,10 @@
 import * as XLSX from 'xlsx';
 import { apiGet } from '@/utils/api';
 import { MOTIVOS_DESCONTO } from '@/utils/desconto';
+import {
+  FORMATOS, Planilha, Valor, celulaInteiro, celulaMoeda, dataBR, dataHoraBrasil,
+  montarResumo, montarTabela, registrarTitulosImpressao,
+} from '@/utils/planilhaPadrao';
 
 type NullableNumber = number | null;
 interface PeriodoAPI { nome: string; inicio: string; fim: string }
@@ -109,7 +113,7 @@ const PAYMENT_FORMS = [
 
 type Cell = string | number | null | XLSX.CellObject;
 type Rows = Cell[][];
-type Sheet = { name: string; sheet: XLSX.WorkSheet };
+type Sheet = { name: string; sheet: XLSX.WorkSheet; linhaCabecalho?: number };
 // SheetJS Community preserva formatos numéricos; não oferece gravação de fontes em negrito.
 const CURRENCY = '[$R$-416] #,##0.00';
 function numeric(value: number | null | undefined, format: string, divisor = 1): XLSX.CellObject | null {
@@ -356,76 +360,124 @@ function assertFechamento(data: FechamentoDia): void {
     }
   });
 }
-function fechamentoSheets(data: FechamentoDia): Sheet[] {
+interface ContextoExportacao { restaurante: string; cnpj: string; geradoPor: string }
+async function contextoExportacao(): Promise<ContextoExportacao> {
+  const [restaurante, usuario] = await Promise.allSettled([
+    apiGet<any>('/api/restaurante'), apiGet<any>('/api/me'),
+  ]);
+  const r = restaurante.status === 'fulfilled' ? (restaurante.value?.restaurante ?? restaurante.value) : null;
+  const u = usuario.status === 'fulfilled' ? (usuario.value?.user ?? usuario.value?.usuario ?? usuario.value) : null;
+  const texto = (v: unknown) => typeof v === 'string' && v.trim() ? v.trim() : 'Não informado';
+  return { restaurante: texto(r?.nome), cnpj: texto(r?.cnpj), geradoPor: texto(u?.nome ?? u?.email) };
+}
+function fechamentoSheets(data: FechamentoDia, contexto: ContextoExportacao): Sheet[] {
   assertFechamento(data);
   const { vendas, pagamentos, cancelamentos, descontos, cortesias, pendencias } = data;
   const conciliacao = pagamentos.conciliacao;
-  const conferido = [conciliacao.comandas_pago_menor, conciliacao.valor_faltante,
-    conciliacao.comandas_pago_maior, conciliacao.valor_excedente, pagamentos.comandas_sem_pagamento].every(value => value === 0);
-  const rows: Rows = [
-    ['Fechamento do dia'], ['Data', dateBR(data.data)], ['Horário de Brasília. Relatório somente de leitura.'],
-    [], ['VENDAS'],
-    ['Comandas fechadas', count(vendas.comandas_fechadas)],
-    ['Faturamento de itens', money(vendas.faturamento_itens)],
-    ['Gorjeta', money(vendas.gorjeta)], ['Taxa de entrega', money(vendas.taxa_entrega)],
-    ...(vendas.desconto_aplicado > 0 ? [['Descontos e cortesias nas vendas', money(-vendas.desconto_aplicado)]] : []),
-    ['Total recebido', money(vendas.total_recebido)], ['Ticket médio', money(vendas.ticket_medio)],
-    ['Canal', 'Comandas fechadas', 'Total recebido'],
-    ...(['mesa', 'delivery'] as const).map(canal => [channel(canal), count(vendas.por_canal[canal].comandas_fechadas), money(vendas.por_canal[canal].total_recebido)]),
-    [], ['FORMAS DE PAGAMENTO'], ['Forma', 'Quantidade', 'Valor entregue', 'Troco', 'Valor líquido'],
-    ...PAYMENT_FORMS.map(({ key, label }) => {
-      const forma = pagamentos.formas[key];
-      return [label, count(forma.quantidade), money(forma.valor_entregue), money(forma.troco), money(forma.valor_liquido)];
-    }),
-    ['Total líquido', null, null, null, money(pagamentos.total_liquido)],
-    ['Dinheiro em caixa', null, null, null, money(pagamentos.dinheiro_em_caixa)],
-    [], ['CONFERÊNCIA DE PAGAMENTOS'], ['Conferência', 'Comandas', 'Valor'],
-    ['Comandas pagas a menos / valor faltante', count(conciliacao.comandas_pago_menor), money(conciliacao.valor_faltante)],
-    ['Comandas pagas a mais / valor excedente', count(conciliacao.comandas_pago_maior), money(conciliacao.valor_excedente)],
-    ['Comandas sem pagamento', count(pagamentos.comandas_sem_pagamento)],
-    ['Situação', conferido ? 'Tudo conferido' : 'Há divergências nos pagamentos'],
-    ['Observação: comandas sem pagamento também contam como pagas a menos.'],
-    [], ['CANCELAMENTOS E PERDAS'], ['Classificação', 'Quantidade', 'Valor'],
-    ['Cancelamentos', count(cancelamentos.quantidade), money(cancelamentos.valor)],
-    ['Perdas', count(cancelamentos.quantidade_perda), money(cancelamentos.valor_perda)],
-    ['Observação: perdas são itens cancelados depois que o preparo começou e já estão incluídos nos cancelamentos.'],
-  ];
+  const motivoLabel = (motivo: string) => motivo === 'nao_informado' ? 'Não informado'
+    : MOTIVOS_DESCONTO.find(item => item.value === motivo)?.label ?? motivo;
+  const dia = dataBR(data.data);
+  const planilhas: Planilha[] = [];
+
+  planilhas.push(montarResumo('Resumo do dia', [
+    ['Restaurante', contexto.restaurante], ['CNPJ', contexto.cnpj],
+    ['Relatório', 'Fechamento do dia'], ['Período', dia],
+    ['Gerado em (horário de Brasília)', dataHoraBrasil()], ['Gerado por', contexto.geradoPor],
+  ], ['Indicador', 'Valor'], linha => {
+    const f = (rotulo: string) => `B${linha(rotulo)}`;
+    const ITENS = 'Faturamento dos itens (bruto, sem gorjeta e taxa)';
+    const GORJETA = 'Gorjeta (separada do faturamento)';
+    const TAXA = 'Taxa de entrega (separada do faturamento)';
+    const APLICADO = 'Descontos e cortesias aplicados nas vendas';
+    const TOTAL = 'Total recebido (líquido dos descontos)';
+    const diferenca = Math.round((vendas.faturamento_itens + vendas.gorjeta + vendas.taxa_entrega
+      - vendas.desconto_aplicado - vendas.total_recebido) * 100) / 100;
+    const formula = () => {
+      const soma = `${f(ITENS)}+${f(GORJETA)}+${f(TAXA)}-${f(APLICADO)}-${f(TOTAL)}`;
+      return `IF(ROUND(${soma},2)=0,"Confere",ROUND(${soma},2))`;
+    };
+    let confere: XLSX.CellObject;
+    try { confere = { t: diferenca === 0 ? 's' : 'n', v: diferenca === 0 ? 'Confere' : diferenca, f: formula(), z: FORMATOS.moeda }; }
+    catch { confere = { t: 's', v: '' }; }
+    return [
+      { rotulo: ITENS, valor: celulaMoeda(vendas.faturamento_itens) },
+      { rotulo: GORJETA, valor: celulaMoeda(vendas.gorjeta) },
+      { rotulo: TAXA, valor: celulaMoeda(vendas.taxa_entrega) },
+      { rotulo: 'Descontos', valor: celulaMoeda(descontos.valor) },
+      { rotulo: 'Cortesias', valor: celulaMoeda(cortesias.valor) },
+      { rotulo: APLICADO, valor: celulaMoeda(vendas.desconto_aplicado) },
+      { rotulo: TOTAL, valor: celulaMoeda(vendas.total_recebido) },
+      { rotulo: 'Comandas fechadas', valor: celulaInteiro(vendas.comandas_fechadas) },
+      { rotulo: 'Ticket médio por comanda', valor: celulaMoeda(vendas.ticket_medio) },
+      { rotulo: 'Conferência: itens + gorjeta + taxa de entrega − descontos = total recebido', valor: confere },
+    ];
+  }));
+
+  planilhas.push(montarTabela('Pagamentos', [
+    { titulo: 'Forma de pagamento', tipo: 'texto' },
+    { titulo: 'Quantidade', tipo: 'inteiro', somar: true },
+    { titulo: 'Valor entregue', tipo: 'moeda', somar: true },
+    { titulo: 'Troco', tipo: 'moeda', somar: true },
+    { titulo: 'Valor líquido', tipo: 'moeda', somar: true },
+  ], PAYMENT_FORMS.map(({ key, label }) => {
+    const forma = pagamentos.formas[key];
+    return [label, forma.quantidade, forma.valor_entregue, forma.troco, forma.valor_liquido];
+  })));
+
+  planilhas.push(montarTabela('Conferência', [
+    { titulo: 'Item', tipo: 'texto' },
+    { titulo: 'Comandas', tipo: 'inteiro' },
+    { titulo: 'Valor', tipo: 'moeda' },
+    { titulo: 'Observação', tipo: 'texto', observacao: true },
+  ], [
+    ['Pagas a menos (valor faltante)', conciliacao.comandas_pago_menor, conciliacao.valor_faltante, 'Inclui as comandas sem pagamento'],
+    ['Pagas a mais (valor excedente)', conciliacao.comandas_pago_maior, conciliacao.valor_excedente, null],
+    ['Sem pagamento', pagamentos.comandas_sem_pagamento, null, null],
+    ['Dinheiro em caixa', null, pagamentos.dinheiro_em_caixa, null],
+  ]));
+
+  planilhas.push(montarTabela('Cancelamentos e perdas', [
+    { titulo: 'Classificação', tipo: 'texto' },
+    { titulo: 'Quantidade de itens', tipo: 'inteiro' },
+    { titulo: 'Valor', tipo: 'moeda' },
+    { titulo: 'Observação', tipo: 'texto', observacao: true },
+  ], [
+    ['Cancelamentos', cancelamentos.quantidade, cancelamentos.valor, null],
+    ['Perdas', cancelamentos.quantidade_perda, cancelamentos.valor_perda, 'Itens cancelados depois do início do preparo; já incluídos em Cancelamentos'],
+  ]));
+
   if (descontos.quantidade + cortesias.quantidade > 0) {
-    const blocos = [{ tipo: 'Descontos', bloco: descontos }, { tipo: 'Cortesias', bloco: cortesias }];
-    const motivoLabel = (motivo: string) => motivo === 'nao_informado' ? 'Não informado'
-      : MOTIVOS_DESCONTO.find(item => item.value === motivo)?.label ?? motivo;
-    rows.push([], ['DESCONTOS E CORTESIAS'], ['Tipo', 'Comandas', 'Valor'],
-      ...blocos.map(({ tipo, bloco }) => [tipo, count(bloco.quantidade), money(bloco.valor)]));
-    const porMotivo: Rows = blocos.flatMap(({ tipo, bloco }) => bloco.por_motivo.map(row =>
-      [tipo, motivoLabel(row.motivo), count(row.quantidade), money(row.valor)]));
+    const blocos = [{ tipo: 'Desconto', bloco: descontos }, { tipo: 'Cortesia', bloco: cortesias }];
+    const porMotivo = blocos.flatMap(({ tipo, bloco }) => bloco.por_motivo.map(row =>
+      [tipo, motivoLabel(row.motivo), row.quantidade, row.valor] as Valor[]));
     if (porMotivo.length > 0) {
-      rows.push([], ['POR MOTIVO'], ['Tipo', 'Motivo', 'Comandas', 'Valor'], ...porMotivo);
+      planilhas.push(montarTabela('Descontos por motivo', [
+        { titulo: 'Tipo', tipo: 'texto' }, { titulo: 'Motivo', tipo: 'texto', observacao: true },
+        { titulo: 'Comandas', tipo: 'inteiro', somar: true }, { titulo: 'Valor', tipo: 'moeda', somar: true },
+      ], porMotivo));
     }
-    const porResponsavel: Rows = blocos.flatMap(({ tipo, bloco }) => bloco.por_responsavel.map(row =>
-      [tipo, row.nome, count(row.quantidade), money(row.valor)]));
+    const porResponsavel = blocos.flatMap(({ tipo, bloco }) => bloco.por_responsavel.map(row =>
+      [tipo, row.nome, row.quantidade, row.valor] as Valor[]));
     if (porResponsavel.length > 0) {
-      rows.push([], ['POR RESPONSÁVEL'], ['Tipo', 'Responsável', 'Comandas', 'Valor'], ...porResponsavel);
+      planilhas.push(montarTabela('Descontos por responsável', [
+        { titulo: 'Tipo', tipo: 'texto' }, { titulo: 'Responsável', tipo: 'texto' },
+        { titulo: 'Comandas', tipo: 'inteiro', somar: true }, { titulo: 'Valor', tipo: 'moeda', somar: true },
+      ], porResponsavel));
     }
-    rows.push([], ['Observação: Cortesias e descontos totais sem gorjeta têm total zero e não entram nas vendas; por isso o valor desta seção pode ser maior que a linha de descontos da seção de vendas.']);
   }
+
   if (pendencias.disponivel) {
-    rows.push([], ['PENDÊNCIAS'],
-      ['Total de comandas abertas', count(pendencias.total_comandas_abertas)],
-      ['Valor parcial total', money(pendencias.valor_parcial_total)],
-      ['Entregas em andamento', count(pendencias.entregas_em_andamento)],
-      ['Comanda', 'Tipo', 'Aberta às', 'Subtotal parcial']);
-    if (pendencias.comandas_abertas.length === 0) rows.push(['Nenhuma comanda aberta']);
-    pendencias.comandas_abertas.slice(0, 50).forEach(row => {
-      const label = row.tipo === 'mesa' && row.mesa_numero !== null
-        ? `Mesa ${row.mesa_numero}` : row.rotulo?.trim() || (row.tipo === 'delivery' ? 'Delivery' : 'Mesa sem número');
-      const hora = new Date(row.aberta_em).toLocaleTimeString('pt-BR', {
-        timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit',
-      });
-      rows.push([label, channel(row.tipo), hora, money(row.subtotal_parcial)]);
-    });
-    rows.push(['Observação: lista limitada a 50 comandas. Horários de abertura no horário de Brasília.']);
+    const abertas = pendencias.comandas_abertas.slice(0, 50).map(row => [
+      row.tipo === 'mesa' && row.mesa_numero !== null
+        ? `Mesa ${row.mesa_numero}` : row.rotulo?.trim() || (row.tipo === 'delivery' ? 'Delivery' : 'Mesa sem número'),
+      channel(row.tipo), row.aberta_em, row.subtotal_parcial,
+    ] as Valor[]);
+    planilhas.push(montarTabela('Hoje', [
+      { titulo: 'Comanda aberta', tipo: 'texto' }, { titulo: 'Tipo', tipo: 'texto' },
+      { titulo: 'Aberta às', tipo: 'hora' }, { titulo: 'Subtotal parcial', tipo: 'moeda', somar: true },
+    ], abertas.length > 0 ? abertas : [['Nenhuma comanda aberta', null, null, null]], { rotuloTotal: 'Total listado' }));
   }
-  return [sheet('Fechamento do dia', rows)];
+  return planilhas.map(p => ({ name: p.nome, sheet: p.sheet, linhaCabecalho: p.linhaCabecalho }));
 }
 
 /** Acrescenta apenas as abas novas. Não altera nenhuma célula ou formato das abas existentes. */
@@ -434,7 +486,10 @@ export async function appendDetailedReportSheets(workbook: XLSX.WorkBook, period
   const sections = [
     ...(periodo === 'hoje' ? [{
       name: 'Fechamento do dia',
-      load: async () => fechamentoSheets(await apiGet<FechamentoDia>('/api/relatorios/fechamento-dia')),
+      load: async () => {
+        const [fechamento, contexto] = await Promise.all([apiGet<FechamentoDia>('/api/relatorios/fechamento-dia'), contextoExportacao()]);
+        return fechamentoSheets(fechamento, contexto);
+      },
     }] : []),
     { name: 'Vendas e Vendas por dia', load: async () => vendasSheets(await apiGet<Vendas>(`/api/relatorios/vendas${query}`)) },
     { name: 'Cancelamentos', load: async () => cancelamentosSheets(await apiGet<Cancelamentos>(`/api/relatorios/cancelamentos${query}`)) },
@@ -448,7 +503,10 @@ export async function appendDetailedReportSheets(workbook: XLSX.WorkBook, period
   const warnings: Rows = [['Seção não carregada', 'Aviso']];
   results.forEach((result, index) => {
     if (result.status === 'fulfilled') {
-      result.value.forEach(value => XLSX.utils.book_append_sheet(workbook, value.sheet, value.name));
+      result.value.forEach(value => {
+        XLSX.utils.book_append_sheet(workbook, value.sheet, value.name);
+        if (value.linhaCabecalho) registrarTitulosImpressao(workbook, { nome: value.name, sheet: value.sheet, linhaCabecalho: value.linhaCabecalho });
+      });
     } else {
       warnings.push([sections[index].name, 'Não foi possível carregar esta seção para o período selecionado.']);
     }
