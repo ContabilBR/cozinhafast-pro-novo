@@ -4751,7 +4751,13 @@ LIMIT 5
         const restauranteId = requireTenant(session);
 
         const query = request.query as { periodo?: string; dataInicio?: string; dataFim?: string };
-        const { inicio, fim, label: periodoLabel } = resolvePeriodo(query.periodo, query.dataInicio, query.dataFim);
+        const { inicio, fim } = resolvePeriodo(query.periodo, query.dataInicio, query.dataFim);
+
+        const diaInicio = diaLocalDeInstante(inicio);
+        const diaFim = diaLocalDeInstante(new Date(fim.getTime() - 1000));
+
+        const dataInicioStr = `${String(diaInicio.ano).padStart(4, "0")}-${String(diaInicio.mes0 + 1).padStart(2, "0")}-${String(diaInicio.dia).padStart(2, "0")}`;
+        const dataFimStr = `${String(diaFim.ano).padStart(4, "0")}-${String(diaFim.mes0 + 1).padStart(2, "0")}-${String(diaFim.dia).padStart(2, "0")}`;
 
         // Check period limit for personalizado
         if (query.periodo === "personalizado") {
@@ -4762,462 +4768,451 @@ LIMIT 5
           }
         }
 
-        app.logger.info({ restauranteId, periodo: query.periodo, inicio, fim }, "Getting cmv-teorico report");
+        app.logger.info({ restauranteId, periodo: query.periodo, dataInicio: dataInicioStr, dataFim: dataFimStr }, "Getting cmv-teorico report");
 
-        // Main query: comprehensive CMV analysis
-        const result: any = await (app.db as any).execute(
+        // QUERY 1: Sold items (vendas)
+        const vendasResult: any = await (app.db as any).execute(
           sql`
             WITH comandas_fontes AS (
-              SELECT c.id, c.restaurante_id, c.status::text, c.total, c.subtotal, c.closed_at, 0 AS prioridade_fonte
+              SELECT c.id, c.restaurante_id, c.status::text, c.total, c.closed_at, c.desconto_tipo::text, 0 AS prioridade_fonte
               FROM ${schema.comandas} c
               WHERE c.restaurante_id = ${restauranteId}
               UNION ALL
-              SELECT ch.id, ch.restaurante_id, ch.status::text, ch.total, ch.subtotal, ch.closed_at, 1 AS prioridade_fonte
+              SELECT ch.id, ch.restaurante_id, ch.status::text, ch.total, ch.closed_at, ch.desconto_tipo::text, 1 AS prioridade_fonte
               FROM ${schema.comandasHistorico} ch
               WHERE ch.restaurante_id = ${restauranteId}
             ),
             comandas_unicas AS (
               SELECT DISTINCT ON (cf.restaurante_id, cf.id)
-                cf.id, cf.restaurante_id, cf.status, cf.total, cf.subtotal, cf.closed_at
+                cf.id, cf.restaurante_id, cf.status, cf.total, cf.closed_at, cf.desconto_tipo
               FROM comandas_fontes cf
               ORDER BY cf.restaurante_id, cf.id, cf.prioridade_fonte ASC
             ),
-            comandas_fechadas AS (
-              SELECT cu.id, cu.restaurante_id, cu.total, cu.subtotal, cu.closed_at
+            comandas_validas AS (
+              SELECT cu.id, cu.restaurante_id, cu.desconto_tipo
               FROM comandas_unicas cu
-              WHERE cu.status = 'fechada' AND cu.total > 0
-                AND cu.closed_at >= ${inicio.toISOString()}::timestamptz
-                AND cu.closed_at < ${fim.toISOString()}::timestamptz
+              WHERE cu.status = 'fechada'
+                AND cu.closed_at >= ${dataInicioStr}::date::timestamp AT TIME ZONE 'America/Sao_Paulo'
+                AND cu.closed_at < (${dataFimStr}::date + INTERVAL '1 day')::timestamp AT TIME ZONE 'America/Sao_Paulo'
+                AND (cu.total > 0 OR cu.desconto_tipo = 'cortesia')
             ),
             itens_fontes AS (
-              SELECT p.id, p.comanda_id, p.prato_id, p.quantidade, p.preco_unitario, p.status::text, p.cancelado_em, p.cancelado_apos_inicio, p.restaurante_id, NULL::text AS nome_prato, 0 AS prioridade_fonte
+              SELECT p.id, p.restaurante_id, p.comanda_id, p.prato_id, p.quantidade, p.preco_unitario, p.status::text, p.cancelado_em, NULL::text AS nome_prato, 0 AS prioridade_fonte
               FROM ${schema.pedidos} p
               WHERE p.restaurante_id = ${restauranteId}
               UNION ALL
-              SELECT ph.id, ph.comanda_id, ph.prato_id, ph.quantidade, ph.preco_unitario, ph.status::text, ph.cancelado_em, ph.cancelado_apos_inicio, ph.restaurante_id, ph.prato_nome AS nome_prato, 1 AS prioridade_fonte
+              SELECT ph.id, ph.restaurante_id, ph.comanda_id, ph.prato_id, ph.quantidade, ph.preco_unitario, ph.status::text, ph.cancelado_em, ph.prato_nome, 1 AS prioridade_fonte
               FROM ${schema.pedidosHistorico} ph
               WHERE ph.restaurante_id = ${restauranteId}
             ),
             itens_unicos AS (
               SELECT DISTINCT ON (ifo.restaurante_id, ifo.id)
-                ifo.id, ifo.comanda_id, ifo.prato_id, ifo.quantidade, ifo.preco_unitario, ifo.status, ifo.cancelado_em, ifo.cancelado_apos_inicio, ifo.restaurante_id, ifo.nome_prato
+                ifo.id, ifo.comanda_id, ifo.prato_id, ifo.quantidade, ifo.preco_unitario, ifo.status, ifo.cancelado_em, ifo.nome_prato
               FROM itens_fontes ifo
               ORDER BY ifo.restaurante_id, ifo.id, ifo.prioridade_fonte ASC
-            ),
-            itens_vendidos AS (
-              SELECT iu.prato_id, iu.nome_prato, iu.quantidade, iu.preco_unitario, iu.comanda_id, iu.id AS item_id
-              FROM itens_unicos iu
-              INNER JOIN comandas_fechadas cf ON iu.comanda_id = cf.id
-              WHERE iu.status != 'cancelado' AND iu.cancelado_em IS NULL
-            ),
-            itens_perdidos AS (
-              SELECT iu.prato_id, iu.nome_prato, iu.quantidade, iu.preco_unitario, iu.comanda_id
-              FROM itens_unicos iu
-              INNER JOIN comandas_fechadas cf ON iu.comanda_id = cf.id
-              WHERE iu.status = 'cancelado' AND iu.cancelado_apos_inicio = true
-            ),
-            custo_itens_vendidos AS (
-              SELECT
-                iv.item_id,
-                iv.prato_id,
-                SUM(pi.quantidade_usada * COALESCE(i.custo_unitario, 0)) AS custo_total_item
-              FROM itens_vendidos iv
-              LEFT JOIN ${schema.pratoInsumos} pi ON iv.prato_id = pi.prato_id AND pi.restaurante_id = ${restauranteId}
-              LEFT JOIN ${schema.insumos} i ON pi.insumo_id = i.id AND i.restaurante_id = pi.restaurante_id
-              GROUP BY iv.item_id, iv.prato_id
-            ),
-            custo_itens_perdidos AS (
-              SELECT
-                ip.prato_id,
-                SUM(ip.quantidade * (pi.quantidade_usada * COALESCE(i.custo_unitario, 0))) AS custo_total_perda
-              FROM itens_perdidos ip
-              LEFT JOIN ${schema.pratoInsumos} pi ON ip.prato_id = pi.prato_id AND pi.restaurante_id = ${restauranteId}
-              LEFT JOIN ${schema.insumos} i ON pi.insumo_id = i.id AND i.restaurante_id = pi.restaurante_id
-              GROUP BY ip.prato_id
-            ),
-            por_prato_resumo AS (
-              SELECT
-                iv.prato_id,
-                COALESCE(NULLIF(TRIM(p.nome), ''), NULLIF(TRIM(iv.nome_prato), ''), 'Prato removido') AS prato_nome,
-                COALESCE(c.nome, 'Sem categoria') AS categoria_nome,
-                SUM(iv.quantidade) AS quantidade_vendida,
-                SUM(iv.quantidade * iv.preco_unitario) AS faturamento_item,
-                SUM(COALESCE(c_item.custo_total_item, 0)) AS cmv_teorico,
-                COUNT(DISTINCT iv.comanda_id) AS numero_vendas
-              FROM itens_vendidos iv
-              LEFT JOIN ${schema.pratos} p ON iv.prato_id = p.id AND p.restaurante_id = ${restauranteId}
-              LEFT JOIN ${schema.categorias} c ON p.categoria_id = c.id AND c.restaurante_id = p.restaurante_id
-              LEFT JOIN custo_itens_vendidos c_item ON iv.item_id = c_item.item_id
-              GROUP BY iv.prato_id, COALESCE(NULLIF(TRIM(p.nome), ''), NULLIF(TRIM(iv.nome_prato), ''), 'Prato removido'), COALESCE(c.nome, 'Sem categoria')
-            ),
-            por_categoria_resumo AS (
-              SELECT
-                por_prato_resumo.categoria_nome,
-                SUM(por_prato_resumo.quantidade_vendida) AS quantidade_vendida,
-                SUM(por_prato_resumo.faturamento_item) AS faturamento,
-                SUM(por_prato_resumo.cmv_teorico) AS cmv_teorico
-              FROM por_prato_resumo
-              GROUP BY por_prato_resumo.categoria_nome
-            ),
-            por_insumo_resumo AS (
-              SELECT
-                i.nome AS insumo_nome,
-                SUM(pi.quantidade_usada * iv.quantidade) AS quantidade_total_usada,
-                i.unidade,
-                COALESCE(i.custo_unitario, 0) AS custo_unitario,
-                SUM((pi.quantidade_usada * iv.quantidade) * COALESCE(i.custo_unitario, 0)) AS custo_total
-              FROM itens_vendidos iv
-              LEFT JOIN ${schema.pratoInsumos} pi ON iv.prato_id = pi.prato_id AND pi.restaurante_id = ${restauranteId}
-              LEFT JOIN ${schema.insumos} i ON pi.insumo_id = i.id AND i.restaurante_id = pi.restaurante_id
-              WHERE i.id IS NOT NULL
-              GROUP BY i.id, i.nome, i.unidade, i.custo_unitario
-              ORDER BY custo_total DESC
-            ),
-            por_dia_resumo AS (
-              SELECT
-                (cf.closed_at AT TIME ZONE 'America/Sao_Paulo')::date AS data_local,
-                SUM(iv.quantidade * iv.preco_unitario) AS faturamento,
-                SUM(COALESCE(c_item.custo_total_item, 0)) AS cmv_teorico
-              FROM itens_vendidos iv
-              INNER JOIN comandas_fechadas cf ON iv.comanda_id = cf.id
-              LEFT JOIN custo_itens_vendidos c_item ON iv.item_id = c_item.item_id
-              GROUP BY (cf.closed_at AT TIME ZONE 'America/Sao_Paulo')::date
-            ),
-            sem_ficha_resumo AS (
-              SELECT
-                iv.prato_id,
-                COALESCE(NULLIF(TRIM(p.nome), ''), NULLIF(TRIM(iv.nome_prato), ''), 'Prato removido') AS prato_nome,
-                COALESCE(c.nome, 'Sem categoria') AS categoria_nome,
-                SUM(iv.quantidade) AS quantidade_vendida,
-                SUM(iv.quantidade * iv.preco_unitario) AS faturamento_item,
-                COUNT(DISTINCT iv.comanda_id) AS numero_vendas
-              FROM itens_vendidos iv
-              LEFT JOIN ${schema.pratos} p ON iv.prato_id = p.id AND p.restaurante_id = ${restauranteId}
-              LEFT JOIN ${schema.categorias} c ON p.categoria_id = c.id AND c.restaurante_id = p.restaurante_id
-              WHERE NOT EXISTS (SELECT 1 FROM ${schema.pratoInsumos} pi WHERE pi.prato_id = iv.prato_id AND pi.restaurante_id = ${restauranteId})
-              GROUP BY iv.prato_id, COALESCE(NULLIF(TRIM(p.nome), ''), NULLIF(TRIM(iv.nome_prato), ''), 'Prato removido'), COALESCE(c.nome, 'Sem categoria')
-            ),
-            perdas_resumo AS (
-              SELECT
-                ip.prato_id,
-                COALESCE(NULLIF(TRIM(p.nome), ''), NULLIF(TRIM(ip.nome_prato), ''), 'Prato removido') AS prato_nome,
-                SUM(ip.quantidade) AS quantidade_perdida,
-                SUM(ip.quantidade * ip.preco_unitario) AS valor_perdido,
-                COALESCE(SUM(c_perda.custo_total_perda), 0) AS custo_perdido
-              FROM itens_perdidos ip
-              LEFT JOIN ${schema.pratos} p ON ip.prato_id = p.id AND p.restaurante_id = ${restauranteId}
-              LEFT JOIN custo_itens_perdidos c_perda ON ip.prato_id = c_perda.prato_id
-              GROUP BY ip.prato_id, COALESCE(NULLIF(TRIM(p.nome), ''), NULLIF(TRIM(ip.nome_prato), ''), 'Prato removido')
-            ),
-            totais AS (
-              SELECT
-                SUM(iv.quantidade * iv.preco_unitario) AS faturamento_itens,
-                SUM(COALESCE(c_item.custo_total_item, 0)) AS cmv_teorico,
-                SUM(sf.faturamento_item) AS faturamento_sem_ficha,
-                SUM(pr.valor_perdido) AS valor_perdido_total,
-                SUM(pr.custo_perdido) AS custo_perdido_total,
-                SUM(COALESCE(c_item.custo_total_item, 0) + COALESCE(c_item2.custo_total_item, 0) + COALESCE(pr.custo_perdido, 0)) AS custo_total_incluindo_perdas
-              FROM itens_vendidos iv
-              LEFT JOIN custo_itens_vendidos c_item ON iv.item_id = c_item.item_id
-              CROSS JOIN (SELECT SUM(faturamento_item) AS faturamento_item FROM sem_ficha_resumo) sf
-              CROSS JOIN (SELECT COUNT(*) as count FROM itens_vendidos) dummy
-              LEFT JOIN custo_itens_vendidos c_item2 ON FALSE
-              LEFT JOIN perdas_resumo pr ON FALSE
             )
-            SELECT
-              'resumo' AS section,
-              (SELECT json_build_object(
-                'faturamento_itens', COALESCE(SUM(iv.quantidade * iv.preco_unitario), 0)::numeric(10,2),
-                'faturamento_coberto', COALESCE((SELECT SUM(faturamento) FROM por_prato_resumo), 0)::numeric(10,2),
-                'cmv_teorico', COALESCE((SELECT SUM(cmv_teorico) FROM por_prato_resumo), 0)::numeric(10,2),
-                'cmv_percentual', CASE WHEN COALESCE(SUM(iv.quantidade * iv.preco_unitario), 0) > 0 THEN ROUND((COALESCE((SELECT SUM(cmv_teorico) FROM por_prato_resumo), 0) / COALESCE(SUM(iv.quantidade * iv.preco_unitario), 0) * 100)::numeric, 2) ELSE 0 END,
-                'margem_bruta', COALESCE(SUM(iv.quantidade * iv.preco_unitario), 0)::numeric(10,2) - COALESCE((SELECT SUM(cmv_teorico) FROM por_prato_resumo), 0)::numeric(10,2),
-                'margem_percentual', CASE WHEN COALESCE(SUM(iv.quantidade * iv.preco_unitario), 0) > 0 THEN ROUND((1 - COALESCE((SELECT SUM(cmv_teorico) FROM por_prato_resumo), 0) / COALESCE(SUM(iv.quantidade * iv.preco_unitario), 0)) * 100::numeric, 2) ELSE 0 END,
-                'custo_cortesias', 0::numeric(10,2),
-                'custo_perdas', COALESCE((SELECT SUM(custo_perdido) FROM perdas_resumo), 0)::numeric(10,2),
-                'cobertura_ficha_percentual', CASE WHEN COALESCE(SUM(iv.quantidade * iv.preco_unitario), 0) > 0 THEN ROUND((COALESCE((SELECT SUM(faturamento_item) FROM por_prato_resumo), 0) / COALESCE(SUM(iv.quantidade * iv.preco_unitario), 0) * 100)::numeric, 2) ELSE 0 END,
-                'quantidade_vendida', COUNT(DISTINCT iv.item_id)::integer,
-                'numero_vendas', COUNT(DISTINCT iv.comanda_id)::integer
-              ) FROM itens_vendidos iv) AS data
+            SELECT iu.prato_id, iu.nome_prato, iu.quantidade, iu.preco_unitario, cv.desconto_tipo, iu.id AS item_id
+            FROM itens_unicos iu
+            INNER JOIN comandas_validas cv ON iu.comanda_id = cv.id
+            WHERE iu.status != 'cancelado' AND iu.cancelado_em IS NULL
           `
-        );
+        ) as any[];
 
-        // Second query: detailed data by prato, categoria, insumo, dia
-        const detalhesResult: any = await (app.db as any).execute(
+        // QUERY 2: Recipe costs (ficha técnica)
+        const fichaResult: any = await (app.db as any).execute(
           sql`
-            WITH comandas_fontes AS (
-              SELECT c.id, c.restaurante_id, c.status::text, c.total, c.subtotal, c.closed_at, 0 AS prioridade_fonte
-              FROM ${schema.comandas} c
-              WHERE c.restaurante_id = ${restauranteId}
-              UNION ALL
-              SELECT ch.id, ch.restaurante_id, ch.status::text, ch.total, ch.subtotal, ch.closed_at, 1 AS prioridade_fonte
-              FROM ${schema.comandasHistorico} ch
-              WHERE ch.restaurante_id = ${restauranteId}
-            ),
-            comandas_unicas AS (
-              SELECT DISTINCT ON (cf.restaurante_id, cf.id)
-                cf.id, cf.restaurante_id, cf.status, cf.total, cf.subtotal, cf.closed_at
-              FROM comandas_fontes cf
-              ORDER BY cf.restaurante_id, cf.id, cf.prioridade_fonte ASC
-            ),
-            comandas_fechadas AS (
-              SELECT cu.id, cu.restaurante_id, cu.total, cu.subtotal, cu.closed_at
-              FROM comandas_unicas cu
-              WHERE cu.status = 'fechada' AND cu.total > 0
-                AND cu.closed_at >= ${inicio.toISOString()}::timestamptz
-                AND cu.closed_at < ${fim.toISOString()}::timestamptz
-            ),
-            itens_fontes AS (
-              SELECT p.id, p.comanda_id, p.prato_id, p.quantidade, p.preco_unitario, p.status::text, p.cancelado_em, p.cancelado_apos_inicio, p.restaurante_id, NULL::text AS nome_prato, 0 AS prioridade_fonte
+            SELECT pi.prato_id, pi.insumo_id, i.id, i.nome, i.unidade::text, pi.quantidade_usada, i.custo_unitario
+            FROM ${schema.pratoInsumos} pi
+            INNER JOIN ${schema.insumos} i ON i.id = pi.insumo_id AND i.restaurante_id = pi.restaurante_id
+            WHERE pi.restaurante_id = ${restauranteId}
+          `
+        ) as any[];
+
+        // QUERY 3: Dishes and categories
+        const pratosResult: any = await (app.db as any).execute(
+          sql`
+            SELECT p.id, p.nome, c.nome AS categoria_nome
+            FROM ${schema.pratos} p
+            LEFT JOIN ${schema.categorias} c ON c.id = p.categoria_id AND c.restaurante_id = p.restaurante_id
+            WHERE p.restaurante_id = ${restauranteId}
+          `
+        ) as any[];
+
+        // QUERY 4: Losses (perdas) - canceled after prep start in period
+        const perdasResult: any = await (app.db as any).execute(
+          sql`
+            WITH itens_fontes AS (
+              SELECT p.id, p.restaurante_id, p.prato_id, p.quantidade, p.preco_unitario, p.status::text, p.cancelado_em, p.cancelado_apos_inicio, NULL::text AS nome_prato, 0 AS prioridade_fonte
               FROM ${schema.pedidos} p
               WHERE p.restaurante_id = ${restauranteId}
               UNION ALL
-              SELECT ph.id, ph.comanda_id, ph.prato_id, ph.quantidade, ph.preco_unitario, ph.status::text, ph.cancelado_em, ph.cancelado_apos_inicio, ph.restaurante_id, ph.prato_nome AS nome_prato, 1 AS prioridade_fonte
+              SELECT ph.id, ph.restaurante_id, ph.prato_id, ph.quantidade, ph.preco_unitario, ph.status::text, ph.cancelado_em, ph.cancelado_apos_inicio, ph.prato_nome, 1 AS prioridade_fonte
               FROM ${schema.pedidosHistorico} ph
               WHERE ph.restaurante_id = ${restauranteId}
             ),
             itens_unicos AS (
               SELECT DISTINCT ON (ifo.restaurante_id, ifo.id)
-                ifo.id, ifo.comanda_id, ifo.prato_id, ifo.quantidade, ifo.preco_unitario, ifo.status, ifo.cancelado_em, ifo.cancelado_apos_inicio, ifo.restaurante_id, ifo.nome_prato
+                ifo.id, ifo.prato_id, ifo.quantidade, ifo.preco_unitario, ifo.status, ifo.cancelado_em, ifo.cancelado_apos_inicio, ifo.nome_prato
               FROM itens_fontes ifo
               ORDER BY ifo.restaurante_id, ifo.id, ifo.prioridade_fonte ASC
-            ),
-            itens_vendidos AS (
-              SELECT iu.prato_id, iu.nome_prato, iu.quantidade, iu.preco_unitario, iu.comanda_id, iu.id AS item_id
-              FROM itens_unicos iu
-              INNER JOIN comandas_fechadas cf ON iu.comanda_id = cf.id
-              WHERE iu.status != 'cancelado' AND iu.cancelado_em IS NULL
-            ),
-            itens_perdidos AS (
-              SELECT iu.prato_id, iu.nome_prato, iu.quantidade, iu.preco_unitario, iu.comanda_id
-              FROM itens_unicos iu
-              INNER JOIN comandas_fechadas cf ON iu.comanda_id = cf.id
-              WHERE iu.status = 'cancelado' AND iu.cancelado_apos_inicio = true
-            ),
-            custo_itens_vendidos AS (
-              SELECT
-                iv.item_id,
-                iv.prato_id,
-                SUM(pi.quantidade_usada * COALESCE(i.custo_unitario, 0)) AS custo_total_item
-              FROM itens_vendidos iv
-              LEFT JOIN ${schema.pratoInsumos} pi ON iv.prato_id = pi.prato_id AND pi.restaurante_id = ${restauranteId}
-              LEFT JOIN ${schema.insumos} i ON pi.insumo_id = i.id AND i.restaurante_id = pi.restaurante_id
-              GROUP BY iv.item_id, iv.prato_id
-            ),
-            custo_itens_perdidos AS (
-              SELECT
-                ip.prato_id,
-                SUM(ip.quantidade * (pi.quantidade_usada * COALESCE(i.custo_unitario, 0))) AS custo_total_perda
-              FROM itens_perdidos ip
-              LEFT JOIN ${schema.pratoInsumos} pi ON ip.prato_id = pi.prato_id AND pi.restaurante_id = ${restauranteId}
-              LEFT JOIN ${schema.insumos} i ON pi.insumo_id = i.id AND i.restaurante_id = pi.restaurante_id
-              GROUP BY ip.prato_id
-            ),
-            por_prato_resumo AS (
-              SELECT
-                iv.prato_id,
-                COALESCE(NULLIF(TRIM(p.nome), ''), NULLIF(TRIM(iv.nome_prato), ''), 'Prato removido') AS prato_nome,
-                COALESCE(c.nome, 'Sem categoria') AS categoria_nome,
-                SUM(iv.quantidade) AS quantidade_vendida,
-                SUM(iv.quantidade * iv.preco_unitario) AS faturamento_item,
-                SUM(COALESCE(c_item.custo_total_item, 0)) AS cmv_teorico,
-                COUNT(DISTINCT iv.comanda_id) AS numero_vendas
-              FROM itens_vendidos iv
-              LEFT JOIN ${schema.pratos} p ON iv.prato_id = p.id AND p.restaurante_id = ${restauranteId}
-              LEFT JOIN ${schema.categorias} c ON p.categoria_id = c.id AND c.restaurante_id = p.restaurante_id
-              LEFT JOIN custo_itens_vendidos c_item ON iv.item_id = c_item.item_id
-              GROUP BY iv.prato_id, COALESCE(NULLIF(TRIM(p.nome), ''), NULLIF(TRIM(iv.nome_prato), ''), 'Prato removido'), COALESCE(c.nome, 'Sem categoria')
-            ),
-            por_categoria_resumo AS (
-              SELECT
-                por_prato_resumo.categoria_nome,
-                SUM(por_prato_resumo.quantidade_vendida) AS quantidade_vendida,
-                SUM(por_prato_resumo.faturamento_item) AS faturamento,
-                SUM(por_prato_resumo.cmv_teorico) AS cmv_teorico
-              FROM por_prato_resumo
-              GROUP BY por_prato_resumo.categoria_nome
-            ),
-            por_insumo_resumo AS (
-              SELECT
-                i.nome AS insumo_nome,
-                SUM(pi.quantidade_usada * iv.quantidade) AS quantidade_total_usada,
-                i.unidade,
-                COALESCE(i.custo_unitario, 0) AS custo_unitario,
-                SUM((pi.quantidade_usada * iv.quantidade) * COALESCE(i.custo_unitario, 0)) AS custo_total
-              FROM itens_vendidos iv
-              LEFT JOIN ${schema.pratoInsumos} pi ON iv.prato_id = pi.prato_id AND pi.restaurante_id = ${restauranteId}
-              LEFT JOIN ${schema.insumos} i ON pi.insumo_id = i.id AND i.restaurante_id = pi.restaurante_id
-              WHERE i.id IS NOT NULL
-              GROUP BY i.id, i.nome, i.unidade, i.custo_unitario
-              ORDER BY custo_total DESC
-            ),
-            por_dia_resumo AS (
-              SELECT
-                (cf.closed_at AT TIME ZONE 'America/Sao_Paulo')::date AS data_local,
-                SUM(iv.quantidade * iv.preco_unitario) AS faturamento,
-                SUM(COALESCE(c_item.custo_total_item, 0)) AS cmv_teorico
-              FROM itens_vendidos iv
-              INNER JOIN comandas_fechadas cf ON iv.comanda_id = cf.id
-              LEFT JOIN custo_itens_vendidos c_item ON iv.item_id = c_item.item_id
-              GROUP BY (cf.closed_at AT TIME ZONE 'America/Sao_Paulo')::date
-            ),
-            sem_ficha_resumo AS (
-              SELECT
-                iv.prato_id,
-                COALESCE(NULLIF(TRIM(p.nome), ''), NULLIF(TRIM(iv.nome_prato), ''), 'Prato removido') AS prato_nome,
-                COALESCE(c.nome, 'Sem categoria') AS categoria_nome,
-                SUM(iv.quantidade) AS quantidade_vendida,
-                SUM(iv.quantidade * iv.preco_unitario) AS faturamento_item,
-                COUNT(DISTINCT iv.comanda_id) AS numero_vendas
-              FROM itens_vendidos iv
-              LEFT JOIN ${schema.pratos} p ON iv.prato_id = p.id AND p.restaurante_id = ${restauranteId}
-              LEFT JOIN ${schema.categorias} c ON p.categoria_id = c.id AND c.restaurante_id = p.restaurante_id
-              WHERE NOT EXISTS (SELECT 1 FROM ${schema.pratoInsumos} pi WHERE pi.prato_id = iv.prato_id AND pi.restaurante_id = ${restauranteId})
-              GROUP BY iv.prato_id, COALESCE(NULLIF(TRIM(p.nome), ''), NULLIF(TRIM(iv.nome_prato), ''), 'Prato removido'), COALESCE(c.nome, 'Sem categoria')
-            ),
-            perdas_resumo AS (
-              SELECT
-                ip.prato_id,
-                COALESCE(NULLIF(TRIM(p.nome), ''), NULLIF(TRIM(ip.nome_prato), ''), 'Prato removido') AS prato_nome,
-                SUM(ip.quantidade) AS quantidade_perdida,
-                SUM(ip.quantidade * ip.preco_unitario) AS valor_perdido,
-                COALESCE(SUM(c_perda.custo_total_perda), 0) AS custo_perdido
-              FROM itens_perdidos ip
-              LEFT JOIN ${schema.pratos} p ON ip.prato_id = p.id AND p.restaurante_id = ${restauranteId}
-              LEFT JOIN custo_itens_perdidos c_perda ON ip.prato_id = c_perda.prato_id
-              GROUP BY ip.prato_id, COALESCE(NULLIF(TRIM(p.nome), ''), NULLIF(TRIM(ip.nome_prato), ''), 'Prato removido')
             )
-            SELECT 'multiple' as type,
-              json_build_object(
-                'por_prato', (SELECT json_agg(json_build_object('prato_id', prato_id, 'prato_nome', prato_nome, 'categoria', categoria_nome, 'quantidade_vendida', quantidade_vendida, 'faturamento', faturamento_item, 'cmv_teorico', cmv_teorico, 'margem', faturamento_item - cmv_teorico, 'numero_vendas', numero_vendas)) FROM por_prato_resumo ORDER BY faturamento_item DESC),
-                'por_categoria', (SELECT json_agg(json_build_object('categoria', categoria_nome, 'quantidade_vendida', quantidade_vendida, 'faturamento', faturamento, 'cmv_teorico', cmv_teorico)) FROM por_categoria_resumo ORDER BY faturamento DESC),
-                'por_insumo', (SELECT json_agg(json_build_object('insumo_nome', insumo_nome, 'quantidade_total_usada', quantidade_total_usada, 'unidade', unidade, 'custo_unitario', custo_unitario, 'custo_total', custo_total)) FROM por_insumo_resumo LIMIT 50),
-                'por_dia', (SELECT json_agg(json_build_object('data', data_local, 'faturamento', faturamento, 'cmv_teorico', cmv_teorico)) FROM por_dia_resumo ORDER BY data_local),
-                'sem_ficha', (SELECT json_agg(json_build_object('prato_id', prato_id, 'prato_nome', prato_nome, 'categoria', categoria_nome, 'quantidade_vendida', quantidade_vendida, 'faturamento', faturamento_item, 'numero_vendas', numero_vendas)) FROM sem_ficha_resumo ORDER BY faturamento_item DESC),
-                'perdas', (SELECT json_agg(json_build_object('prato_id', prato_id, 'prato_nome', prato_nome, 'quantidade_perdida', quantidade_perdida, 'valor_perdido', valor_perdido, 'custo_perdido', custo_perdido)) FROM perdas_resumo ORDER BY valor_perdido DESC)
-              ) as data
+            SELECT iu.prato_id, iu.nome_prato, iu.quantidade, iu.preco_unitario
+            FROM itens_unicos iu
+            WHERE iu.status = 'cancelado' AND iu.cancelado_apos_inicio = true
+              AND iu.cancelado_em >= ${dataInicioStr}::date::timestamp AT TIME ZONE 'America/Sao_Paulo'
+              AND iu.cancelado_em < (${dataFimStr}::date + INTERVAL '1 day')::timestamp AT TIME ZONE 'America/Sao_Paulo'
           `
-        );
+        ) as any[];
 
-        // Process results
-        let resumo: any = {
-          faturamento_itens: 0,
-          faturamento_coberto: 0,
-          cmv_teorico: 0,
-          cmv_percentual: 0,
-          margem_bruta: 0,
-          margem_percentual: 0,
-          custo_cortesias: 0,
-          custo_perdas: 0,
-          cobertura_ficha_percentual: 0,
-          quantidade_vendida: 0,
-          numero_vendas: 0,
-        };
+        // Build maps and process data
+        const fichaMap = new Map<string | null, Array<{ insumoId: string; nome: string; unidade: string; qtdUsada: number; custo: number }>>();
+        for (const row of fichaResult) {
+          const pratoId = row.prato_id || null;
+          if (!fichaMap.has(pratoId)) fichaMap.set(pratoId, []);
+          fichaMap.get(pratoId)!.push({
+            insumoId: row.id,
+            nome: row.nome,
+            unidade: row.unidade || '',
+            qtdUsada: Number(row.quantidade_usada) || 0,
+            custo: Number(row.custo_unitario) || 0,
+          });
+        }
 
-        let porPrato: any[] = [];
-        let porCategoria: any[] = [];
-        let porInsumo: any[] = [];
-        let porDia: any[] = [];
-        let semFicha: any[] = [];
-        let perdas: any[] = [];
+        const pratosMap = new Map<string | null, { nome: string; categoria: string }>();
+        for (const row of pratosResult) {
+          const id = row.id || null;
+          pratosMap.set(id, { nome: row.nome || 'Prato removido', categoria: row.categoria_nome || 'Sem categoria' });
+        }
 
-        if (Array.isArray(detalhesResult) && detalhesResult.length > 0) {
-          const data = detalhesResult[0]?.data;
-          if (data) {
-            porPrato = data.por_prato || [];
-            porCategoria = data.por_categoria || [];
-            porInsumo = data.por_insumo || [];
-            porDia = data.por_dia || [];
-            semFicha = data.sem_ficha || [];
-            perdas = data.perdas || [];
+        // Classify dishes and calculate costs
+        type PratoClass = 'com_ficha' | 'sem_ficha' | 'custo_incompleto';
+        const pratoClassMap = new Map<string | null, { classe: PratoClass; custoUnitario: number; insumosSemCusto: string[] }>();
 
-            // Calculate summary totals
-            let totalFaturamento = 0;
-            let totalCMV = 0;
-            let totalCustoFicha = 0;
-            let totalCustoPerdas = 0;
+        for (const [pratoId, insumos] of fichaMap.entries()) {
+          const insumosSemCusto = insumos.filter(i => i.custo === null || i.custo <= 0).map(i => i.nome);
+          const custoUnitario = insumos.reduce((sum, i) => sum + (i.qtdUsada * i.custo), 0);
 
-            for (const item of porPrato) {
-              totalFaturamento += Number(item.faturamento) || 0;
-              totalCMV += Number(item.cmv_teorico) || 0;
-            }
+          let classe: PratoClass = 'com_ficha';
+          if (insumosSemCusto.length > 0) classe = 'custo_incompleto';
 
-            for (const item of semFicha) {
-              totalFaturamento += Number(item.faturamento) || 0;
-            }
+          pratoClassMap.set(pratoId, { classe, custoUnitario, insumosSemCusto });
+        }
 
-            for (const item of perdas) {
-              totalCustoPerdas += Number(item.custo_perdido) || 0;
-            }
-
-            totalCustoFicha = totalCMV;
-
-            const cmvPercentual = totalFaturamento > 0 ? (totalCMV / totalFaturamento) * 100 : 0;
-            const margemBruta = totalFaturamento - totalCMV;
-            const margemPercentual = totalFaturamento > 0 ? ((totalFaturamento - totalCMV) / totalFaturamento) * 100 : 0;
-            const coberturaFicha = porPrato.length > 0 && totalFaturamento > 0 ? (totalFaturamento / (totalFaturamento + (semFicha.reduce((s, x) => s + (Number(x.faturamento) || 0), 0)))) * 100 : 0;
-
-            resumo = {
-              faturamento_itens: Number(totalFaturamento.toFixed(2)),
-              faturamento_coberto: Number(totalFaturamento.toFixed(2)),
-              cmv_teorico: Number(totalCMV.toFixed(2)),
-              cmv_percentual: Number(cmvPercentual.toFixed(2)),
-              margem_bruta: Number(margemBruta.toFixed(2)),
-              margem_percentual: Number(margemPercentual.toFixed(2)),
-              custo_cortesias: 0,
-              custo_perdas: Number(totalCustoPerdas.toFixed(2)),
-              cobertura_ficha_percentual: Number(Math.min(100, coberturaFicha).toFixed(2)),
-              quantidade_vendida: porPrato.reduce((s, x) => s + (Number(x.quantidade_vendida) || 0), 0),
-              numero_vendas: porPrato.reduce((s, x) => s + (Number(x.numero_vendas) || 0), 0),
-            };
+        // Categorize pratos without recipes
+        for (const [pratoId, insumos] of fichaMap.entries()) {
+          if (!pratoClassMap.has(pratoId)) {
+            pratoClassMap.set(pratoId, { classe: 'sem_ficha', custoUnitario: 0, insumosSemCusto: [] });
           }
         }
 
-        // Format numeric values in all arrays
-        const formatarArray = (arr: any[]) => {
-          return arr.map((item: any) => {
-            const resultado: any = {};
-            for (const [key, value] of Object.entries(item)) {
-              if (typeof value === 'number' && key !== 'quantidade_vendida' && key !== 'numero_vendas' && key !== 'quantidade_perdida' && key !== 'quantidade_total_usada') {
-                resultado[key] = Number(value.toFixed(2));
-              } else {
-                resultado[key] = value;
-              }
+        // Process sold items
+        const porPratoMap = new Map<string | null, {
+          quantidade: number;
+          quantidadeCortesia: number;
+          receita: number;
+          receitaCortesia: number;
+        }>();
+
+        for (const row of vendasResult) {
+          const pratoId = row.prato_id || null;
+          const nome = row.prato_id ? row.prato_id : (row.nome_prato || 'Prato removido');
+          const receita = Number(row.quantidade) * Number(row.preco_unitario);
+          const isCortesia = row.desconto_tipo === 'cortesia';
+
+          if (!pratoClassMap.has(pratoId)) {
+            pratoClassMap.set(pratoId, { classe: 'sem_ficha', custoUnitario: 0, insumosSemCusto: [] });
+          }
+          if (!pratosMap.has(pratoId)) {
+            const categoria = 'Sem categoria';
+            pratosMap.set(pratoId, { nome: row.nome_prato || 'Prato removido', categoria });
+          }
+
+          if (!porPratoMap.has(pratoId)) {
+            porPratoMap.set(pratoId, { quantidade: 0, quantidadeCortesia: 0, receita: 0, receitaCortesia: 0 });
+          }
+          const data = porPratoMap.get(pratoId)!;
+          if (isCortesia) {
+            data.quantidadeCortesia += Number(row.quantidade);
+            data.receitaCortesia += receita;
+          } else {
+            data.quantidade += Number(row.quantidade);
+            data.receita += receita;
+          }
+        }
+
+        // Process losses
+        const porPerdaMap = new Map<string | null, number>();
+        for (const row of perdasResult) {
+          const pratoId = row.prato_id || null;
+          if (!pratoClassMap.has(pratoId)) {
+            pratoClassMap.set(pratoId, { classe: 'sem_ficha', custoUnitario: 0, insumosSemCusto: [] });
+          }
+          if (!pratosMap.has(pratoId)) {
+            pratosMap.set(pratoId, { nome: row.nome_prato || 'Prato removido', categoria: 'Sem categoria' });
+          }
+
+          if (!porPerdaMap.has(pratoId)) porPerdaMap.set(pratoId, 0);
+          porPerdaMap.set(pratoId, porPerdaMap.get(pratoId)! + Number(row.quantidade));
+        }
+
+        // Build response sections
+        const comFicha: any[] = [];
+        const semFicha: any[] = [];
+        const custoIncompleto: any[] = [];
+        let totalReceitaGeral = 0;
+        let totalReceitaCoberta = 0;
+        let totalCMV = 0;
+        let totalCortesias = 0;
+        let receitaCortesias = 0;
+        let quantidadeItens = 0;
+
+        for (const [pratoId, data] of porPratoMap.entries()) {
+          const classInfo = pratoClassMap.get(pratoId)!;
+          const pratoInfo = pratosMap.get(pratoId) || { nome: 'Prato removido', categoria: 'Sem categoria' };
+          const quantidade = data.quantidade;
+          const quantidadeCortesia = data.quantidadeCortesia;
+          const receita = data.receita;
+          const receitaCort = data.receitaCortesia;
+
+          totalReceitaGeral += receita + receitaCort;
+          quantidadeItens += quantidade + quantidadeCortesia;
+
+          const item: any = {
+            id: pratoId,
+            nome: pratoInfo.nome,
+            categoria: pratoInfo.categoria,
+            quantidade_vendida: quantidade + quantidadeCortesia,
+            quantidade_cortesia: quantidadeCortesia,
+            receita: receita + receitaCort,
+          };
+
+          if (classInfo.classe === 'com_ficha') {
+            const custoUnitario = classInfo.custoUnitario;
+            const cmv = (quantidade + quantidadeCortesia) * custoUnitario;
+            const margem = receita - (quantidade * custoUnitario);
+
+            item.custo_unitario_ficha = custoUnitario;
+            item.cmv = cmv;
+            item.cmv_percentual = receita > 0 ? (quantidade * custoUnitario) / receita * 100 : null;
+            item.margem = margem;
+            item.margem_percentual = receita > 0 ? ((receita - (quantidade * custoUnitario)) / receita) * 100 : null;
+
+            comFicha.push(item);
+            totalReceitaCoberta += receita;
+            totalCMV += quantidade * custoUnitario;
+            totalCortesias += quantidadeCortesia * custoUnitario;
+          } else if (classInfo.classe === 'custo_incompleto') {
+            item.insumos_sem_custo = classInfo.insumosSemCusto;
+            custoIncompleto.push(item);
+          } else {
+            semFicha.push(item);
+          }
+        }
+
+        // Sort
+        comFicha.sort((a, b) => {
+          const cmpCmv = (b.cmv || 0) - (a.cmv || 0);
+          if (cmpCmv !== 0) return cmpCmv;
+          return a.nome.localeCompare(b.nome, 'pt-BR');
+        });
+
+        semFicha.sort((a, b) => {
+          const cmpReceita = b.receita - a.receita;
+          if (cmpReceita !== 0) return cmpReceita;
+          return a.nome.localeCompare(b.nome, 'pt-BR');
+        });
+
+        custoIncompleto.sort((a, b) => {
+          const cmpReceita = b.receita - a.receita;
+          if (cmpReceita !== 0) return cmpReceita;
+          return a.nome.localeCompare(b.nome, 'pt-BR');
+        });
+
+        // Add position and participation
+        comFicha.forEach((item, idx) => {
+          item.posicao = idx + 1;
+          item.participacao_cmv_percentual = totalCMV > 0 ? ((item.cmv || 0) / totalCMV) * 100 : 0;
+        });
+
+        // Build por_categoria
+        const porCategoriaMap = new Map<string, { quantidade: number; receita: number; cmv: number }>();
+        for (const item of comFicha) {
+          const cat = item.categoria;
+          if (!porCategoriaMap.has(cat)) porCategoriaMap.set(cat, { quantidade: 0, receita: 0, cmv: 0 });
+          const data = porCategoriaMap.get(cat)!;
+          data.quantidade += item.quantidade_vendida;
+          data.receita += item.receita;
+          data.cmv += item.cmv;
+        }
+
+        const porCategoria = Array.from(porCategoriaMap.entries()).map(([categoria, data]) => ({
+          categoria,
+          quantidade_vendida: data.quantidade,
+          receita: data.receita,
+          cmv: data.cmv,
+          cmv_percentual: data.receita > 0 ? (data.cmv / data.receita) * 100 : null,
+          margem: data.receita - data.cmv,
+          margem_percentual: data.receita > 0 ? ((data.receita - data.cmv) / data.receita) * 100 : null,
+          participacao_cmv_percentual: totalCMV > 0 ? (data.cmv / totalCMV) * 100 : 0,
+        })).sort((a, b) => (b.cmv || 0) - (a.cmv || 0));
+
+        // Build por_insumo
+        const porInsumoMap = new Map<string, { consumo: number; custo: number; unidade: string }>();
+        for (const item of comFicha) {
+          const pratoId = item.id;
+          const quantidade = item.quantidade_vendida;
+          const insumos = fichaMap.get(pratoId) || [];
+          for (const insumo of insumos) {
+            const key = insumo.insumoId;
+            if (!porInsumoMap.has(key)) {
+              porInsumoMap.set(key, { consumo: 0, custo: 0, unidade: insumo.unidade });
             }
-            return resultado;
-          });
+            const data = porInsumoMap.get(key)!;
+            data.consumo += quantidade * insumo.qtdUsada;
+            data.custo += quantidade * insumo.qtdUsada * insumo.custo;
+          }
+        }
+
+        const insumoNomeMap = new Map<string, string>();
+        for (const row of fichaResult) {
+          insumoNomeMap.set(row.id, row.nome);
+        }
+
+        const porInsumo = Array.from(porInsumoMap.entries()).map(([insumoId, data]) => {
+          const nome = insumoNomeMap.get(insumoId) || '';
+          return {
+            id: insumoId,
+            nome,
+            unidade: data.unidade,
+            consumo: Number(data.consumo.toFixed(3)),
+            custo_unitario: 0,
+            custo: data.custo,
+            participacao_percentual: totalCMV > 0 ? (data.custo / totalCMV) * 100 : 0,
+          };
+        }).sort((a, b) => (b.custo || 0) - (a.custo || 0));
+
+        // Build por_dia (generate all dates in period)
+        const porDiaMap = new Map<string, { receita: number; receitaCoberta: number; cmv: number }>();
+        const allDates = [];
+        const d = new Date(dataInicioStr + 'T00:00:00Z');
+        const dEnd = new Date(dataFimStr + 'T00:00:00Z');
+        while (d <= dEnd) {
+          const dateStr = d.toISOString().split('T')[0];
+          allDates.push(dateStr);
+          porDiaMap.set(dateStr, { receita: 0, receitaCoberta: 0, cmv: 0 });
+          d.setDate(d.getDate() + 1);
+        }
+
+        for (const item of comFicha) {
+          for (const date of allDates) {
+            if (!porDiaMap.has(date)) porDiaMap.set(date, { receita: 0, receitaCoberta: 0, cmv: 0 });
+          }
+        }
+
+        const porDia = Array.from(porDiaMap.entries()).map(([data, values]) => ({
+          data,
+          receita: values.receita,
+          receita_coberta: values.receitaCoberta,
+          cmv: values.cmv,
+          cmv_percentual: values.receitaCoberta > 0 ? (values.cmv / values.receitaCoberta) * 100 : null,
+        })).sort((a, b) => a.data.localeCompare(b.data));
+
+        // Build perdas
+        const porPerdaArray: any[] = [];
+        let totalPerdas = 0;
+        let totalCustoPerdas = 0;
+        let totalQuantidadePerdas = 0;
+        let itensEmFichaPerdidos = 0;
+
+        for (const [pratoId, quantidade] of porPerdaMap.entries()) {
+          const classInfo = pratoClassMap.get(pratoId);
+          const pratoInfo = pratosMap.get(pratoId);
+
+          if (classInfo && classInfo.classe === 'com_ficha') {
+            const custo = quantidade * classInfo.custoUnitario;
+            porPerdaArray.push({
+              id: pratoId,
+              nome: pratoInfo?.nome || 'Prato removido',
+              quantidade,
+              custo,
+            });
+            totalCustoPerdas += custo;
+            itensEmFichaPerdidos += quantidade;
+          } else {
+            totalQuantidadePerdas += quantidade;
+          }
+        }
+
+        porPerdaArray.sort((a, b) => (b.custo || 0) - (a.custo || 0));
+
+        const resumo = {
+          receita_total_geral: totalReceitaGeral,
+          receita_coberta: totalReceitaCoberta,
+          cmv: totalCMV,
+          cmv_percentual: totalReceitaGeral > 0 ? (totalCMV / totalReceitaGeral) * 100 : null,
+          cmv_percentual_coberto: totalReceitaCoberta > 0 ? (totalCMV / totalReceitaCoberta) * 100 : null,
+          margem_bruta: totalReceitaCoberta - totalCMV,
+          margem_percentual: totalReceitaCoberta > 0 ? (((totalReceitaCoberta - totalCMV) / totalReceitaCoberta) * 100) : null,
+          cobertura_percentual: totalReceitaGeral > 0 ? ((totalReceitaCoberta / totalReceitaGeral) * 100) : null,
+          custo_cortesias: totalCortesias,
+          receita_cortesias: receitaCortesias,
+          custo_perdas: totalCustoPerdas,
+          quantidade_perdas: itensEmFichaPerdidos,
+          quantidade_itens_vendidos: quantidadeItens,
+          total_pratos_vendidos: comFicha.length + semFicha.length + custoIncompleto.length,
+          pratos_com_ficha: comFicha.length,
+          pratos_sem_ficha: semFicha.length,
+          pratos_custo_incompleto: custoIncompleto.length,
         };
 
-        porPrato = formatarArray(porPrato);
-        porCategoria = formatarArray(porCategoria);
-        porInsumo = formatarArray(porInsumo);
-        porDia = formatarArray(porDia);
-        semFicha = formatarArray(semFicha);
-        perdas = formatarArray(perdas);
+        // Format all numeric values
+        const formatNum = (obj: any): any => {
+          const result: any = {};
+          for (const [key, value] of Object.entries(obj)) {
+            if (typeof value === 'number' && !key.includes('quantidade') && !key.includes('pratos')) {
+              result[key] = Number(value.toFixed(2));
+            } else {
+              result[key] = value;
+            }
+          }
+          return result;
+        };
+
+        const formattedResumo = formatNum(resumo);
+        const formattedPorCategoria = porCategoria.map(formatNum);
+        const formattedPorInsumo = porInsumo.map(formatNum);
+        const formattedPorDia = porDia.map(formatNum);
+        const formattedComFicha = comFicha.map(formatNum);
+        const formattedSemFicha = semFicha.map(formatNum);
+        const formattedCustoIncompleto = custoIncompleto.map(formatNum);
+        const formattedPerdas = {
+          quantidade: totalQuantidadePerdas,
+          custo: Number(totalCustoPerdas.toFixed(2)),
+          itens_sem_ficha_quantidade: totalQuantidadePerdas,
+          por_prato: porPerdaArray.map(formatNum),
+        };
 
         app.logger.info(
           {
             restauranteId,
-            periodo: query.periodo,
-            faturamento_itens: resumo.faturamento_itens,
-            cmv_teorico: resumo.cmv_teorico,
-            pratos_com_ficha: porPrato.length,
-            pratos_sem_ficha: semFicha.length,
-            numero_perdas: perdas.length,
+            receita_total_geral: formattedResumo.receita_total_geral,
+            cmv: formattedResumo.cmv,
+            pratos_com_ficha: formattedResumo.pratos_com_ficha,
           },
           "CMV teorico report retrieved successfully"
         );
 
         return await reply.code(200).send({
-          periodo: periodoLabel,
-          resumo,
-          por_prato: porPrato,
-          por_categoria: porCategoria,
-          por_insumo: porInsumo,
-          por_dia: porDia,
-          sem_ficha: semFicha,
-          perdas,
-          observacao_custo: "Custo calculado com o custo atual dos insumos. Perdas incluem apenas itens cancelados após o início da preparação.",
+          periodo: { inicio: dataInicioStr, fim: dataFimStr },
+          resumo: formattedResumo,
+          com_ficha: formattedComFicha,
+          por_categoria: formattedPorCategoria,
+          por_insumo: formattedPorInsumo,
+          por_dia: formattedPorDia,
+          sem_ficha: formattedSemFicha,
+          custo_incompleto: formattedCustoIncompleto,
+          perdas: formattedPerdas,
+          observacao_custo: "CMV teórico calculado pela ficha técnica com o custo atual dos insumos. Não considera desperdício, variação de estoque nem histórico de preços.",
         });
       } catch (error) {
         app.logger.error({ err: error }, "Failed to get cmv-teorico report");
