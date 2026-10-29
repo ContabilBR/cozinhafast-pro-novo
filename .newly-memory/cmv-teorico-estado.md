@@ -1,18 +1,13 @@
 ---
 name: cmv-teorico-estado
-description: Estado do relatório CMV teórico (Etapa 1 backend feita com defeitos; Etapa 2 tela/exportação pendente)
+description: Estado do relatório CMV teórico (Etapa 1 backend reescrita e revisada no código, nunca chamada de verdade; Etapa 2 tela/exportação pendente)
 metadata:
   type: project
 ---
 
-Endpoint GET /api/relatorios/cmv-teorico criado pelo Specular (commit ee35277 na dev, relatorios.ts ~linhas 4742-5227), mas FORA da especificação. Precisa de UMA nova specular_change corretiva (antes da tela):
-- ainda filtra `total > 0` (cortesias fora) e custo_cortesias fixo em 0;
-- por_prato inclui pratos sem ficha com CMV 0 (margem 100%); faturamento_coberto == faturamento_itens, cobertura sempre ~100%;
-- sem_ficha só cobre "sem ficha", não "custo incompleto"; sem motivo/insumos_sem_custo;
-- perdas exigem comanda fechada e não usam cancelado_em; custo de perda multiplica por join em prato_id;
-- por_dia sem generate_series (dias sem venda faltam); por_insumo limitado a 50, sem participação; sem participacao_cmv, cmv_percentual por prato/categoria;
-- nomes de campos diferem do pedido (cmv_teorico em vez de cmv, margem_percentual, etc.); observacao_custo diferente do texto pedido;
-- json_agg(...) FROM x ORDER BY col provavelmente é SQL inválido (erro 500).
-Nunca verificado com requisição real (login demo 401 no dev). Etapa 2 (tela app/relatorio-detalhe/cmv-teorico.tsx, utils/exportacao/cmv.ts) ainda não começou.
+Endpoint GET /api/relatorios/cmv-teorico reescrito em 2 alterações Specular (commits 9537dbb e 2355410 na dev, backend/src/routes/relatorios.ts). Só gerente/administrador. Consultas simples + agregação em TypeScript; nomes seguem a Margem (cmv, margem_percentual...). Revisado só lendo o código: NUNCA chamado de verdade (login 401 no dev, usuário proibiu testes/criar usuários).
+Formato: periodo{inicio,fim}; resumo{receita_total_geral, receita_coberta, cmv, cmv_percentual, cmv_percentual_coberto, margem_bruta, margem_percentual, cobertura_percentual, custo_cortesias, receita_cortesias, custo_perdas, quantidade_perdas, quantidade_itens_vendidos, total_pratos_vendidos, pratos_com_ficha, pratos_sem_ficha, pratos_custo_incompleto}; com_ficha[]; por_categoria[]; por_insumo[]; por_dia[]; sem_ficha[]; custo_incompleto[]; perdas{quantidade,custo,itens_sem_ficha_quantidade,por_prato[]}; observacao_custo.
+Regra: receita do prato inclui cortesia (bruta) e CMV inclui cortesia.
+Etapa 2 (app/relatorio-detalhe/cmv-teorico.tsx, utils/exportacao/cmv.ts) NÃO começou; só em outro turno, após o usuário pedir.
 **Why:** o usuário exige especificação exata e uma mudança por turno no backend.
-**How to apply:** próximo turno: specular_schema -> specular_change corretiva completa -> só então a tela.
+**How to apply:** na Etapa 2, ler o formato acima no código da rota; se algo falhar na prática, nova specular_change pontual.
