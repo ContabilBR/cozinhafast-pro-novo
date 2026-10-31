@@ -21,19 +21,9 @@ import { AnimatedPressable } from "@/components/AnimatedPressable";
 import { apiGet, apiPost, apiPut } from "@/utils/api";
 import { isAdmin } from "@/utils/helpers";
 import { deslocarDias, hojeBrasilia } from "@/utils/exportacao/periodo";
+import { agruparReservas, listaMesas, type ItemReserva, type ReservaApi } from "@/utils/reservasGrupo";
 
-interface Reserva {
-  id: string;
-  nome_pessoa: string;
-  telefone?: string | null;
-  data_hora: string;
-  numero_pessoas: number;
-  mesa: { id: string; numero: number } | null;
-  observacao?: string | null;
-  status: "confirmada" | "sentada" | "cancelada" | "nao_compareceu";
-  duracao?: number;
-  comanda_id?: string | null;
-}
+type Reserva = ReservaApi;
 
 type Filtro = "todas" | Reserva["status"];
 
@@ -172,17 +162,21 @@ export default function ReservasScreen() {
     else router.replace("/(tabs)/(mesas)");
   };
 
-  const abrirForm = (r?: Reserva) => {
-    if (r) router.push({ pathname: "/reservas/form", params: { reserva: JSON.stringify(r), dia } });
-    else router.push({ pathname: "/reservas/form", params: { dia } });
+  const abrirForm = (r?: Reserva, grupoMesas?: number[]) => {
+    if (r) {
+      const params: Record<string, string> = { reserva: JSON.stringify(r), dia };
+      if (grupoMesas) params.grupoMesas = JSON.stringify(grupoMesas);
+      router.push({ pathname: "/reservas/form", params });
+    } else router.push({ pathname: "/reservas/form", params: { dia } });
   };
 
-  const mudarStatus = (r: Reserva, status: "cancelada" | "nao_compareceu") => {
+  const mudarStatus = (r: Reserva, status: "cancelada" | "nao_compareceu", nMesasGrupo?: number) => {
     const titulo = status === "cancelada" ? "Cancelar reserva" : "Marcar como não compareceu";
-    const msg =
+    const base =
       status === "cancelada"
         ? `Cancelar a reserva de ${r.nome_pessoa} às ${horaBrasilia(r.data_hora)}?`
         : `Marcar que ${r.nome_pessoa} não compareceu?`;
+    const msg = nMesasGrupo ? `${base}\nIsso vale para as ${nMesasGrupo} mesas do grupo.` : base;
     Alert.alert(titulo, msg, [
       { text: "Voltar", style: "cancel" },
       {
@@ -228,6 +222,44 @@ export default function ReservasScreen() {
     ]);
   };
 
+  const abrirComandaGrupo = (g: Extract<ItemReserva, { tipo: "grupo" }>) => {
+    const numeros = g.mesas.map((m) => m.numero);
+    Alert.alert(
+      "Abrir comandas",
+      `Serão abertas ${numeros.length} comandas para ${g.nome_pessoa}, nas mesas ${listaMesas(numeros)}. Continuar?`,
+      [
+        { text: "Voltar", style: "cancel" },
+        {
+          text: "Abrir comandas",
+          onPress: async () => {
+            setAgindo(g.key);
+            try {
+              const res = await apiPost<any>(`/api/reservas/${g.reserva.id}/sentar`, {});
+              await carregar({ silencioso: true });
+              if (!Array.isArray(res?.comandas) || res.comandas.length === 0) {
+                // Resposta sem a lista de comandas: tratamos como falha de leitura e só recarregamos
+                Alert.alert("Confira a lista", "Não foi possível confirmar as comandas abertas. A lista foi atualizada.");
+                return;
+              }
+              const abertas = res.comandas
+                .map((c: any) => Number(c.mesa_numero))
+                .filter((n: number) => !isNaN(n))
+                .sort((a: number, b: number) => a - b);
+              Alert.alert(`Comandas abertas nas mesas ${listaMesas(abertas)}`, undefined, [
+                { text: "Ficar aqui", style: "cancel" },
+                { text: "Ir para as mesas", onPress: () => router.push("/(tabs)/(mesas)") },
+              ]);
+            } catch (e: any) {
+              Alert.alert("Não foi possível abrir as comandas", mensagemErro(e));
+            } finally {
+              setAgindo(null);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const corStatus = (s: Reserva["status"]) =>
     s === "confirmada" ? COLORS.statusRecebido : s === "sentada" ? COLORS.success : s === "cancelada" ? COLORS.danger : COLORS.warning;
 
@@ -259,9 +291,13 @@ export default function ReservasScreen() {
     </AnimatedPressable>
   );
 
-  const renderItem = ({ item: r }: { item: Reserva }) => {
+  const renderItem = ({ item }: { item: ItemReserva }) => {
+    const g = item.tipo === "grupo" ? item : null;
+    // Em grupo, a primeira linha representa o grupo (todas as ações usam o id dela)
+    const r = item.reserva;
     const cor = corStatus(r.status);
-    const ocupado = agindo === r.id;
+    const ocupado = agindo === item.key || agindo === r.id;
+    const temMesa = g ? g.mesas.length > 0 : !!r.mesa;
     return (
       <View
         style={{
@@ -290,7 +326,8 @@ export default function ReservasScreen() {
             </View>
           </View>
           <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 13, color: COLORS.textSecondary, marginTop: 3 }}>
-            {r.numero_pessoas} {r.numero_pessoas === 1 ? "pessoa" : "pessoas"} · {r.mesa ? `Mesa ${r.mesa.numero}` : "Sem mesa"}
+            {r.numero_pessoas} {r.numero_pessoas === 1 ? "pessoa" : "pessoas"} ·{" "}
+            {g ? `Mesas ${listaMesas(g.mesas.map((m) => m.numero))}` : r.mesa ? `Mesa ${r.mesa.numero}` : "Sem mesa"}
           </Text>
           {!!r.telefone && (
             <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 13, color: COLORS.textSecondary, marginTop: 2 }}>{r.telefone}</Text>
@@ -302,10 +339,13 @@ export default function ReservasScreen() {
           {r.status === "confirmada" && (
             <View style={{ marginTop: 12 }}>
               <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-                {botao("Editar", () => abrirForm(r), { disabled: ocupado })}
-                {botao(ocupado ? "Abrindo..." : "Abrir comanda", () => abrirComanda(r), { primario: true, disabled: ocupado || !r.mesa })}
-                {gerencia && botao("Não compareceu", () => mudarStatus(r, "nao_compareceu"), { disabled: ocupado })}
-                {gerencia && botao("Cancelar", () => mudarStatus(r, "cancelada"), { perigo: true, disabled: ocupado })}
+                {botao("Editar", () => abrirForm(r, g ? g.mesas.map((m) => m.numero) : undefined), { disabled: ocupado })}
+                {botao(ocupado ? "Abrindo..." : "Abrir comanda", () => (g ? abrirComandaGrupo(g) : abrirComanda(r)), {
+                  primario: true,
+                  disabled: ocupado || !temMesa,
+                })}
+                {gerencia && botao("Não compareceu", () => mudarStatus(r, "nao_compareceu", g?.mesas.length), { disabled: ocupado })}
+                {gerencia && botao("Cancelar", () => mudarStatus(r, "cancelada", g?.mesas.length), { perigo: true, disabled: ocupado })}
               </View>
               <View style={{ marginTop: 8 }}>
                 {botao("Confirmar por WhatsApp", () => confirmarWhatsApp(r), { disabled: ocupado || !r.telefone?.trim() })}
@@ -315,14 +355,33 @@ export default function ReservasScreen() {
                   </Text>
                 )}
               </View>
-              {!r.mesa && (
+              {!temMesa && (
                 <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 12, color: COLORS.warning, marginTop: 8 }}>
                   Edite a reserva e escolha uma mesa
                 </Text>
               )}
             </View>
           )}
-          {r.status === "sentada" && !!r.comanda_id && (
+          {g && r.status === "sentada" && g.mesas.some((m) => !!m.comandaId) && (
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
+              {g.mesas
+                .filter((m) => !!m.comandaId)
+                .map((m) => (
+                  <React.Fragment key={m.reservaId}>
+                    {botao(
+                      `Mesa ${m.numero}`,
+                      () =>
+                        router.push({
+                          pathname: "/comanda/[id]",
+                          params: { id: m.comandaId as string, mesa_numero: String(m.numero) },
+                        }),
+                      { primario: true }
+                    )}
+                  </React.Fragment>
+                ))}
+            </View>
+          )}
+          {!g && r.status === "sentada" && !!r.comanda_id && (
             <View style={{ flexDirection: "row", marginTop: 12 }}>
               {botao(
                 "Ver comanda",
@@ -464,8 +523,8 @@ export default function ReservasScreen() {
         </View>
       ) : (
         <FlatList
-          data={itens}
-          keyExtractor={(r) => r.id}
+          data={agruparReservas(itens)}
+          keyExtractor={(i) => i.key}
           renderItem={renderItem}
           contentContainerStyle={{ padding: 16, paddingBottom: 40, flexGrow: 1 }}
           refreshControl={

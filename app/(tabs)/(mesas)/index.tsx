@@ -21,6 +21,7 @@ import { SkeletonLine } from "@/components/SkeletonLoader";
 import { apiGet, apiPost } from "@/utils/api";
 import { isAdmin } from "@/utils/helpers";
 import { hojeBrasilia } from "@/utils/exportacao/periodo";
+import { contarReservas } from "@/utils/reservasGrupo";
 import { setMesaHistoricoId } from "@/utils/mesaHistoricoStore";
 import { Users, UtensilsCrossed, LayoutGrid } from "lucide-react-native";
 
@@ -405,8 +406,7 @@ export default function MesasScreen() {
     try {
       const res = await apiGet<any>(`/api/reservas?data=${hojeBrasilia()}`);
       const lista: { status: string }[] = Array.isArray(res) ? res : res?.reservas || [];
-      const validas = lista.filter((r) => r.status !== "cancelada" && r.status !== "nao_compareceu");
-      setReservasHoje({ total: validas.length, aguardando: validas.filter((r) => r.status === "confirmada").length });
+      setReservasHoje(contarReservas(lista));
     } catch (e: any) {
       console.error("[Mesas] Erro ao carregar reservas de hoje:", e instanceof Error ? e.message : String(e));
       setReservasHoje(null);

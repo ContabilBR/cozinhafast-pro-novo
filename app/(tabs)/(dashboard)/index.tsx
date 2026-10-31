@@ -19,6 +19,7 @@ import { apiGet } from "@/utils/api";
 import { setMesaHistoricoId } from "@/utils/mesaHistoricoStore";
 import { formatCurrency, isAdmin } from "@/utils/helpers";
 import { hojeBrasilia } from "@/utils/exportacao/periodo";
+import { contarReservas } from "@/utils/reservasGrupo";
 import { TrendingUp, ShoppingBag, Grid3x3, Clock, RefreshCw, ChevronRight, DollarSign, ChefHat, CalendarDays } from "lucide-react-native";
 import { useRealtime, type RealtimeStatus } from "@/hooks/useRealtime";
 import { Ionicons } from "@expo/vector-icons";
@@ -253,8 +254,7 @@ export default function DashboardScreen() {
       // Reservas de hoje (independe do filtro de período); null esconde o cartão
       if (reservasRes) {
         const lista: { status: string }[] = Array.isArray(reservasRes) ? reservasRes : reservasRes.reservas || [];
-        const validas = lista.filter((r) => r.status !== "cancelada" && r.status !== "nao_compareceu");
-        setReservasHoje({ total: validas.length, aguardando: validas.filter((r) => r.status === "confirmada").length });
+        setReservasHoje(contarReservas(lista));
       } else {
         setReservasHoje(null);
       }

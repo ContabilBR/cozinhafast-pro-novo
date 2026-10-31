@@ -17,6 +17,13 @@ import { AnimatedPressable } from "@/components/AnimatedPressable";
 import { apiGet, apiPost, apiPut } from "@/utils/api";
 import { hojeBrasilia } from "@/utils/exportacao/periodo";
 
+const MAX_MESAS = 20;
+
+function listaMesas(numeros: number[]): string {
+  if (numeros.length <= 1) return numeros.join("");
+  return `${numeros.slice(0, -1).join(", ")} e ${numeros[numeros.length - 1]}`;
+}
+
 interface MesaOpt {
   id: string;
   numero: number;
@@ -71,7 +78,7 @@ function mensagemErro(e: any): string {
 export default function ReservaFormScreen() {
   const COLORS = useColors();
   const router = useRouter();
-  const params = useLocalSearchParams<{ reserva?: string; dia?: string }>();
+  const params = useLocalSearchParams<{ reserva?: string; dia?: string; grupoMesas?: string }>();
 
   let existente: any = null;
   try {
@@ -87,7 +94,14 @@ export default function ReservaFormScreen() {
   const [data, setData] = useState<string>(inicial?.data ?? ((params.dia as string) || hojeBrasilia()));
   const [hora, setHora] = useState<string>(inicial?.hora ?? "");
   const [pessoas, setPessoas] = useState<number>(existente?.numero_pessoas ?? 2);
-  const [mesaId, setMesaId] = useState<string | null>(existente?.mesa?.id ?? null);
+  const editandoGrupo = editando && !!existente?.grupo_id;
+  let numerosGrupo: number[] = [];
+  try {
+    numerosGrupo = params.grupoMesas ? JSON.parse(params.grupoMesas as string) : [];
+  } catch {
+    numerosGrupo = [];
+  }
+  const [mesaIds, setMesaIds] = useState<string[]>(!editandoGrupo && existente?.mesa?.id ? [existente.mesa.id] : []);
   const [obs, setObs] = useState<string>(existente?.observacao ?? "");
   const [mesas, setMesas] = useState<MesaOpt[]>([]);
   const [mesasErro, setMesasErro] = useState("");
@@ -96,6 +110,7 @@ export default function ReservaFormScreen() {
   const [pickerHora, setPickerHora] = useState(false);
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState("");
+  const [avisoLimite, setAvisoLimite] = useState("");
 
   useEffect(() => {
     (async () => {
@@ -110,6 +125,34 @@ export default function ReservaFormScreen() {
       }
     })();
   }, []);
+
+  const alternarMesa = (id: string) => {
+    setAvisoLimite("");
+    // Edição de reserva simples: uma mesa só, como antes
+    if (editando) {
+      setMesaIds([id]);
+      return;
+    }
+    if (mesaIds.includes(id)) {
+      setMesaIds(mesaIds.filter((x) => x !== id));
+      return;
+    }
+    if (mesaIds.length >= MAX_MESAS) {
+      setAvisoLimite(`Você pode reservar no máximo ${MAX_MESAS} mesas de uma vez.`);
+      return;
+    }
+    setMesaIds([...mesaIds, id]);
+  };
+
+  const selecionadas = mesas.filter((m) => mesaIds.includes(m.id));
+  const capacidades = selecionadas.map((m) => m.capacidade);
+  const temCapacidade = selecionadas.length > 0 && capacidades.every((c) => typeof c === "number");
+  const capacidadeTotal = temCapacidade ? capacidades.reduce<number>((s, c) => s + (c as number), 0) : null;
+  const capacidadeInsuficiente = !editando && mesaIds.length >= 2 && capacidadeTotal !== null && capacidadeTotal < pessoas;
+  const resumoMesas =
+    `${mesaIds.length} mesas selecionadas` +
+    (capacidadeTotal !== null ? ` · capacidade ${capacidadeTotal}` : "") +
+    ` · ${pessoas} ${pessoas === 1 ? "pessoa" : "pessoas"}`;
 
   const voltar = () => {
     if (router.canGoBack()) router.back();
@@ -150,13 +193,20 @@ export default function ReservaFormScreen() {
       numero_pessoas: pessoas,
     };
     if (telefone.trim()) body.telefone = telefone.trim();
-    if (mesaId) body.mesa_id = mesaId;
     if (obs.trim()) body.observacao = obs.trim();
-    // Na edição, campos limpos precisam ser enviados vazios
-    if (editando) {
+    if (editandoGrupo) {
+      // Grupo: mesas não mudam na edição; não envia mesa_id nem a lista
       body.telefone = telefone.trim() || null;
-      body.mesa_id = mesaId || null;
       body.observacao = obs.trim() || null;
+    } else {
+      if (mesaIds.length >= 2) body.mesa_ids = mesaIds;
+      else if (mesaIds.length === 1) body.mesa_id = mesaIds[0];
+      // Na edição, campos limpos precisam ser enviados vazios
+      if (editando) {
+        body.telefone = telefone.trim() || null;
+        body.mesa_id = mesaIds.length === 1 ? mesaIds[0] : null;
+        body.observacao = obs.trim() || null;
+      }
     }
     try {
       if (editando) {
@@ -360,13 +410,34 @@ export default function ReservaFormScreen() {
           </View>
 
           <Text style={labelStyle}>Mesa (opcional)</Text>
-          {carregandoMesas ? (
+          {editandoGrupo ? (
+            <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 14, color: COLORS.textSecondary, lineHeight: 20 }}>
+              {numerosGrupo.length > 0 ? `Mesas: ${listaMesas(numerosGrupo)}. ` : "Mesas do grupo. "}
+              Para trocar as mesas, cancele a reserva e crie uma nova.
+            </Text>
+          ) : carregandoMesas ? (
             <ActivityIndicator color={COLORS.primary} style={{ alignSelf: "flex-start" }} />
           ) : (
             <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-              {chip("sem", "Sem mesa", mesaId === null, () => setMesaId(null))}
-              {mesas.map((m) => chip(m.id, String(m.numero), mesaId === m.id, () => setMesaId(m.id)))}
+              {chip("sem", "Sem mesa", mesaIds.length === 0, () => {
+                setMesaIds([]);
+                setAvisoLimite("");
+              })}
+              {mesas.map((m) =>
+                chip(m.id, String(m.numero), mesaIds.includes(m.id), () => alternarMesa(m.id))
+              )}
             </View>
+          )}
+          {!!avisoLimite && <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 12, color: COLORS.warning, marginTop: 6 }}>{avisoLimite}</Text>}
+          {!editandoGrupo && mesaIds.length >= 2 && (
+            <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 13, color: COLORS.textSecondary, marginTop: 8 }}>
+              {resumoMesas}
+            </Text>
+          )}
+          {!editandoGrupo && capacidadeInsuficiente && (
+            <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 12, color: COLORS.warning, marginTop: 4 }}>
+              A capacidade das mesas é menor que o número de pessoas.
+            </Text>
           )}
           {!!mesasErro && <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 12, color: COLORS.warning, marginTop: 6 }}>{mesasErro}</Text>}
 
