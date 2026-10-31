@@ -36,6 +36,7 @@ export const regimeTributarioEnum = pgEnum("regime_tributario", ["simples_nacion
 export const planoEnum = pgEnum("plano", ["trial", "basico", "profissional", "enterprise"]);
 export const assinaturaStatusEnum = pgEnum("assinatura_status", ["trial", "ativa", "inadimplente", "cancelada", "expirada"]);
 export const modoComandaEnum = pgEnum("modo_comanda", ["mesa", "individual"]);
+export const reservaStatusEnum = pgEnum("reserva_status", ["confirmada", "sentada", "cancelada", "nao_compareceu"]);
 
 // Restaurante (Restaurant information) - Define early since many tables reference it
 export const restaurante = pgTable("restaurante", {
@@ -417,4 +418,25 @@ export const entregas = pgTable("entregas", {
   restauranteId: text("restaurante_id").notNull().references(() => restaurante.id, { onDelete: "restrict" }),
 }, (table) => ({
   idxRestauranteIdComandaId: index("idx_entregas_restaurante_id_comanda_id").on(table.restauranteId, table.comandaId),
+}));
+
+// Reservas (Table Reservations)
+export const reservas = pgTable("reservas", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  restauranteId: text("restaurante_id").notNull().references(() => restaurante.id, { onDelete: "restrict" }),
+  mesaId: uuid("mesa_id").references(() => mesas.id, { onDelete: "restrict" }),
+  nomePessoa: text("nome_pessoa").notNull(),
+  telefone: text("telefone"),
+  dataHora: timestamp("data_hora", { withTimezone: true }).notNull(),
+  numeroPessoas: integer("numero_pessoas").notNull(),
+  observacao: text("observacao"),
+  status: reservaStatusEnum("status").default("confirmada").notNull(),
+  duracao: integer("duracao").default(120).notNull(),
+  comandaId: uuid("comanda_id").references(() => comandas.id, { onDelete: "restrict" }),
+  criadoPor: text("criado_por").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  idxRestauranteDataHora: index("idx_reservas_restaurante_data_hora").on(table.restauranteId, table.dataHora),
+  idxMesaDataHora: index("idx_reservas_mesa_data_hora").on(table.mesaId, table.dataHora),
 }));

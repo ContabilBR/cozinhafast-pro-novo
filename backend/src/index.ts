@@ -25,10 +25,11 @@ import { registerRealtimeRoutes } from './routes/realtime.js';
 import { registerCardapioPublicoRoutes } from './routes/cardapio-publico.js';
 import { registerEstoqueRoutes } from './routes/estoque.js';
 import { registerSuperAdminRoutes } from './routes/superadmin.js';
+import { registerReservasRoutes } from './routes/reservas.js';
 import { registerRenovacaoDeImagens } from './utils/imagem-assinada.js';
 import { seedDatabase } from './db/seed.js';
 import { enableSelectRetry } from './db/withRetry.js';
-import { garantirColunasDeCancelamento, garantirColunasDeModoComanda, garantirColunasContinuasDeDesconto, backfillQrTokens } from './db/ensure-schema.js';
+import { garantirColunasDeCancelamento, garantirColunasDeModoComanda, garantirColunasContinuasDeDesconto, backfillQrTokens, garantirTabelaReservas } from './db/ensure-schema.js';
 import { garantirRestauranteIdTexto } from './db/ensure-restaurante-id.js';
 
 // Combine schemas
@@ -89,6 +90,14 @@ try {
 
 // Backfill QR tokens for existing mesas (non-critical; handles errors internally)
 await backfillQrTokens(app);
+
+// Garante a tabela de reservas (ETAPA 1 - Sistema de Reservas)
+try {
+  await garantirTabelaReservas(app);
+} catch (error) {
+  app.logger.error({ err: error }, 'Failed to ensure reservas table');
+  // Don't exit - this is not critical
+}
 
 // Seed test admin and restaurante if test mode is enabled
 try {
@@ -161,6 +170,7 @@ registerRealtimeRoutes(app);
 registerCardapioPublicoRoutes(app);
 registerEstoqueRoutes(app);
 registerSuperAdminRoutes(app);
+registerReservasRoutes(app);
 
 // Seed database on startup (only if not in production and explicitly enabled)
 if (process.env.NODE_ENV !== 'production' && process.env.SEED_ENABLED === 'true') {

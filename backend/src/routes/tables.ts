@@ -1,5 +1,5 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
-import { eq, ne, and, gte, lte } from "drizzle-orm";
+import { eq, ne, and, or, gte, lte } from "drizzle-orm";
 import * as schema from "../db/schema/schema.js";
 import type { App } from "../index.js";
 import { requireAuth as customRequireAuth, requireRole } from "../utils/auth.js";
@@ -58,6 +58,16 @@ export function registerTableRoutes(app: App) {
                 capacidade: { type: "number" },
                 qr_token: { type: "string" },
                 created_at: { type: "string", format: "date-time" },
+                proxima_reserva: {
+                  type: "object",
+                  properties: {
+                    id: { type: "string", format: "uuid" },
+                    nome: { type: "string" },
+                    horario: { type: "string", format: "date-time" },
+                    pessoas: { type: "number" },
+                  },
+                  nullable: true,
+                },
               },
             },
           },
@@ -94,6 +104,39 @@ export function registerTableRoutes(app: App) {
         app.logger.info({ tenantId, count: mesas.length }, "Mesas listed successfully");
 
         const podeVerToken = ["gerente", "administrador", "admin"].includes(String(authUser.role ?? "").toLowerCase());
+
+        // Fetch next reservations for all mesas within 30 minutes
+        const agora = new Date();
+        const trinta_min_no_futuro = new Date(agora.getTime() + 30 * 60 * 1000);
+        const trinta_min_no_passado = new Date(agora.getTime() - 30 * 60 * 1000);
+
+        const proximasReservas = await app.db
+          .select()
+          .from(schema.reservas)
+          .where(
+            and(
+              eq(schema.reservas.restauranteId, tenantId as any),
+              or(
+                eq(schema.reservas.status, "confirmada" as any),
+                eq(schema.reservas.status, "sentada" as any)
+              )
+            )
+          );
+
+        const reservasPorMesa = new Map<string, any>();
+        for (const res of proximasReservas) {
+          if (res.mesaId && (res.dataHora >= trinta_min_no_passado && res.dataHora <= trinta_min_no_futuro)) {
+            if (!reservasPorMesa.has(res.mesaId)) {
+              reservasPorMesa.set(res.mesaId, {
+                id: res.id,
+                nome: res.nomePessoa,
+                horario: res.dataHora.toISOString(),
+                pessoas: res.numeroPessoas,
+              });
+            }
+          }
+        }
+
         return mesas.map((m) => ({
           id: m.id,
           numero: m.numero,
@@ -101,6 +144,7 @@ export function registerTableRoutes(app: App) {
           capacidade: m.capacidade,
           ...(podeVerToken ? { qr_token: m.qrToken } : {}),
           created_at: m.createdAt.toISOString(),
+          proxima_reserva: reservasPorMesa.get(m.id as string) || null,
         }));
       } catch (error) {
         app.logger.error({ err: error }, "Failed to list mesas");

@@ -271,3 +271,87 @@ export async function backfillQrTokens(app: App): Promise<void> {
     // Do not throw - continue startup
   }
 }
+
+/**
+ * Reservations table (ETAPA 1 - Sistema de Reservas).
+ *
+ * Creates the reservas table if it does not exist, including:
+ *  - reserva_status_enum type (confirmada, sentada, cancelada, nao_compareceu)
+ *  - reservas table with all required columns and indices
+ * Idempotent: checks if table exists before creating; uses IF NOT EXISTS for all DDL.
+ * Does not throw; logs outcome and continues startup.
+ */
+export async function garantirTabelaReservas(app: App): Promise<void> {
+  const db = app.db as any;
+
+  try {
+    // Check if reservas table exists
+    const tableExists = await db.execute(
+      sql`SELECT 1 FROM information_schema.tables
+          WHERE table_schema = current_schema() AND table_name = 'reservas'`
+    );
+
+    const rows = Array.isArray(tableExists) ? tableExists : (tableExists as any)?.rows || [];
+    if (rows.length > 0) {
+      app.logger.debug("Reservas table already exists");
+      return;
+    }
+
+    // Create the enum type
+    await db.execute(
+      sql.raw(
+        `CREATE TYPE IF NOT EXISTS reserva_status AS ENUM ('confirmada', 'sentada', 'cancelada', 'nao_compareceu')`
+      )
+    );
+
+    // Create the reservas table
+    await db.execute(
+      sql.raw(`
+        CREATE TABLE IF NOT EXISTS reservas (
+          id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+          restaurante_id text NOT NULL,
+          mesa_id uuid,
+          nome_pessoa text NOT NULL,
+          telefone text,
+          data_hora timestamp with time zone NOT NULL,
+          numero_pessoas integer NOT NULL,
+          observacao text,
+          status reserva_status NOT NULL DEFAULT 'confirmada',
+          duracao integer NOT NULL DEFAULT 120,
+          comanda_id uuid,
+          criado_por text NOT NULL,
+          created_at timestamp with time zone NOT NULL DEFAULT now(),
+          updated_at timestamp with time zone NOT NULL DEFAULT now(),
+          FOREIGN KEY (restaurante_id) REFERENCES restaurante(id) ON DELETE CASCADE,
+          FOREIGN KEY (mesa_id) REFERENCES mesas(id) ON DELETE SET NULL,
+          FOREIGN KEY (comanda_id) REFERENCES comandas(id) ON DELETE SET NULL
+        )
+      `)
+    );
+
+    // Create indices for efficient querying
+    await db.execute(
+      sql.raw(`
+        CREATE INDEX IF NOT EXISTS idx_reservas_restaurante_hora
+        ON reservas(restaurante_id, data_hora)
+      `)
+    );
+
+    await db.execute(
+      sql.raw(`
+        CREATE INDEX IF NOT EXISTS idx_reservas_mesa_hora
+        ON reservas(mesa_id, data_hora)
+      `)
+    );
+
+    app.logger.info("Reservas table and indices created successfully");
+  } catch (err) {
+    // Extract safe SQLSTATE if available
+    const sqlstate = (err as any)?.cause?.code || (err as any)?.code || "UNKNOWN";
+    app.logger.warn(
+      { codigo: sqlstate, mensagem: "Falha ao criar tabela de reservas" },
+      "Ensure reservas table"
+    );
+    // Do not throw - continue startup
+  }
+}
