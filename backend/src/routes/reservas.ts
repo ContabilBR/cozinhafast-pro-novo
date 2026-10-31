@@ -249,37 +249,28 @@ export function registerReservasRoutes(app: App) {
         },
         response: {
           201: {
-            oneOf: [
-              {
-                type: "object",
-                properties: {
-                  id: { type: "string", format: "uuid" },
-                  nome_pessoa: { type: "string" },
-                  data_hora: { type: "string", format: "date-time" },
-                  numero_pessoas: { type: "number" },
-                  status: { type: "string" },
-                },
-              },
-              {
-                type: "object",
-                properties: {
-                  grupo_id: { type: "string", format: "uuid" },
-                  reservas: {
-                    type: "array",
-                    items: {
-                      type: "object",
-                      properties: {
-                        id: { type: "string", format: "uuid" },
-                        nome_pessoa: { type: "string" },
-                        data_hora: { type: "string", format: "date-time" },
-                        numero_pessoas: { type: "number" },
-                        status: { type: "string" },
-                      },
-                    },
+            type: "object",
+            properties: {
+              id: { type: "string", format: "uuid" },
+              nome_pessoa: { type: "string" },
+              data_hora: { type: "string", format: "date-time" },
+              numero_pessoas: { type: "number" },
+              status: { type: "string" },
+              grupo_id: { type: "string", format: "uuid" },
+              reservas: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    id: { type: "string", format: "uuid" },
+                    nome_pessoa: { type: "string" },
+                    data_hora: { type: "string", format: "date-time" },
+                    numero_pessoas: { type: "number" },
+                    status: { type: "string" },
                   },
                 },
               },
-            ],
+            },
           },
           400: { type: "object", properties: { error: { type: "string" } } },
           401: { type: "object", properties: { error: { type: "string" } } },
@@ -322,12 +313,15 @@ export function registerReservasRoutes(app: App) {
           if (!Array.isArray(mesa_ids) || mesa_ids.length < 2 || mesa_ids.length > 20) {
             return await reply.code(400).send({ error: "Número de mesas deve estar entre 2 e 20." });
           }
-          // Checar duplicatas
-          const únicos = new Set(mesa_ids);
-          if (únicos.size !== mesa_ids.length) {
+          // Normalizar ids: trim e lowercase
+          const mesasNormalizadas = mesa_ids.map((id) => String(id).trim().toLowerCase());
+          // Checar duplicatas após normalização
+          const únicos = new Set(mesasNormalizadas);
+          if (únicos.size !== mesasNormalizadas.length) {
             return await reply.code(400).send({ error: "Não é permitido mesas duplicadas na lista." });
           }
-          mesasDoGrupo = Array.from(mesa_ids).sort(); // Sort para garantir ordem ao bloquear
+          // Sort para garantir ordem ao bloquear
+          mesasDoGrupo = mesasNormalizadas.sort();
         }
 
         // Validações
@@ -360,7 +354,7 @@ export function registerReservasRoutes(app: App) {
           });
         }
 
-        // Validar mesa se informada (reserva única ou grupo)
+        // Validar mesa única se informada
         if (mesa_id) {
           const mesaResult = await app.db
             .select()
@@ -373,19 +367,6 @@ export function registerReservasRoutes(app: App) {
 
           if (mesaResult.length === 0) {
             return await reply.code(400).send({ error: "Mesa não encontrada." });
-          }
-        } else if (mesasDoGrupo) {
-          // Validar todas as mesas do grupo existem
-          const mesasValidas = await app.db
-            .select({ id: schema.mesas.id })
-            .from(schema.mesas)
-            .where(and(
-              eq(schema.mesas.restauranteId, restauranteId),
-              sql`${schema.mesas.id} = ANY(ARRAY[${mesasDoGrupo.map((id) => `'${id}'`).join(',')}]::uuid[])`
-            ));
-
-          if (mesasValidas.length !== mesasDoGrupo.length) {
-            return await reply.code(404).send({ error: "Uma ou mais mesas não foram encontradas no restaurante." });
           }
         }
 
@@ -424,7 +405,12 @@ export function registerReservasRoutes(app: App) {
                 .for("update");
 
               if (mesaLocked.length === 0) {
-                return { tipo: "mesa_nao_encontrada" };
+                // Diferenciar erro: grupo vs reserva única
+                if (mesasDoGrupo) {
+                  return { tipo: "mesa_grupo_nao_encontrada" };
+                } else {
+                  return { tipo: "mesa_nao_encontrada" };
+                }
               }
             }
 
@@ -449,18 +435,28 @@ export function registerReservasRoutes(app: App) {
                 .limit(1);
 
               if (conflito.length > 0) {
-                // Fetch mesa number for error message
-                const mesaNum = await tx
-                  .select({ numero: schema.mesas.numero })
-                  .from(schema.mesas)
-                  .where(eq(schema.mesas.id, mesaParaVerificar as any))
-                  .limit(1);
+                if (mesasDoGrupo) {
+                  // Para grupo: buscar número da mesa para mensagem
+                  const mesaNum = await tx
+                    .select({ numero: schema.mesas.numero })
+                    .from(schema.mesas)
+                    .where(eq(schema.mesas.id, mesaParaVerificar as any))
+                    .limit(1);
 
-                return {
-                  tipo: "conflito",
-                  mesa_numero: mesaNum[0]?.numero || "?",
-                  hora_conflito: conflito[0].dataHora.toISOString(),
-                };
+                  return {
+                    tipo: "conflito",
+                    mesa_numero: mesaNum[0]?.numero || "?",
+                    hora_conflito: conflito[0].dataHora.toISOString(),
+                    eh_grupo: true,
+                  };
+                } else {
+                  // Para reserva única: sem número de mesa
+                  return {
+                    tipo: "conflito",
+                    hora_conflito: conflito[0].dataHora.toISOString(),
+                    eh_grupo: false,
+                  };
+                }
               }
             }
           }
@@ -514,14 +510,25 @@ export function registerReservasRoutes(app: App) {
         });
 
         if (resultado.tipo === "conflito") {
-          app.logger.warn(
-            { restauranteId, mesaNumero: resultado.mesa_numero, horaConflito: resultado.hora_conflito },
-            "Conflito de horário ao criar reserva"
-          );
-          return await reply.code(409).send({
-            error: `Já existe uma reserva para a mesa ${resultado.mesa_numero} nesse horário.`,
-            conflicting_reservation_time: resultado.hora_conflito,
-          });
+          if (resultado.eh_grupo) {
+            app.logger.warn(
+              { restauranteId, mesaNumero: resultado.mesa_numero, horaConflito: resultado.hora_conflito },
+              "Conflito de horário ao criar reserva de grupo"
+            );
+            return await reply.code(409).send({
+              error: `Já existe uma reserva para a mesa ${resultado.mesa_numero} nesse horário.`,
+              conflicting_reservation_time: resultado.hora_conflito,
+            });
+          } else {
+            app.logger.warn(
+              { restauranteId, mesaId: mesa_id, horaConflito: resultado.hora_conflito },
+              "Conflito de horário ao criar reserva"
+            );
+            return await reply.code(409).send({
+              error: "Já existe uma reserva para esta mesa nesse horário.",
+              conflicting_reservation_time: resultado.hora_conflito,
+            });
+          }
         }
 
         if (resultado.tipo === "restaurante_nao_encontrado") {
@@ -529,7 +536,11 @@ export function registerReservasRoutes(app: App) {
         }
 
         if (resultado.tipo === "mesa_nao_encontrada") {
-          return await reply.code(400).send({ error: "Uma ou mais mesas não foram encontradas." });
+          return await reply.code(400).send({ error: "Mesa não encontrada." });
+        }
+
+        if (resultado.tipo === "mesa_grupo_nao_encontrada") {
+          return await reply.code(404).send({ error: "Uma ou mais mesas não foram encontradas no restaurante." });
         }
 
         if (resultado.tipo === "grupo_criado") {
