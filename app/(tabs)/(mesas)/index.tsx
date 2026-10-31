@@ -499,17 +499,35 @@ export default function MesasScreen() {
             {loading ? "Carregando..." : subtitleText}
           </Text>
         </View>
-        <View
-          style={{
-            width: 40,
-            height: 40,
-            borderRadius: 12,
-            backgroundColor: COLORS.primaryMuted,
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-        >
-          <LayoutGrid size={20} color={COLORS.primary} />
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+          {(role === "garcom" || role === "gerente" || role === "administrador") && (
+            <AnimatedPressable
+              onPress={() => router.push("/reservas")}
+              hitSlop={8}
+              style={{
+                height: 40,
+                paddingHorizontal: 14,
+                borderRadius: 12,
+                backgroundColor: COLORS.primaryMuted,
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <Text style={{ fontFamily: "Outfit_600SemiBold", fontSize: 14, color: COLORS.primary }}>Reservas</Text>
+            </AnimatedPressable>
+          )}
+          <View
+            style={{
+              width: 40,
+              height: 40,
+              borderRadius: 12,
+              backgroundColor: COLORS.primaryMuted,
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <LayoutGrid size={20} color={COLORS.primary} />
+          </View>
         </View>
       </View>
 
