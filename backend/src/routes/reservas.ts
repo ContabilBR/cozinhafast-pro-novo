@@ -1266,6 +1266,17 @@ export function registerReservasRoutes(app: App) {
             type: "object",
             properties: {
               comanda_id: { type: "string", format: "uuid" },
+              comandas: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    mesa_id: { type: "string", format: "uuid" },
+                    mesa_numero: { type: "number" },
+                    comanda_id: { type: "string", format: "uuid" },
+                  },
+                },
+              },
             },
           },
           400: { type: "object", properties: { error: { type: "string" } } },
@@ -1298,7 +1309,11 @@ export function registerReservasRoutes(app: App) {
         switch (resultado.tipo) {
           case "sucesso":
             app.logger.info({ restauranteId, reservaId: id, comandaId: resultado.comandaId }, "Reserva seated successfully");
-            return await reply.code(200).send({ comanda_id: resultado.comandaId });
+            const response: any = { comanda_id: resultado.comandaId };
+            if (resultado.comandas && resultado.comandas.length > 0) {
+              response.comandas = resultado.comandas;
+            }
+            return await reply.code(200).send(response);
 
           case "reserva_nao_encontrada":
             return await reply.code(404).send({ error: "Reserva não encontrada." });
@@ -1315,7 +1330,10 @@ export function registerReservasRoutes(app: App) {
             return await reply.code(409).send({ error: "Reserva não tem mesa atribuída." });
 
           case "mesa_nao_encontrada":
-            return await reply.code(404).send({ error: "Mesa não encontrada." });
+            return await reply.code(404).send({ error: resultado.detalhes || "Mesa não encontrada." });
+
+          case "mesa_nao_livre":
+            return await reply.code(409).send({ error: resultado.detalhes || "Mesa não está livre." });
 
           case "mesa_ja_ocupada":
             return await reply.code(409).send({ error: "Mesa já está ocupada." });
