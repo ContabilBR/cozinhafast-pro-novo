@@ -8,6 +8,7 @@ import {
   FlatList,
   TouchableOpacity,
   TextInput,
+  Alert,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
@@ -17,7 +18,7 @@ import { useColors } from "@/hooks/useColors";
 import { useAuth } from "@/contexts/AuthContext";
 import { AnimatedPressable } from "@/components/AnimatedPressable";
 import { SkeletonLine } from "@/components/SkeletonLoader";
-import { apiGet } from "@/utils/api";
+import { apiGet, apiPost } from "@/utils/api";
 import { isAdmin } from "@/utils/helpers";
 import { setMesaHistoricoId } from "@/utils/mesaHistoricoStore";
 import { Users, UtensilsCrossed, LayoutGrid } from "lucide-react-native";
@@ -30,6 +31,14 @@ interface ApiMesa {
   capacidade: number;
   status: string;
   comanda_id?: string;
+  proxima_reserva?: { id: string; nome: string; horario: string; pessoas: number } | null;
+}
+
+// Horário de Brasília (UTC-3, sem horário de verão) no formato HH:MM
+function horaReservaBrasilia(iso: string): string {
+  const d = new Date(new Date(iso).getTime() - 3 * 3600 * 1000);
+  if (isNaN(d.getTime())) return "--:--";
+  return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
 }
 
 type FilterKey = "todas" | "livres" | "ocupadas" | "reservadas";
@@ -246,6 +255,24 @@ function MesaCard({
               {capacidadeLabel}
             </Text>
           </View>
+          {isLivre(mesa.status) && mesa.proxima_reserva && (
+            <View
+              style={{
+                alignSelf: "flex-start",
+                backgroundColor: "#F59E0B20",
+                borderRadius: 8,
+                paddingHorizontal: 8,
+                paddingVertical: 4,
+              }}
+            >
+              <Text
+                numberOfLines={1}
+                style={{ fontFamily: "Outfit_600SemiBold", fontSize: 11, color: "#B45309" }}
+              >
+                Reservada {horaReservaBrasilia(mesa.proxima_reserva.horario)} · {mesa.proxima_reserva.nome}
+              </Text>
+            </View>
+          )}
         </View>
 
         {/* Bottom: action button */}
@@ -420,6 +447,36 @@ export default function MesasScreen() {
       router.push('/mesa-historico');
       return;
     }
+    if (role === "garcom" && isLivre(mesa.status) && mesa.proxima_reserva) {
+      const r = mesa.proxima_reserva;
+      Alert.alert(
+        `Mesa ${mesa.numero} reservada às ${horaReservaBrasilia(r.horario)} para ${r.nome} (${r.pessoas} ${r.pessoas === 1 ? "pessoa" : "pessoas"})`,
+        undefined,
+        [
+          {
+            text: "Abrir comanda da reserva",
+            onPress: async () => {
+              try {
+                const res = await apiPost<any>(`/api/reservas/${r.id}/sentar`, {});
+                if (res?.comanda_id) {
+                  router.push({ pathname: "/comanda/[id]", params: { id: res.comanda_id, mesa_numero: String(mesa.numero) } });
+                }
+                fetchMesas();
+              } catch (e: any) {
+                Alert.alert("Não foi possível abrir a comanda", e?.body?.error || e?.message || "Tente novamente.");
+              }
+            },
+          },
+          { text: "Abrir comanda normal", onPress: () => abrirFluxoNormal(mesa) },
+          { text: "Cancelar", style: "cancel" },
+        ]
+      );
+      return;
+    }
+    abrirFluxoNormal(mesa);
+  };
+
+  const abrirFluxoNormal = (mesa: ApiMesa) => {
     if (isOcupada(mesa.status) && mesa.comanda_id) {
       router.push({ pathname: "/comanda/[id]", params: { id: mesa.comanda_id, mesa_numero: String(mesa.numero) } });
     } else if (canOpenComanda(mesa.status)) {
@@ -432,7 +489,7 @@ export default function MesasScreen() {
   // Counts
   const livreCount = mesas.filter((m) => isLivre(m.status)).length;
   const ocupadaCount = mesas.filter((m) => isOcupada(m.status)).length;
-  const reservadaCount = mesas.filter((m) => isReservada(m.status)).length;
+  const reservadaCount = mesas.filter((m) => isReservada(m.status) || (isLivre(m.status) && !!m.proxima_reserva)).length;
 
   const filterCounts: Record<FilterKey, number> = {
     todas: mesas.length,
@@ -448,7 +505,7 @@ export default function MesasScreen() {
       if (activeFilter === "todas") return true;
       if (activeFilter === "livres") return isLivre(m.status);
       if (activeFilter === "ocupadas") return isOcupada(m.status);
-      if (activeFilter === "reservadas") return isReservada(m.status);
+      if (activeFilter === "reservadas") return isReservada(m.status) || (isLivre(m.status) && !!m.proxima_reserva);
       return true;
     })
     .filter((m) => trimmedSearch === "" || String(m.numero).includes(trimmedSearch));
@@ -500,7 +557,7 @@ export default function MesasScreen() {
           </Text>
         </View>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-          {(role === "garcom" || role === "gerente" || role === "administrador") && (
+          {(role === "garcom" || isAdmin(role)) && (
             <AnimatedPressable
               onPress={() => router.push("/reservas")}
               hitSlop={8}

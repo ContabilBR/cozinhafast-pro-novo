@@ -19,7 +19,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { AnimatedPressable } from "@/components/AnimatedPressable";
 import { apiGet, apiPost, apiPut } from "@/utils/api";
 import { isAdmin } from "@/utils/helpers";
-import { hojeBrasilia, deslocarDias } from "@/utils/exportacao/periodo";
+import { deslocarDias } from "@/utils/exportacao/periodo";
 
 interface Reserva {
   id: string;
@@ -56,6 +56,11 @@ function horaBrasilia(iso: string): string {
   const d = new Date(new Date(iso).getTime() - 3 * 3600 * 1000);
   if (isNaN(d.getTime())) return "--:--";
   return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
+}
+
+// "Hoje" em Brasília (UTC-3), independente do relógio/fuso do aparelho
+function hojeBrasilia(): string {
+  return new Date(Date.now() - 3 * 3600 * 1000).toISOString().slice(0, 10);
 }
 
 function dataBR(iso: string): string {
