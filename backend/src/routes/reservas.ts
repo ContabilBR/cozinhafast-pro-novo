@@ -1336,7 +1336,7 @@ export function registerReservasRoutes(app: App) {
             return await reply.code(409).send({ error: resultado.detalhes || "Mesa não está livre." });
 
           case "mesa_ja_ocupada":
-            return await reply.code(409).send({ error: "Mesa já está ocupada." });
+            return await reply.code(409).send({ error: resultado.detalhes || "Mesa já está ocupada." });
 
           case "nome_obrigatorio":
             return await reply.code(409).send({ error: "Nome obrigatório no modo de comanda individual." });

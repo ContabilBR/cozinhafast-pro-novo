@@ -13,11 +13,28 @@ import * as schema from "../db/schema/schema.js";
 import {
   abrirComandaNaMesa,
   normalizarNomeComanda,
+  chaveDeNome,
   publicarEventoComandaCriada,
+  TAMANHO_MAXIMO_NOME_COMANDA,
   type EntradaAbertura,
   type ResultadoAbertura,
 } from "./abrir-comanda.js";
 import { realtimeHub } from "../realtime/hub.js";
+
+/**
+ * Erro controlado para operações de sentar (grupo).
+ * Lançado dentro de transações para provocar rollback total.
+ */
+export class ErroSentarGrupo extends Error {
+  constructor(
+    public tipo: ResultadoSentarReserva["tipo"],
+    public statusCode: number,
+    public detalhes: string
+  ) {
+    super(detalhes);
+    this.name = "ErroSentarGrupo";
+  }
+}
 
 export interface ComandaGrupo {
   mesa_id: string;
@@ -157,10 +174,6 @@ async function sentarUnica(
           return { tipo: "mesa_nao_encontrada" };
         }
 
-        if (mesaLocked[0].status !== "disponivel") {
-          return { tipo: "mesa_nao_livre", detalhes: `A mesa ${mesaLocked[0].numero} não está livre.` };
-        }
-
         // Store the mesa number for later use
         var mesaNumero = mesaLocked[0].numero;
       } else {
@@ -181,7 +194,7 @@ async function sentarUnica(
         .limit(1);
 
       if (reservaLocked.length === 0) {
-        return { tipo: "reserva_alterada", detalhes: "A reserva foi alterada ou não está mais disponível para sentar." };
+        return { tipo: "reserva_alterada", detalhes: "A reserva ou a mesa foi alterada durante a operação. Tente novamente." };
       }
 
       const resLocked = reservaLocked[0];
@@ -275,7 +288,7 @@ async function sentarUnica(
 
       if (!reservaAtualizada) {
         // Reserva was modified or deleted - treat as 409 race condition
-        return { tipo: "reserva_alterada", detalhes: "A reserva foi alterada ou não está mais disponível para sentar." };
+        return { tipo: "reserva_alterada", detalhes: "A reserva ou a mesa foi alterada durante a operação. Tente novamente." };
       }
 
       // Return success with metadata for event publishing
@@ -322,7 +335,7 @@ async function sentarGrupo(
         .for("share");
 
       if (restLocked.length === 0) {
-        return { tipo: "erro_interno", detalhes: "Restaurante não encontrado" };
+        throw new ErroSentarGrupo("erro_interno", 500, "Restaurante não encontrado");
       }
 
       const modo = restLocked[0].modoComanda;
@@ -340,22 +353,32 @@ async function sentarGrupo(
         .orderBy(schema.reservas.id);
 
       if (grupoReservas.length === 0) {
-        return { tipo: "reserva_nao_encontrada" };
+        throw new ErroSentarGrupo("reserva_nao_encontrada", 404, "Reserva não encontrada");
       }
 
       // Validate all are confirmada
       if (grupoReservas.some((r: any) => r.status !== "confirmada")) {
-        return {
-          tipo: "reserva_alterada",
-          detalhes: "A reserva foi alterada ou não está mais disponível para sentar.",
-        };
+        throw new ErroSentarGrupo(
+          "reserva_alterada",
+          409,
+          "A reserva ou a mesa foi alterada durante a operação. Tente novamente."
+        );
       }
 
-      // Get unique mesa IDs in ascending order
+      // Get unique mesa IDs in ascending order and validate all non-null
       const mesasDoGrupo = Array.from(new Set(grupoReservas.map((r: any) => r.mesaId))).sort() as string[];
 
+      // Check for null mesaId - should never happen in confirmada state, but handle it
+      if (mesasDoGrupo.includes(null as any)) {
+        throw new ErroSentarGrupo(
+          "reserva_sem_mesa",
+          409,
+          "Uma ou mais linhas da reserva não têm mesa atribuída"
+        );
+      }
+
       if (mesasDoGrupo.length === 0) {
-        return { tipo: "reserva_sem_mesa" };
+        throw new ErroSentarGrupo("reserva_sem_mesa", 409, "Reserva não tem mesa atribuída");
       }
 
       // 3. Lock all mesas of the group in ascending order (FOR UPDATE)
@@ -373,12 +396,20 @@ async function sentarGrupo(
           .for("update");
 
         if (mesaLocked.length === 0) {
-          return { tipo: "mesa_nao_encontrada", detalhes: "Uma ou mais mesas não foram encontradas no restaurante." };
+          throw new ErroSentarGrupo(
+            "mesa_nao_encontrada",
+            404,
+            "Uma ou mais mesas não foram encontradas no restaurante"
+          );
         }
 
-        // Check mesa is available (disponivel)
-        if (mesaLocked[0].status !== "disponivel") {
-          return { tipo: "mesa_nao_livre", detalhes: `A mesa ${mesaLocked[0].numero} não está livre.` };
+        // Check mesa is available: reject only "ocupada", allow "disponivel" and "reservada"
+        if (mesaLocked[0].status === "ocupada") {
+          throw new ErroSentarGrupo(
+            "mesa_nao_livre",
+            409,
+            `A mesa ${mesaLocked[0].numero} está ocupada.`
+          );
         }
 
         mesasLocked.push(mesaLocked[0]);
@@ -398,18 +429,20 @@ async function sentarGrupo(
         .orderBy(schema.reservas.id);
 
       if (reservasLocked.length === 0) {
-        return {
-          tipo: "reserva_alterada",
-          detalhes: "A reserva foi alterada ou não está mais disponível para sentar.",
-        };
+        throw new ErroSentarGrupo(
+          "reserva_alterada",
+          409,
+          "A reserva ou a mesa foi alterada durante a operação. Tente novamente."
+        );
       }
 
       // Re-validate all are confirmada
       if (reservasLocked.some((r: any) => r.status !== "confirmada")) {
-        return {
-          tipo: "reserva_alterada",
-          detalhes: "A reserva foi alterada ou não está mais disponível para sentar.",
-        };
+        throw new ErroSentarGrupo(
+          "reserva_alterada",
+          409,
+          "A reserva ou a mesa foi alterada durante a operação. Tente novamente."
+        );
       }
 
       // 5. For each mesa in ascending order: open comanda, mark mesa as ocupada, update reserva
@@ -424,15 +457,67 @@ async function sentarGrupo(
         // Find corresponding reserva for this mesa
         const reservaParaMesa = reservasLocked.find((r: any) => r.mesaId === mesaId);
         if (!reservaParaMesa) {
-          throw new Error(`Reserva for mesa ${mesaId} not found in locked group`);
+          throw new ErroSentarGrupo(
+            "reserva_alterada",
+            409,
+            "A reserva ou a mesa foi alterada durante a operação. Tente novamente."
+          );
         }
 
         // Prepare comanda name
         let nomeComanda: string | null = null;
         if (modo === "individual") {
-          nomeComanda = normalizarNomeComanda(reservaParaMesa.nomePessoa);
-          if (!nomeComanda) {
-            return { tipo: "nome_obrigatorio" };
+          const nomeNormalizado = normalizarNomeComanda(reservaParaMesa.nomePessoa);
+          if (!nomeNormalizado) {
+            throw new ErroSentarGrupo("nome_obrigatorio", 409, "Nome obrigatório no modo de comanda individual");
+          }
+
+          // Mount label as "nome — mesa N"
+          const sufixoMesa = ` — mesa ${mesaLocked.numero}`;
+          let nomeMontado = `${nomeNormalizado}${sufixoMesa}`;
+
+          // If total exceeds limit, trim the name part but keep the mesa suffix
+          if (nomeMontado.length > TAMANHO_MAXIMO_NOME_COMANDA) {
+            const maxNomeLen = TAMANHO_MAXIMO_NOME_COMANDA - sufixoMesa.length;
+            if (maxNomeLen <= 0) {
+              // Suffix alone is too long, just use trimmed nome
+              nomeMontado = nomeNormalizado.substring(0, TAMANHO_MAXIMO_NOME_COMANDA);
+            } else {
+              nomeMontado = nomeNormalizado.substring(0, maxNomeLen).trim() + sufixoMesa;
+            }
+          }
+
+          // Validate after potentially trimming
+          const nomeMontadoNormalizado = normalizarNomeComanda(nomeMontado);
+          if (!nomeMontadoNormalizado) {
+            throw new ErroSentarGrupo("nome_obrigatorio", 409, "Nome obrigatório no modo de comanda individual");
+          }
+
+          nomeComanda = nomeMontadoNormalizado;
+
+          // Check for duplicate name (by normalized key) among open commands on this mesa
+          const abertas = await tx
+            .select({ rotulo: schema.comandas.rotulo })
+            .from(schema.comandas)
+            .where(
+              and(
+                eq(schema.comandas.mesaId, mesaId as any),
+                eq(schema.comandas.restauranteId, restauranteId),
+                eq(schema.comandas.status, "aberta" as any)
+              )
+            );
+
+          const chave = chaveDeNome(nomeComanda);
+          const repetido = abertas.some((c: any) => {
+            const existente = normalizarNomeComanda(c.rotulo);
+            return existente !== null && chaveDeNome(existente) === chave;
+          });
+          if (repetido) {
+            throw new ErroSentarGrupo(
+              "nome_repetido",
+              409,
+              "Já existe uma comanda com este nome nesta mesa"
+            );
           }
         }
 
@@ -447,16 +532,24 @@ async function sentarGrupo(
         } as EntradaAbertura);
 
         if (abertura.tipo !== "criada") {
-          // Map service errors to result types
-          const erroMap: Record<string, ResultadoSentarReserva["tipo"]> = {
-            mesa_nao_encontrada: "mesa_nao_encontrada",
-            nome_obrigatorio: "nome_obrigatorio",
-            nome_muito_longo: "nome_muito_longo",
-            nome_repetido: "nome_repetido",
-            mesa_ja_tem_comanda: "mesa_ja_ocupada",
-          };
-          const tipo = erroMap[abertura.tipo] || "mesa_ja_ocupada";
-          return { tipo };
+          // Map service errors to ErroSentarGrupo
+          if (abertura.tipo === "mesa_ja_tem_comanda") {
+            throw new ErroSentarGrupo(
+              "mesa_ja_ocupada",
+              409,
+              `A mesa ${mesaLocked.numero} já tem uma comanda aberta.`
+            );
+          } else if (abertura.tipo === "nome_obrigatorio") {
+            throw new ErroSentarGrupo("nome_obrigatorio", 409, "Nome obrigatório no modo de comanda individual");
+          } else if (abertura.tipo === "nome_muito_longo") {
+            throw new ErroSentarGrupo("nome_muito_longo", 409, "Nome da comanda muito longo");
+          } else if (abertura.tipo === "nome_repetido") {
+            throw new ErroSentarGrupo("nome_repetido", 409, "Já existe uma comanda com este nome nesta mesa");
+          } else if (abertura.tipo === "mesa_nao_encontrada") {
+            throw new ErroSentarGrupo("mesa_nao_encontrada", 404, "Mesa não encontrada");
+          } else {
+            throw new ErroSentarGrupo("mesa_ja_ocupada", 409, `A mesa ${mesaLocked.numero} já tem uma comanda aberta.`);
+          }
         }
 
         comandasAbiertas.push({
@@ -477,7 +570,11 @@ async function sentarGrupo(
           .returning();
 
         if (mesaAtualizada.length === 0) {
-          throw new Error(`Mesa ${mesaId} not found when marking as occupied`);
+          throw new ErroSentarGrupo(
+            "mesa_nao_encontrada",
+            404,
+            "A mesa foi alterada durante a operação"
+          );
         }
 
         mesasAtualizadas.push(mesaAtualizada[0]);
@@ -508,11 +605,11 @@ async function sentarGrupo(
           .returning();
 
         if (!reservaAtualizada) {
-          // Reserva was modified or deleted - treat as 409 race condition
-          return {
-            tipo: "reserva_alterada",
-            detalhes: "A reserva foi alterada ou não está mais disponível para sentar.",
-          };
+          throw new ErroSentarGrupo(
+            "reserva_alterada",
+            409,
+            "A reserva ou a mesa foi alterada durante a operação. Tente novamente."
+          );
         }
       }
 
@@ -547,9 +644,22 @@ async function sentarGrupo(
 
     return resultado;
   } catch (error) {
+    // Handle ErroSentarGrupo (controlled errors from transaction)
+    if (error instanceof ErroSentarGrupo) {
+      app.logger.warn(
+        { grupoId, restauranteId, erro: error.tipo, detalhes: error.detalhes },
+        "Erro controlado ao sentar grupo"
+      );
+      return {
+        tipo: error.tipo as ResultadoSentarReserva["tipo"],
+        detalhes: error.detalhes,
+      };
+    }
+
+    // Unexpected errors
     app.logger.error(
       { err: error, grupoId, restauranteId },
-      "Erro ao sentar grupo de reservas"
+      "Erro inesperado ao sentar grupo de reservas"
     );
     return { tipo: "erro_interno", detalhes: "Erro inesperado ao processar o grupo de reservas" };
   }
