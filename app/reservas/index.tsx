@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   View,
   Text,
@@ -8,6 +8,7 @@ import {
   Alert,
   Platform,
   ActivityIndicator,
+  Linking,
 } from "react-native";
 import { useRouter } from "expo-router";
 import { useFocusEffect } from "@react-navigation/native";
@@ -74,6 +75,18 @@ function diaSemana(iso: string): string {
   return DIAS[new Date(Date.UTC(a, m - 1, d)).getUTCDay()];
 }
 
+function diaBrasilia(iso: string): string {
+  return new Date(new Date(iso).getTime() - 3 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+// Número para o wa.me: só dígitos; 10/11 dígitos ganham 55; 12/13 precisam começar por 55
+function numeroWhatsApp(tel?: string | null): string | null {
+  const d = (tel || "").replace(/\D/g, "");
+  if (d.length === 10 || d.length === 11) return "55" + d;
+  if ((d.length === 12 || d.length === 13) && d.startsWith("55")) return d;
+  return null;
+}
+
 function paraIso(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
@@ -102,6 +115,34 @@ export default function ReservasScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [erro, setErro] = useState("");
   const [escolhendoData, setEscolhendoData] = useState(false);
+  const [nomeRestaurante, setNomeRestaurante] = useState("");
+
+  useEffect(() => {
+    apiGet<any>("/api/restaurante")
+      .then((r) => {
+        const nome = (r?.restaurante?.nome ?? r?.nome ?? "").toString().trim();
+        setNomeRestaurante(nome);
+      })
+      .catch(() => setNomeRestaurante(""));
+  }, []);
+
+  const confirmarWhatsApp = async (r: Reserva) => {
+    const numero = numeroWhatsApp(r.telefone);
+    if (!numero) {
+      Alert.alert("Telefone inválido para WhatsApp. Edite a reserva e corrija o número.");
+      return;
+    }
+    const dataIso = diaBrasilia(r.data_hora);
+    const [, mm, dd] = dataIso.split("-");
+    const pessoas = `${r.numero_pessoas} ${r.numero_pessoas === 1 ? "pessoa" : "pessoas"}`;
+    const quem = nomeRestaurante ? `Aqui é do ${nomeRestaurante}.` : "Aqui é do restaurante.";
+    const texto = `Olá, ${r.nome_pessoa}! ${quem} Sua reserva para ${pessoas} está marcada para ${diaSemana(dataIso)}, ${dd}/${mm} às ${horaBrasilia(r.data_hora)}. Responda SIM para confirmar ou NÃO se precisar cancelar. Obrigado!`;
+    try {
+      await Linking.openURL(`https://wa.me/${numero}?text=${encodeURIComponent(texto)}`);
+    } catch {
+      Alert.alert("Não foi possível abrir o WhatsApp");
+    }
+  };
   const [agindo, setAgindo] = useState<string | null>(null);
 
   const carregar = useCallback(
@@ -270,6 +311,14 @@ export default function ReservasScreen() {
                 {botao(ocupado ? "Abrindo..." : "Abrir comanda", () => abrirComanda(r), { primario: true, disabled: ocupado || !r.mesa })}
                 {gerencia && botao("Não compareceu", () => mudarStatus(r, "nao_compareceu"), { disabled: ocupado })}
                 {gerencia && botao("Cancelar", () => mudarStatus(r, "cancelada"), { perigo: true, disabled: ocupado })}
+              </View>
+              <View style={{ marginTop: 8 }}>
+                {botao("Confirmar por WhatsApp", () => confirmarWhatsApp(r), { disabled: ocupado || !r.telefone?.trim() })}
+                {!r.telefone?.trim() && (
+                  <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 12, color: COLORS.textSecondary, marginTop: 6 }}>
+                    Reserva sem telefone
+                  </Text>
+                )}
               </View>
               {!r.mesa && (
                 <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 12, color: COLORS.warning, marginTop: 8 }}>
