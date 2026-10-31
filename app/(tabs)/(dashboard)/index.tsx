@@ -18,7 +18,8 @@ import { SkeletonLine } from "@/components/SkeletonLoader";
 import { apiGet } from "@/utils/api";
 import { setMesaHistoricoId } from "@/utils/mesaHistoricoStore";
 import { formatCurrency, isAdmin } from "@/utils/helpers";
-import { TrendingUp, ShoppingBag, Grid3x3, Clock, RefreshCw, ChevronRight, DollarSign, ChefHat } from "lucide-react-native";
+import { hojeBrasilia } from "@/utils/exportacao/periodo";
+import { TrendingUp, ShoppingBag, Grid3x3, Clock, RefreshCw, ChevronRight, DollarSign, ChefHat, CalendarDays } from "lucide-react-native";
 import { useRealtime, type RealtimeStatus } from "@/hooks/useRealtime";
 import { Ionicons } from "@expo/vector-icons";
 import DateTimePicker from "@react-native-community/datetimepicker";
@@ -71,6 +72,7 @@ function StatCard({
   icon,
   loading,
   onPress,
+  subtitle,
 }: {
   title: string;
   value: string;
@@ -78,6 +80,7 @@ function StatCard({
   icon: React.ReactNode;
   loading: boolean;
   onPress?: () => void;
+  subtitle?: string;
 }) {
   const COLORS = useColors();
   const cardContent = (
@@ -107,6 +110,11 @@ function StatCard({
           <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 12, color: COLORS.textSecondary }}>
             {title}
           </Text>
+          {subtitle ? (
+            <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 11, color: COLORS.textSecondary }}>
+              {subtitle}
+            </Text>
+          ) : null}
         </>
       )}
       {onPress && (
@@ -193,6 +201,7 @@ export default function DashboardScreen() {
 
   const [resumo, setResumo] = useState<RelatorioResumo>(EMPTY_RESUMO);
   const [tables, setTables] = useState<ApiMesa[]>([]);
+  const [reservasHoje, setReservasHoje] = useState<{ total: number; aguardando: number } | null>(null);
   const [recentComandas, setRecentComandas] = useState<ApiComanda[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -222,7 +231,7 @@ export default function DashboardScreen() {
     }
 
     try {
-      const [resumoRes, tablesRes, comandasRes] = await Promise.all([
+      const [resumoRes, tablesRes, comandasRes, reservasRes] = await Promise.all([
         apiGet<any>(resumoUrl).catch((e) => {
           console.error("[Dashboard] relatorios/resumo error:", e instanceof Error ? e.message : String(e));
           return null;
@@ -235,7 +244,20 @@ export default function DashboardScreen() {
           console.error("[Dashboard] comandas error:", e instanceof Error ? e.message : String(e));
           return null;
         }),
+        apiGet<any>(`/api/reservas?data=${hojeBrasilia()}`).catch((e) => {
+          console.error("[Dashboard] reservas error:", e instanceof Error ? e.message : String(e));
+          return null;
+        }),
       ]);
+
+      // Reservas de hoje (independe do filtro de período); null esconde o cartão
+      if (reservasRes) {
+        const lista: { status: string }[] = Array.isArray(reservasRes) ? reservasRes : reservasRes.reservas || [];
+        const validas = lista.filter((r) => r.status !== "cancelada" && r.status !== "nao_compareceu");
+        setReservasHoje({ total: validas.length, aguardando: validas.filter((r) => r.status === "confirmada").length });
+      } else {
+        setReservasHoje(null);
+      }
 
       // Unwrap resumo — handle both direct object and nested
       if (resumoRes && typeof resumoRes === "object") {
@@ -583,6 +605,20 @@ export default function DashboardScreen() {
               icon={<DollarSign size={20} color="#0EA5E9" />}
               loading={loading}
             />
+            {(loading || reservasHoje) && (
+              <StatCard
+                title="Reservas hoje"
+                value={String(reservasHoje?.total ?? 0)}
+                subtitle={`${reservasHoje?.aguardando ?? 0} aguardando`}
+                color={COLORS.warning}
+                icon={<CalendarDays size={20} color={COLORS.warning} />}
+                loading={loading}
+                onPress={() => {
+                  console.log("[Dashboard] Reservas hoje card pressed");
+                  router.push("/reservas");
+                }}
+              />
+            )}
           </View>
         </Animated.View>
 

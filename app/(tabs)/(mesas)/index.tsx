@@ -20,6 +20,7 @@ import { AnimatedPressable } from "@/components/AnimatedPressable";
 import { SkeletonLine } from "@/components/SkeletonLoader";
 import { apiGet, apiPost } from "@/utils/api";
 import { isAdmin } from "@/utils/helpers";
+import { hojeBrasilia } from "@/utils/exportacao/periodo";
 import { setMesaHistoricoId } from "@/utils/mesaHistoricoStore";
 import { Users, UtensilsCrossed, LayoutGrid } from "lucide-react-native";
 
@@ -398,8 +399,23 @@ export default function MesasScreen() {
   const [activeFilter, setActiveFilter] = useState<FilterKey>("todas");
   const [searchText, setSearchText] = useState("");
 
+  const [reservasHoje, setReservasHoje] = useState<{ total: number; aguardando: number } | null>(null);
+
+  const fetchReservasHoje = useCallback(async () => {
+    try {
+      const res = await apiGet<any>(`/api/reservas?data=${hojeBrasilia()}`);
+      const lista: { status: string }[] = Array.isArray(res) ? res : res?.reservas || [];
+      const validas = lista.filter((r) => r.status !== "cancelada" && r.status !== "nao_compareceu");
+      setReservasHoje({ total: validas.length, aguardando: validas.filter((r) => r.status === "confirmada").length });
+    } catch (e: any) {
+      console.error("[Mesas] Erro ao carregar reservas de hoje:", e instanceof Error ? e.message : String(e));
+      setReservasHoje(null);
+    }
+  }, []);
+
   const fetchMesas = useCallback(async () => {
     console.log("[Mesas] GET /api/mesas");
+    fetchReservasHoje();
     try {
       const res = await apiGet<any>("/api/mesas");
       const list: ApiMesa[] = Array.isArray(res) ? res : (res.mesas || []);
@@ -414,7 +430,7 @@ export default function MesasScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [fetchReservasHoje]);
 
   useFocusEffect(
     useCallback(() => {
@@ -516,7 +532,11 @@ export default function MesasScreen() {
     rows.push(filteredMesas.slice(i, i + 2));
   }
 
-  const subtitleText = `${ocupadaCount} ocupadas · ${livreCount} disponíveis`;
+  let subtitleText = `${ocupadaCount} ocupadas · ${livreCount} disponíveis`;
+  if (reservasHoje && reservasHoje.total > 0) {
+    subtitleText += ` · ${reservasHoje.total} ${reservasHoje.total === 1 ? "reserva" : "reservas"} hoje`;
+    if (reservasHoje.aguardando > 0) subtitleText += ` (${reservasHoje.aguardando} aguardando)`;
+  }
 
   return (
     <View style={{ flex: 1, backgroundColor: COLORS.background }}>
