@@ -976,6 +976,7 @@ export function registerReservasRoutes(app: App) {
               if (conflito.length > 0) {
                 return {
                   tipo: "conflito",
+                  mesa_id: mesaIdAAtualizar,
                   hora_conflito: conflito[0].dataHora.toISOString(),
                 };
               }
@@ -1021,12 +1022,22 @@ export function registerReservasRoutes(app: App) {
         }
 
         if (resultado.tipo === "conflito") {
-          app.logger.warn(
-            { restauranteId, reservaId: id, mesaNumero: resultado.mesa_numero },
-            "Conflito ao atualizar reserva"
-          );
+          const logContext: any = { restauranteId, reservaId: id };
+          let errorMsg: string;
+
+          if (resultado.mesa_numero !== undefined) {
+            // Grupo: tem mesa_numero
+            logContext.mesaNumero = resultado.mesa_numero;
+            errorMsg = `Já existe uma reserva para a mesa ${resultado.mesa_numero} nesse horário.`;
+          } else {
+            // Reserva única: tem mesa_id, sem mesa_numero
+            logContext.mesaId = resultado.mesa_id;
+            errorMsg = "Já existe uma reserva para esta mesa nesse horário.";
+          }
+
+          app.logger.warn(logContext, "Conflito ao atualizar reserva");
           return await reply.code(409).send({
-            error: `Já existe uma reserva para a mesa ${resultado.mesa_numero} nesse horário.`,
+            error: errorMsg,
             conflicting_reservation_time: resultado.hora_conflito,
           });
         }
