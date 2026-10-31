@@ -380,7 +380,7 @@ export function registerReservasRoutes(app: App) {
                   // Existing starts before new ends
                   lt(schema.reservas.dataHora, new Date(dataHora.getTime() + DURACAO_PADRAO_RESERVA_MIN * 60 * 1000)),
                   // Existing ends (data_hora + duracao) after new starts
-                  sql`${schema.reservas.dataHora} + INTERVAL '1 minute' * ${schema.reservas.duracao} > ${dataHora}`
+                  sql`${schema.reservas.dataHora} + INTERVAL '1 minute' * ${schema.reservas.duracao} > ${dataHora.toISOString()}::timestamptz`
                 )
               )
               .limit(1);
@@ -664,7 +664,7 @@ export function registerReservasRoutes(app: App) {
                     eq(schema.reservas.status, "sentada" as any)
                   ),
                   lt(schema.reservas.dataHora, novaFim),
-                  sql`${schema.reservas.dataHora} + INTERVAL '1 minute' * ${schema.reservas.duracao} > ${dataHora}`
+                  sql`${schema.reservas.dataHora} + INTERVAL '1 minute' * ${schema.reservas.duracao} > ${dataHora.toISOString()}::timestamptz`
                 )
               )
               .limit(1);
