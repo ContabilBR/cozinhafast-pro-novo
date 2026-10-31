@@ -427,6 +427,7 @@ export const reservas = pgTable("reservas", {
   id: uuid("id").primaryKey().defaultRandom(),
   restauranteId: text("restaurante_id").notNull().references(() => restaurante.id, { onDelete: "restrict" }),
   mesaId: uuid("mesa_id").references(() => mesas.id, { onDelete: "restrict" }),
+  grupoId: uuid("grupo_id"),
   nomePessoa: text("nome_pessoa").notNull(),
   telefone: text("telefone"),
   dataHora: timestamp("data_hora", { withTimezone: true }).notNull(),
@@ -441,6 +442,7 @@ export const reservas = pgTable("reservas", {
 }, (table) => ({
   idxRestauranteDataHora: index("idx_reservas_restaurante_data_hora").on(table.restauranteId, table.dataHora),
   idxMesaDataHora: index("idx_reservas_mesa_data_hora").on(table.mesaId, table.dataHora),
+  idxRestauranteGrupoId: index("idx_reservas_restaurante_grupo_id").on(table.restauranteId, table.grupoId),
   ckNumeroPessoas: check("ck_reservas_numero_pessoas", sql`numero_pessoas >= 1 AND numero_pessoas <= 50`),
   ckDuracaoPositiva: check("ck_reservas_duracao_positiva", sql`duracao > 0`),
 }));
