@@ -579,7 +579,7 @@ export function registerReservasRoutes(app: App) {
     }
   );
 
-  // PUT /api/reservas/:id - Update a reserva
+  // PUT /api/reservas/:id - Update a reserva (or all reservas in grupo if grupo_id exists)
   app.fastify.put<{ Params: { id: string }; Body: UpdateReservaBody }>(
     "/api/reservas/:id",
     {
@@ -602,6 +602,7 @@ export function registerReservasRoutes(app: App) {
             data_hora: { type: "string", format: "date-time" },
             numero_pessoas: { type: "number" },
             mesa_id: { type: "string", format: "uuid" },
+            mesa_ids: { type: "array", items: { type: "string", format: "uuid" }, minItems: 2, maxItems: 20 },
             observacao: { type: "string" },
           },
         },
@@ -647,8 +648,16 @@ export function registerReservasRoutes(app: App) {
           data_hora,
           numero_pessoas,
           mesa_id,
+          mesa_ids,
           observacao,
         } = request.body;
+
+        // Não permitir mudar mesas
+        if (mesa_id || mesa_ids) {
+          return await reply.code(400).send({
+            error: "Não é permitido alterar as mesas. Para trocar as mesas, cancele a reserva e crie uma nova.",
+          });
+        }
 
         // Buscar reserva
         const reservaExistente = await app.db
@@ -705,30 +714,18 @@ export function registerReservasRoutes(app: App) {
           });
         }
 
-        // Validar mesa se informada
-        if (mesa_id) {
-          const mesaResult = await app.db
-            .select()
-            .from(schema.mesas)
-            .where(and(
-              eq(schema.mesas.id, mesa_id as any),
-              eq(schema.mesas.restauranteId, restauranteId)
-            ))
-            .limit(1);
-
-          if (mesaResult.length === 0) {
-            return await reply.code(400).send({ error: "Mesa não encontrada." });
-          }
-        }
-
         app.logger.info(
-          { restauranteId, reservaId: id, nomePessoa: nomeTrimado },
+          { restauranteId, reservaId: id, nomePessoa: nomeTrimado, isGrupo: !!reserva.grupoId },
           "Updating reserva"
         );
 
-        // Verificar conflito de horário (ignorando a própria reserva)
+        // Verificar conflito de horário (em transação com travas apropriadas)
         const resultado = await (app.db as any).transaction(async (tx: any) => {
-          if (mesa_id) {
+          const grupoId = reserva.grupoId;
+          let reservasDoGrupo: any[] = [];
+
+          if (grupoId) {
+            // GRUPO: Lock das mesas e reservas do grupo
             // 1. Trava de leitura no restaurante (FOR SHARE)
             const restLocked = await tx
               .select()
@@ -740,114 +737,254 @@ export function registerReservasRoutes(app: App) {
               return { tipo: "restaurante_nao_encontrado" };
             }
 
-            // 2. Trava de escrita na mesa (FOR UPDATE com filtro de restaurante)
-            const mesaLocked = await tx
-              .select()
-              .from(schema.mesas)
-              .where(
-                and(
-                  eq(schema.mesas.id, mesa_id as any),
-                  eq(schema.mesas.restauranteId, restauranteId)
-                )
-              )
-              .for("update");
-
-            if (mesaLocked.length === 0) {
-              return { tipo: "mesa_nao_encontrada" };
-            }
-
-            // 3. Relock da reserva dentro da transação
-            const reservaLocked = await tx
+            // 2. Carregar todas as reservas do grupo (sem lock primeiro)
+            const grupoReservas = await tx
               .select()
               .from(schema.reservas)
               .where(
                 and(
-                  eq(schema.reservas.id, id as any),
+                  eq(schema.reservas.grupoId, grupoId as any),
+                  eq(schema.reservas.restauranteId, restauranteId)
+                )
+              )
+              .orderBy(schema.reservas.id);
+
+            if (grupoReservas.length === 0) {
+              return { tipo: "grupo_vazio" };
+            }
+
+            // Verificar se todas estão confirmadas
+            if (grupoReservas.some((r: any) => r.status !== "confirmada")) {
+              return { tipo: "status_mudou" };
+            }
+
+            // Extrair IDs únicos de mesas e ordenar
+            const mesasDoGrupo = Array.from(new Set(grupoReservas.map((r: any) => r.mesaId))).sort() as string[];
+
+            // 2a. Trava de escrita nas mesas do grupo (em ordem crescente)
+            for (const mesaId of mesasDoGrupo) {
+              const mesaLocked = await tx
+                .select()
+                .from(schema.mesas)
+                .where(
+                  and(
+                    eq(schema.mesas.id, mesaId as any),
+                    eq(schema.mesas.restauranteId, restauranteId)
+                  )
+                )
+                .for("update");
+
+              if (mesaLocked.length === 0) {
+                return { tipo: "mesa_nao_encontrada" };
+              }
+            }
+
+            // 2b. Trava de escrita nas linhas do grupo (em ordem crescente de id)
+            reservasDoGrupo = await tx
+              .select()
+              .from(schema.reservas)
+              .where(
+                and(
+                  eq(schema.reservas.grupoId, grupoId as any),
                   eq(schema.reservas.restauranteId, restauranteId)
                 )
               )
               .for("update")
-              .limit(1);
+              .orderBy(schema.reservas.id);
 
-            if (reservaLocked.length === 0) {
-              return { tipo: "reserva_nao_encontrada" };
-            }
-
-            // Recheck status is still confirmada
-            if (reservaLocked[0].status !== "confirmada") {
+            if (reservasDoGrupo.length === 0 || reservasDoGrupo.some((r: any) => r.status !== "confirmada")) {
               return { tipo: "status_mudou" };
             }
 
-            // Verificar conflito com outras reservas (excluding self)
-            // Use the existing reservation's duration for calculating new end time
-            const novaFim = new Date(dataHora.getTime() + (reservaLocked[0].duracao || DURACAO_PADRAO_RESERVA_MIN) * 60 * 1000);
-            const conflito = await tx
-              .select()
-              .from(schema.reservas)
+            // 3. Verificar conflito para CADA mesa do grupo (excluindo as reservas do grupo)
+            for (const mesaId of mesasDoGrupo) {
+              const idsDoGrupo = reservasDoGrupo.map((r: any) => r.id);
+              const conflito = await tx
+                .select()
+                .from(schema.reservas)
+                .where(
+                  and(
+                    eq(schema.reservas.mesaId, mesaId as any),
+                    eq(schema.reservas.restauranteId, restauranteId),
+                    // Excluir as próprias linhas do grupo
+                    sql`${schema.reservas.id} NOT IN (${sql.join(idsDoGrupo.map((rid: string) => sql`${rid}::uuid`), sql`, `)})`,
+                    or(
+                      eq(schema.reservas.status, "confirmada" as any),
+                      eq(schema.reservas.status, "sentada" as any)
+                    ),
+                    lt(schema.reservas.dataHora, new Date(dataHora.getTime() + (reservasDoGrupo[0].duracao || DURACAO_PADRAO_RESERVA_MIN) * 60 * 1000)),
+                    sql`${schema.reservas.dataHora} + INTERVAL '1 minute' * ${schema.reservas.duracao} > ${dataHora.toISOString()}::timestamptz`
+                  )
+                )
+                .limit(1);
+
+              if (conflito.length > 0) {
+                // Buscar número da mesa para mensagem
+                const mesaNum = await tx
+                  .select({ numero: schema.mesas.numero })
+                  .from(schema.mesas)
+                  .where(eq(schema.mesas.id, mesaId as any))
+                  .limit(1);
+
+                return {
+                  tipo: "conflito",
+                  mesa_numero: mesaNum[0]?.numero || "?",
+                  hora_conflito: conflito[0].dataHora.toISOString(),
+                };
+              }
+            }
+
+            // Atualizar todas as linhas do grupo
+            const idsDoGrupo = reservasDoGrupo.map((r: any) => r.id);
+            const reservasAtualizadas = await tx
+              .update(schema.reservas)
+              .set({
+                nomePessoa: nomeTrimado,
+                telefone: telefoneLimpo,
+                dataHora,
+                numeroPessoas: numero_pessoas,
+                observacao: observacaoTrimada || null,
+                updatedAt: new Date(),
+              })
               .where(
                 and(
-                  eq(schema.reservas.mesaId, mesa_id as any),
-                  ne(schema.reservas.id, id as any),
-                  or(
-                    eq(schema.reservas.status, "confirmada" as any),
-                    eq(schema.reservas.status, "sentada" as any)
-                  ),
-                  lt(schema.reservas.dataHora, novaFim),
-                  sql`${schema.reservas.dataHora} + INTERVAL '1 minute' * ${schema.reservas.duracao} > ${dataHora.toISOString()}::timestamptz`
+                  sql`${schema.reservas.id} IN (${sql.join(idsDoGrupo.map((rid: string) => sql`${rid}::uuid`), sql`, `)})`,
+                  eq(schema.reservas.restauranteId, restauranteId),
+                  eq(schema.reservas.status, "confirmada" as any)
                 )
               )
-              .limit(1);
+              .returning();
 
-            if (conflito.length > 0) {
-              return {
-                tipo: "conflito",
-                hora_conflito: conflito[0].dataHora.toISOString(),
-              };
+            if (reservasAtualizadas.length === 0) {
+              return { tipo: "atualizacao_falhou" };
             }
-          }
 
-          // Atualizar a reserva filtrando por id, restaurante, e status confirmada
-          const [reservaAtualizada] = await tx
-            .update(schema.reservas)
-            .set({
-              nomePessoa: nomeTrimado,
-              telefone: telefoneLimpo,
-              dataHora,
-              numeroPessoas: numero_pessoas,
-              observacao: observacaoTrimada || null,
-              mesaId: mesa_id || null,
-              updatedAt: new Date(),
-            })
-            .where(
-              and(
-                eq(schema.reservas.id, id as any),
-                eq(schema.reservas.restauranteId, restauranteId),
-                eq(schema.reservas.status, "confirmada" as any)
+            // Retornar a primeira reserva do grupo como resposta
+            return { tipo: "atualizada", reserva: reservasAtualizadas[0] };
+          } else {
+            // RESERVA ÚNICA: comportamento original
+            if (reserva.mesaId) {
+              // 1. Trava de leitura no restaurante (FOR SHARE)
+              const restLocked = await tx
+                .select()
+                .from(schema.restaurante)
+                .where(eq(schema.restaurante.id, restauranteId))
+                .for("share");
+
+              if (restLocked.length === 0) {
+                return { tipo: "restaurante_nao_encontrado" };
+              }
+
+              // 2. Trava de escrita na mesa (FOR UPDATE com filtro de restaurante)
+              const mesaLocked = await tx
+                .select()
+                .from(schema.mesas)
+                .where(
+                  and(
+                    eq(schema.mesas.id, reserva.mesaId as any),
+                    eq(schema.mesas.restauranteId, restauranteId)
+                  )
+                )
+                .for("update");
+
+              if (mesaLocked.length === 0) {
+                return { tipo: "mesa_nao_encontrada" };
+              }
+
+              // 3. Relock da reserva dentro da transação
+              const reservaLocked = await tx
+                .select()
+                .from(schema.reservas)
+                .where(
+                  and(
+                    eq(schema.reservas.id, id as any),
+                    eq(schema.reservas.restauranteId, restauranteId)
+                  )
+                )
+                .for("update")
+                .limit(1);
+
+              if (reservaLocked.length === 0) {
+                return { tipo: "reserva_nao_encontrada" };
+              }
+
+              // Recheck status is still confirmada
+              if (reservaLocked[0].status !== "confirmada") {
+                return { tipo: "status_mudou" };
+              }
+
+              // Verificar conflito com outras reservas (excluding self)
+              const novaFim = new Date(dataHora.getTime() + (reservaLocked[0].duracao || DURACAO_PADRAO_RESERVA_MIN) * 60 * 1000);
+              const conflito = await tx
+                .select()
+                .from(schema.reservas)
+                .where(
+                  and(
+                    eq(schema.reservas.mesaId, reserva.mesaId as any),
+                    ne(schema.reservas.id, id as any),
+                    or(
+                      eq(schema.reservas.status, "confirmada" as any),
+                      eq(schema.reservas.status, "sentada" as any)
+                    ),
+                    lt(schema.reservas.dataHora, novaFim),
+                    sql`${schema.reservas.dataHora} + INTERVAL '1 minute' * ${schema.reservas.duracao} > ${dataHora.toISOString()}::timestamptz`
+                  )
+                )
+                .limit(1);
+
+              if (conflito.length > 0) {
+                return {
+                  tipo: "conflito",
+                  hora_conflito: conflito[0].dataHora.toISOString(),
+                };
+              }
+            }
+
+            // Atualizar a reserva filtrando por id, restaurante, e status confirmada
+            const [reservaAtualizada] = await tx
+              .update(schema.reservas)
+              .set({
+                nomePessoa: nomeTrimado,
+                telefone: telefoneLimpo,
+                dataHora,
+                numeroPessoas: numero_pessoas,
+                observacao: observacaoTrimada || null,
+                updatedAt: new Date(),
+              })
+              .where(
+                and(
+                  eq(schema.reservas.id, id as any),
+                  eq(schema.reservas.restauranteId, restauranteId),
+                  eq(schema.reservas.status, "confirmada" as any)
+                )
               )
-            )
-            .returning();
+              .returning();
 
-          if (!reservaAtualizada) {
-            return { tipo: "atualizacao_falhou" };
+            if (!reservaAtualizada) {
+              return { tipo: "atualizacao_falhou" };
+            }
+
+            return { tipo: "atualizada", reserva: reservaAtualizada };
           }
-
-          return { tipo: "atualizada", reserva: reservaAtualizada };
         });
 
         if (resultado.tipo === "reserva_nao_encontrada") {
           return await reply.code(404).send({ error: "Reserva não encontrada." });
         }
 
-        if (resultado.tipo === "status_mudou" || resultado.tipo === "atualizacao_falhou") {
+        if (resultado.tipo === "status_mudou" || resultado.tipo === "atualizacao_falhou" || resultado.tipo === "grupo_vazio") {
           return await reply.code(409).send({
             error: "Reserva não pode ser editada neste status.",
           });
         }
 
         if (resultado.tipo === "conflito") {
-          app.logger.warn({ restauranteId, reservaId: id, mesaId: mesa_id }, "Conflito ao atualizar reserva");
+          app.logger.warn(
+            { restauranteId, reservaId: id, mesaNumero: resultado.mesa_numero },
+            "Conflito ao atualizar reserva"
+          );
           return await reply.code(409).send({
-            error: "Já existe uma reserva para esta mesa nesse horário.",
+            error: `Já existe uma reserva para a mesa ${resultado.mesa_numero} nesse horário.`,
             conflicting_reservation_time: resultado.hora_conflito,
           });
         }
@@ -874,7 +1011,7 @@ export function registerReservasRoutes(app: App) {
     }
   );
 
-  // PUT /api/reservas/:id/status - Change reserva status
+  // PUT /api/reservas/:id/status - Change reserva status (or all reservas in grupo if grupo_id exists)
   app.fastify.put<{ Params: { id: string }; Body: { status: string } }>(
     "/api/reservas/:id/status",
     {
@@ -937,43 +1074,110 @@ export function registerReservasRoutes(app: App) {
 
         app.logger.info({ restauranteId, reservaId: id, novoStatus: status }, "Updating reserva status");
 
-        // Atualizar, filtrando por restaurante e status confirmada
-        const [reservaAtualizada] = await app.db
-          .update(schema.reservas)
-          .set({
-            status: status as any,
-            updatedAt: new Date(),
-          })
+        // Buscar reserva para saber se tem grupo_id
+        const reservaExistente = await app.db
+          .select()
+          .from(schema.reservas)
           .where(
             and(
               eq(schema.reservas.id, id as any),
-              eq(schema.reservas.restauranteId, restauranteId),
-              eq(schema.reservas.status, "confirmada" as any)
+              eq(schema.reservas.restauranteId, restauranteId)
             )
           )
-          .returning();
+          .limit(1);
 
-        if (!reservaAtualizada) {
-          // Query to determine if not found or invalid status
-          const reserva = await app.db
-            .select()
-            .from(schema.reservas)
-            .where(
-              and(
-                eq(schema.reservas.id, id as any),
-                eq(schema.reservas.restauranteId, restauranteId)
+        if (reservaExistente.length === 0) {
+          return await reply.code(404).send({ error: "Reserva não encontrada." });
+        }
+
+        const reserva = reservaExistente[0];
+        const grupoId = reserva.grupoId;
+
+        // Executar em transação
+        const resultado = await (app.db as any).transaction(async (tx: any) => {
+          if (grupoId) {
+            // GRUPO: carregar e atualizar todas as reservas do grupo
+            const reservasDoGrupo = await tx
+              .select()
+              .from(schema.reservas)
+              .where(
+                and(
+                  eq(schema.reservas.grupoId, grupoId as any),
+                  eq(schema.reservas.restauranteId, restauranteId)
+                )
               )
-            )
-            .limit(1);
+              .for("update")
+              .orderBy(schema.reservas.id);
 
-          if (reserva.length === 0) {
-            return await reply.code(404).send({ error: "Reserva não encontrada." });
+            if (reservasDoGrupo.length === 0) {
+              return { tipo: "grupo_vazio" };
+            }
+
+            // Verificar se todas estão confirmadas
+            if (reservasDoGrupo.some((r: any) => r.status !== "confirmada")) {
+              return { tipo: "status_mudou" };
+            }
+
+            // Atualizar todas as linhas do grupo
+            const idsDoGrupo = reservasDoGrupo.map((r: any) => r.id);
+            const reservasAtualizadas = await tx
+              .update(schema.reservas)
+              .set({
+                status: status as any,
+                updatedAt: new Date(),
+              })
+              .where(
+                and(
+                  sql`${schema.reservas.id} IN (${sql.join(idsDoGrupo.map((rid: string) => sql`${rid}::uuid`), sql`, `)})`,
+                  eq(schema.reservas.restauranteId, restauranteId),
+                  eq(schema.reservas.status, "confirmada" as any)
+                )
+              )
+              .returning();
+
+            if (reservasAtualizadas.length === 0) {
+              return { tipo: "atualizacao_falhou" };
+            }
+
+            return { tipo: "atualizada", reserva: reservasAtualizadas[0] };
+          } else {
+            // RESERVA ÚNICA: comportamento original
+            const [reservaAtualizada] = await tx
+              .update(schema.reservas)
+              .set({
+                status: status as any,
+                updatedAt: new Date(),
+              })
+              .where(
+                and(
+                  eq(schema.reservas.id, id as any),
+                  eq(schema.reservas.restauranteId, restauranteId),
+                  eq(schema.reservas.status, "confirmada" as any)
+                )
+              )
+              .returning();
+
+            if (!reservaAtualizada) {
+              return { tipo: "atualizacao_falhou" };
+            }
+
+            return { tipo: "atualizada", reserva: reservaAtualizada };
           }
+        });
 
+        if (resultado.tipo === "grupo_vazio" || resultado.tipo === "atualizacao_falhou") {
           return await reply.code(409).send({
-            error: `Transição inválida: de '${reserva[0].status}' para '${status}'`,
+            error: `Transição inválida: de '${reserva.status}' para '${status}'`,
           });
         }
+
+        if (resultado.tipo === "status_mudou") {
+          return await reply.code(409).send({
+            error: `Transição inválida: uma ou mais reservas do grupo já não estão em status confirmada.`,
+          });
+        }
+
+        const reservaAtualizada = resultado.reserva;
 
         app.logger.info({ restauranteId, reservaId: id, status }, "Reserva status updated successfully");
 
