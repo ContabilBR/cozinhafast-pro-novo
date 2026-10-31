@@ -443,6 +443,48 @@ export async function garantirTabelaReservas(app: App): Promise<void> {
       } catch (err) {
         app.logger.debug({ err }, "Could not check/add indices");
       }
+
+      // Ensure grupo_id column exists
+      try {
+        const grupoIdResult = await db.execute(
+          sql`SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'reservas' AND column_name = 'grupo_id'`
+        );
+        const grupoIdRows = Array.isArray(grupoIdResult) ? grupoIdResult : (grupoIdResult as any)?.rows || [];
+
+        if (grupoIdRows.length === 0) {
+          try {
+            await db.execute(
+              sql.raw(`ALTER TABLE reservas ADD COLUMN IF NOT EXISTS grupo_id uuid`)
+            );
+            app.logger.info("Added column grupo_id to reservas");
+          } catch (err) {
+            app.logger.warn({ err }, "Could not add grupo_id column");
+          }
+        }
+      } catch (err) {
+        app.logger.debug({ err }, "Could not check grupo_id column");
+      }
+
+      // Ensure grupo_id index exists
+      try {
+        const grupoIdIndexResult = await db.execute(
+          sql`SELECT indexname FROM pg_indexes WHERE tablename = 'reservas' AND indexname = 'idx_reservas_restaurante_grupo_id'`
+        );
+        const indexRows = Array.isArray(grupoIdIndexResult) ? grupoIdIndexResult : (grupoIdIndexResult as any)?.rows || [];
+
+        if (indexRows.length === 0) {
+          try {
+            await db.execute(
+              sql.raw(`CREATE INDEX IF NOT EXISTS idx_reservas_restaurante_grupo_id ON reservas (restaurante_id, grupo_id)`)
+            );
+            app.logger.info("Created index idx_reservas_restaurante_grupo_id");
+          } catch (err) {
+            app.logger.warn({ err }, "Could not create idx_reservas_restaurante_grupo_id");
+          }
+        }
+      } catch (err) {
+        app.logger.debug({ err }, "Could not check grupo_id index");
+      }
     }
 
     app.logger.debug("Reservas table structure verified");

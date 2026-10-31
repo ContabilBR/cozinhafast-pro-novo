@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { eq, and, gte, lt, or, ne, sql } from "drizzle-orm";
 import * as schema from "../db/schema/schema.js";
@@ -65,6 +66,7 @@ interface CreateReservaBody {
   data_hora: string;
   numero_pessoas: number;
   mesa_id?: string;
+  mesa_ids?: string[];
   observacao?: string;
 }
 
@@ -192,6 +194,7 @@ export function registerReservasRoutes(app: App) {
             status: schema.reservas.status,
             duracao: schema.reservas.duracao,
             comandaId: schema.reservas.comandaId,
+            grupoId: schema.reservas.grupoId,
             mesaId: schema.reservas.mesaId,
             mesaNumero: schema.mesas.numero,
           })
@@ -211,6 +214,7 @@ export function registerReservasRoutes(app: App) {
           status: res.status,
           duracao: res.duracao,
           comanda_id: res.comandaId || null,
+          grupo_id: res.grupoId || null,
         }));
 
         app.logger.info({ restauranteId, count: resultado.length }, "Reservas listed successfully");
@@ -239,19 +243,43 @@ export function registerReservasRoutes(app: App) {
             data_hora: { type: "string", format: "date-time" },
             numero_pessoas: { type: "number" },
             mesa_id: { type: "string", format: "uuid" },
+            mesa_ids: { type: "array", items: { type: "string", format: "uuid" }, minItems: 2, maxItems: 20 },
             observacao: { type: "string" },
           },
         },
         response: {
           201: {
-            type: "object",
-            properties: {
-              id: { type: "string", format: "uuid" },
-              nome_pessoa: { type: "string" },
-              data_hora: { type: "string", format: "date-time" },
-              numero_pessoas: { type: "number" },
-              status: { type: "string" },
-            },
+            oneOf: [
+              {
+                type: "object",
+                properties: {
+                  id: { type: "string", format: "uuid" },
+                  nome_pessoa: { type: "string" },
+                  data_hora: { type: "string", format: "date-time" },
+                  numero_pessoas: { type: "number" },
+                  status: { type: "string" },
+                },
+              },
+              {
+                type: "object",
+                properties: {
+                  grupo_id: { type: "string", format: "uuid" },
+                  reservas: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        id: { type: "string", format: "uuid" },
+                        nome_pessoa: { type: "string" },
+                        data_hora: { type: "string", format: "date-time" },
+                        numero_pessoas: { type: "number" },
+                        status: { type: "string" },
+                      },
+                    },
+                  },
+                },
+              },
+            ],
           },
           400: { type: "object", properties: { error: { type: "string" } } },
           401: { type: "object", properties: { error: { type: "string" } } },
@@ -279,8 +307,28 @@ export function registerReservasRoutes(app: App) {
           data_hora,
           numero_pessoas,
           mesa_id,
+          mesa_ids,
           observacao,
         } = request.body;
+
+        // Validação de conflito: mesa_id e mesa_ids não podem vir juntos
+        if (mesa_id && mesa_ids) {
+          return await reply.code(400).send({ error: "Não é permitido informar mesa_id e mesa_ids ao mesmo tempo." });
+        }
+
+        // Validação de mesa_ids se fornecida
+        let mesasDoGrupo: string[] | null = null;
+        if (mesa_ids) {
+          if (!Array.isArray(mesa_ids) || mesa_ids.length < 2 || mesa_ids.length > 20) {
+            return await reply.code(400).send({ error: "Número de mesas deve estar entre 2 e 20." });
+          }
+          // Checar duplicatas
+          const únicos = new Set(mesa_ids);
+          if (únicos.size !== mesa_ids.length) {
+            return await reply.code(400).send({ error: "Não é permitido mesas duplicadas na lista." });
+          }
+          mesasDoGrupo = Array.from(mesa_ids).sort(); // Sort para garantir ordem ao bloquear
+        }
 
         // Validações
         const nomeTrimado = String(nome_pessoa || "").trim();
@@ -312,7 +360,7 @@ export function registerReservasRoutes(app: App) {
           });
         }
 
-        // Validar mesa se informada
+        // Validar mesa se informada (reserva única ou grupo)
         if (mesa_id) {
           const mesaResult = await app.db
             .select()
@@ -326,6 +374,19 @@ export function registerReservasRoutes(app: App) {
           if (mesaResult.length === 0) {
             return await reply.code(400).send({ error: "Mesa não encontrada." });
           }
+        } else if (mesasDoGrupo) {
+          // Validar todas as mesas do grupo existem
+          const mesasValidas = await app.db
+            .select({ id: schema.mesas.id })
+            .from(schema.mesas)
+            .where(and(
+              eq(schema.mesas.restauranteId, restauranteId),
+              sql`${schema.mesas.id} = ANY(ARRAY[${mesasDoGrupo.map((id) => `'${id}'`).join(',')}]::uuid[])`
+            ));
+
+          if (mesasValidas.length !== mesasDoGrupo.length) {
+            return await reply.code(404).send({ error: "Uma ou mais mesas não foram encontradas no restaurante." });
+          }
         }
 
         app.logger.info(
@@ -335,7 +396,9 @@ export function registerReservasRoutes(app: App) {
 
         // Verificar conflito de horário (em transação, com travas apropriadas)
         const resultado = await (app.db as any).transaction(async (tx: any) => {
-          if (mesa_id) {
+          const mesasParaTravar = mesasDoGrupo || (mesa_id ? [mesa_id] : []);
+
+          if (mesasParaTravar.length > 0) {
             // 1. Trava de leitura no restaurante (FOR SHARE)
             const restLocked = await tx
               .select()
@@ -347,79 +410,116 @@ export function registerReservasRoutes(app: App) {
               return { tipo: "restaurante_nao_encontrado" };
             }
 
-            // 2. Trava de escrita na mesa (FOR UPDATE com filtro de restaurante)
-            const mesaLocked = await tx
-              .select()
-              .from(schema.mesas)
-              .where(
-                and(
-                  eq(schema.mesas.id, mesa_id as any),
-                  eq(schema.mesas.restauranteId, restauranteId)
+            // 2. Trava de escrita em TODAS as mesas (em ordem crescente de id)
+            for (const mesaParaTravar of mesasParaTravar) {
+              const mesaLocked = await tx
+                .select()
+                .from(schema.mesas)
+                .where(
+                  and(
+                    eq(schema.mesas.id, mesaParaTravar as any),
+                    eq(schema.mesas.restauranteId, restauranteId)
+                  )
                 )
-              )
-              .for("update");
+                .for("update");
 
-            if (mesaLocked.length === 0) {
-              return { tipo: "mesa_nao_encontrada" };
+              if (mesaLocked.length === 0) {
+                return { tipo: "mesa_nao_encontrada" };
+              }
             }
 
-            // 3. Verificar conflito: existe reserva que começa ANTES do fim da nova E termina DEPOIS do início da nova?
-            // Conflito se: existente.data_hora < fim_nova AND (existente.data_hora + existente.duracao) > dataHora
-            // Com comparações estritas: <, >, não <=, >=
-
-            const conflito = await tx
-              .select()
-              .from(schema.reservas)
-              .where(
-                and(
-                  eq(schema.reservas.mesaId, mesa_id as any),
-                  or(
-                    eq(schema.reservas.status, "confirmada" as any),
-                    eq(schema.reservas.status, "sentada" as any)
-                  ),
-                  // Existing starts before new ends
-                  lt(schema.reservas.dataHora, new Date(dataHora.getTime() + DURACAO_PADRAO_RESERVA_MIN * 60 * 1000)),
-                  // Existing ends (data_hora + duracao) after new starts
-                  sql`${schema.reservas.dataHora} + INTERVAL '1 minute' * ${schema.reservas.duracao} > ${dataHora.toISOString()}::timestamptz`
+            // 3. Verificar conflito para CADA mesa
+            for (const mesaParaVerificar of mesasParaTravar) {
+              const conflito = await tx
+                .select()
+                .from(schema.reservas)
+                .where(
+                  and(
+                    eq(schema.reservas.mesaId, mesaParaVerificar as any),
+                    or(
+                      eq(schema.reservas.status, "confirmada" as any),
+                      eq(schema.reservas.status, "sentada" as any)
+                    ),
+                    // Existing starts before new ends
+                    lt(schema.reservas.dataHora, new Date(dataHora.getTime() + DURACAO_PADRAO_RESERVA_MIN * 60 * 1000)),
+                    // Existing ends (data_hora + duracao) after new starts
+                    sql`${schema.reservas.dataHora} + INTERVAL '1 minute' * ${schema.reservas.duracao} > ${dataHora.toISOString()}::timestamptz`
+                  )
                 )
-              )
-              .limit(1);
+                .limit(1);
 
-            if (conflito.length > 0) {
-              return {
-                tipo: "conflito",
-                hora_conflito: conflito[0].dataHora.toISOString(),
-              };
+              if (conflito.length > 0) {
+                // Fetch mesa number for error message
+                const mesaNum = await tx
+                  .select({ numero: schema.mesas.numero })
+                  .from(schema.mesas)
+                  .where(eq(schema.mesas.id, mesaParaVerificar as any))
+                  .limit(1);
+
+                return {
+                  tipo: "conflito",
+                  mesa_numero: mesaNum[0]?.numero || "?",
+                  hora_conflito: conflito[0].dataHora.toISOString(),
+                };
+              }
             }
           }
 
-          // Criar a reserva (banco já gera o id e timestamps)
-          const [novaReserva] = await tx
-            .insert(schema.reservas)
-            .values({
-              restauranteId,
-              mesaId: mesa_id || null,
-              nomePessoa: nomeTrimado,
-              telefone: telefoneLimpo,
-              dataHora,
-              numeroPessoas: numero_pessoas,
-              observacao: observacaoTrimada || null,
-              status: "confirmada",
-              duracao: DURACAO_PADRAO_RESERVA_MIN,
-              criadoPor: authUser.id,
-            })
-            .returning();
+          // Gerar grupo_id para reservas múltiplas
+          const grupoId = mesasDoGrupo ? randomUUID() : null;
 
-          return { tipo: "criada", reserva: novaReserva };
+          // Criar as reserva(s) (banco já gera os ids e timestamps)
+          if (mesasDoGrupo) {
+            // Criar uma linha por mesa do grupo
+            const novasReservas = await tx
+              .insert(schema.reservas)
+              .values(
+                mesasDoGrupo.map((mesaId) => ({
+                  restauranteId,
+                  mesaId: mesaId as any,
+                  grupoId: grupoId as any,
+                  nomePessoa: nomeTrimado,
+                  telefone: telefoneLimpo,
+                  dataHora,
+                  numeroPessoas: numero_pessoas,
+                  observacao: observacaoTrimada || null,
+                  status: "confirmada" as any,
+                  duracao: DURACAO_PADRAO_RESERVA_MIN,
+                  criadoPor: authUser.id,
+                }))
+              )
+              .returning();
+
+            return { tipo: "grupo_criado", grupo_id: grupoId, reservas: novasReservas };
+          } else {
+            // Reserva única (com ou sem mesa)
+            const [novaReserva] = await tx
+              .insert(schema.reservas)
+              .values({
+                restauranteId,
+                mesaId: mesa_id ? (mesa_id as any) : null,
+                nomePessoa: nomeTrimado,
+                telefone: telefoneLimpo,
+                dataHora,
+                numeroPessoas: numero_pessoas,
+                observacao: observacaoTrimada || null,
+                status: "confirmada" as any,
+                duracao: DURACAO_PADRAO_RESERVA_MIN,
+                criadoPor: authUser.id,
+              })
+              .returning();
+
+            return { tipo: "criada", reserva: novaReserva };
+          }
         });
 
         if (resultado.tipo === "conflito") {
           app.logger.warn(
-            { restauranteId, mesaId: mesa_id, horaConflito: resultado.hora_conflito },
+            { restauranteId, mesaNumero: resultado.mesa_numero, horaConflito: resultado.hora_conflito },
             "Conflito de horário ao criar reserva"
           );
           return await reply.code(409).send({
-            error: "Já existe uma reserva para esta mesa nesse horário.",
+            error: `Já existe uma reserva para a mesa ${resultado.mesa_numero} nesse horário.`,
             conflicting_reservation_time: resultado.hora_conflito,
           });
         }
@@ -429,7 +529,25 @@ export function registerReservasRoutes(app: App) {
         }
 
         if (resultado.tipo === "mesa_nao_encontrada") {
-          return await reply.code(400).send({ error: "Mesa não encontrada." });
+          return await reply.code(400).send({ error: "Uma ou mais mesas não foram encontradas." });
+        }
+
+        if (resultado.tipo === "grupo_criado") {
+          app.logger.info(
+            { restauranteId, grupoId: resultado.grupo_id, count: resultado.reservas.length },
+            "Grupo de reservas created successfully"
+          );
+
+          return await reply.code(201).send({
+            grupo_id: resultado.grupo_id,
+            reservas: resultado.reservas.map((res: any) => ({
+              id: res.id,
+              nome_pessoa: res.nomePessoa,
+              data_hora: res.dataHora.toISOString(),
+              numero_pessoas: res.numeroPessoas,
+              status: res.status,
+            })),
+          });
         }
 
         const reserva = resultado.reserva;
