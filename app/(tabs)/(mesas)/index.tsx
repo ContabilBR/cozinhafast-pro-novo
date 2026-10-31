@@ -554,7 +554,7 @@ export default function MesasScreen() {
           justifyContent: "space-between",
         }}
       >
-        <View>
+        <View style={{ flex: 1, minWidth: 0, marginRight: 12 }}>
           <Text
             style={{
               fontFamily: "Outfit_700Bold",
@@ -566,6 +566,7 @@ export default function MesasScreen() {
             Mesas
           </Text>
           <Text
+            numberOfLines={2}
             style={{
               fontFamily: "Outfit_400Regular",
               fontSize: 13,
@@ -576,7 +577,7 @@ export default function MesasScreen() {
             {loading ? "Carregando..." : subtitleText}
           </Text>
         </View>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 10, flexShrink: 0 }}>
           {(role === "garcom" || isAdmin(role)) && (
             <AnimatedPressable
               onPress={() => router.push("/reservas")}
