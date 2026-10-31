@@ -79,6 +79,14 @@ export function registerTableRoutes(app: App) {
       const authUser = await customRequireAuth(app, request, reply);
       if (!authUser) return;
 
+      // Check permissions: only allow garcom, gerente, administrador
+      const papel = String(authUser.role ?? "").trim().toLowerCase();
+      const PAPEIS_PERMITIDOS = ["garcom", "garçom", "administrador", "admin", "gerente", "manager", "superadmin", "super_admin"];
+      if (!PAPEIS_PERMITIDOS.includes(papel)) {
+        app.logger.warn({ userId: authUser.id, papel }, "Acesso negado: listar mesas");
+        return await reply.code(403).send({ error: "Você não tem permissão para esta ação." });
+      }
+
       try {
         const tenantId = authUser.restauranteId;
         app.logger.info({ tenantId, status: request.query.status }, "Listing mesas");
@@ -103,37 +111,43 @@ export function registerTableRoutes(app: App) {
         const mesas = await mesasQuery;
         app.logger.info({ tenantId, count: mesas.length }, "Mesas listed successfully");
 
-        const podeVerToken = ["gerente", "administrador", "admin"].includes(String(authUser.role ?? "").toLowerCase());
+        const podeVerToken = ["gerente", "manager", "administrador", "admin", "superadmin", "super_admin"].includes(papel);
 
-        // Fetch next reservations for all mesas within 30 minutes
+        // Fetch next reservations for each mesa within 30 minutes, filtered in database
         const agora = new Date();
         const trinta_min_no_futuro = new Date(agora.getTime() + 30 * 60 * 1000);
         const trinta_min_no_passado = new Date(agora.getTime() - 30 * 60 * 1000);
 
         const proximasReservas = await app.db
-          .select()
+          .select({
+            id: schema.reservas.id,
+            mesaId: schema.reservas.mesaId,
+            nomePessoa: schema.reservas.nomePessoa,
+            dataHora: schema.reservas.dataHora,
+            numeroPessoas: schema.reservas.numeroPessoas,
+          })
           .from(schema.reservas)
           .where(
             and(
               eq(schema.reservas.restauranteId, tenantId as any),
-              or(
-                eq(schema.reservas.status, "confirmada" as any),
-                eq(schema.reservas.status, "sentada" as any)
-              )
+              eq(schema.reservas.status, "confirmada" as any), // Only confirmada, NOT sentada
+              schema.reservas.mesaId,
+              gte(schema.reservas.dataHora, trinta_min_no_passado),
+              lte(schema.reservas.dataHora, trinta_min_no_futuro)
             )
-          );
+          )
+          .orderBy(schema.reservas.dataHora);
 
+        // Build map with first reservation per mesa
         const reservasPorMesa = new Map<string, any>();
         for (const res of proximasReservas) {
-          if (res.mesaId && (res.dataHora >= trinta_min_no_passado && res.dataHora <= trinta_min_no_futuro)) {
-            if (!reservasPorMesa.has(res.mesaId)) {
-              reservasPorMesa.set(res.mesaId, {
-                id: res.id,
-                nome: res.nomePessoa,
-                horario: res.dataHora.toISOString(),
-                pessoas: res.numeroPessoas,
-              });
-            }
+          if (res.mesaId && !reservasPorMesa.has(res.mesaId)) {
+            reservasPorMesa.set(res.mesaId, {
+              id: res.id,
+              nome: res.nomePessoa,
+              horario: res.dataHora.toISOString(),
+              pessoas: res.numeroPessoas,
+            });
           }
         }
 

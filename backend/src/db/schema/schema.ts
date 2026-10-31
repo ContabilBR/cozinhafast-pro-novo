@@ -11,7 +11,9 @@ import {
   unique,
   index,
   uniqueIndex,
+  check,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { user } from "./auth-schema.js";
 
 // Enums
@@ -439,4 +441,6 @@ export const reservas = pgTable("reservas", {
 }, (table) => ({
   idxRestauranteDataHora: index("idx_reservas_restaurante_data_hora").on(table.restauranteId, table.dataHora),
   idxMesaDataHora: index("idx_reservas_mesa_data_hora").on(table.mesaId, table.dataHora),
+  ckNumeroPessoas: check("ck_reservas_numero_pessoas", sql`numero_pessoas >= 1 AND numero_pessoas <= 50`),
+  ckDuracaoPositiva: check("ck_reservas_duracao_positiva", sql`duracao > 0`),
 }));

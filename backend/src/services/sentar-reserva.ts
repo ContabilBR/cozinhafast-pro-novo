@@ -26,9 +26,11 @@ export interface ResultadoSentarReserva {
     | "mesa_ja_ocupada"
     | "nome_obrigatorio"
     | "nome_muito_longo"
-    | "nome_repetido";
+    | "nome_repetido"
+    | "erro_interno";
   comandaId?: string;
   detalhes?: string;
+  metadata?: any;
 }
 
 export async function sentarReserva(
@@ -38,7 +40,7 @@ export async function sentarReserva(
   usuarioId: string
 ): Promise<ResultadoSentarReserva> {
   try {
-    // Buscar a reserva
+    // Read reserva without lock, just to get mesa_id
     const reserva = await app.db
       .select()
       .from(schema.reservas)
@@ -55,68 +57,100 @@ export async function sentarReserva(
     }
 
     const res = reserva[0];
+    const mesaId = res.mesaId;
 
-    // Validar status
-    if (res.status !== "confirmada") {
-      return {
-        tipo: "reserva_nao_confirmada",
-        detalhes: `Status atual: ${res.status}`,
-      };
-    }
-
-    // Validar mesa
-    if (!res.mesaId) {
-      return { tipo: "reserva_sem_mesa" };
-    }
-
-    // Buscar a mesa
-    const mesa = await app.db
-      .select()
-      .from(schema.mesas)
-      .where(eq(schema.mesas.id, res.mesaId as any))
-      .limit(1);
-
-    if (mesa.length === 0) {
-      return { tipo: "mesa_nao_encontrada" };
-    }
-
-    const msa = mesa[0];
-
-    // Buscar o restaurante para saber o modo de comanda
-    const rest = await app.db
-      .select()
-      .from(schema.restaurante)
-      .where(eq(schema.restaurante.id, restauranteId))
-      .limit(1);
-
-    if (rest.length === 0) {
-      return { tipo: "mesa_nao_encontrada", detalhes: "Restaurante não encontrado" };
-    }
-
-    const modo = rest[0].modoComanda;
-
-    // Executar em transação
+    // Execute everything in transaction with proper locking
     const resultado = await (app.db as any).transaction(async (tx: any) => {
-      // Tentar abrir a comanda
+      // 1. Lock restaurant (FOR SHARE read lock)
+      const restLocked = await tx
+        .select()
+        .from(schema.restaurante)
+        .where(eq(schema.restaurante.id, restauranteId))
+        .for("share");
+
+      if (restLocked.length === 0) {
+        return { tipo: "erro_interno", detalhes: "Restaurante não encontrado" };
+      }
+
+      const modo = restLocked[0].modoComanda;
+
+      // 2. Lock mesa (FOR UPDATE write lock with restaurant filter)
+      if (mesaId) {
+        const mesaLocked = await tx
+          .select()
+          .from(schema.mesas)
+          .where(
+            and(
+              eq(schema.mesas.id, mesaId as any),
+              eq(schema.mesas.restauranteId, restauranteId)
+            )
+          )
+          .for("update");
+
+        if (mesaLocked.length === 0) {
+          return { tipo: "mesa_nao_encontrada" };
+        }
+      } else {
+        return { tipo: "reserva_sem_mesa" };
+      }
+
+      // 3. Re-lock reserva line (FOR UPDATE) and validate
+      const reservaLocked = await tx
+        .select()
+        .from(schema.reservas)
+        .where(
+          and(
+            eq(schema.reservas.id, reservaId as any),
+            eq(schema.reservas.restauranteId, restauranteId)
+          )
+        )
+        .for("update")
+        .limit(1);
+
+      if (reservaLocked.length === 0) {
+        return { tipo: "reserva_nao_encontrada" };
+      }
+
+      const resLocked = reservaLocked[0];
+
+      // Validate: status must be confirmada, has mesa, same mesa as before
+      if (resLocked.status !== "confirmada") {
+        return {
+          tipo: "reserva_nao_confirmada",
+          detalhes: `Status atual: ${resLocked.status}`,
+        };
+      }
+
+      if (!resLocked.mesaId) {
+        return { tipo: "reserva_sem_mesa" };
+      }
+
+      if (resLocked.mesaId !== mesaId) {
+        // Mesa changed between read and lock - shouldn't happen but handle it
+        return { tipo: "reserva_sem_mesa" };
+      }
+
+      // 4. Prepare comanda opening
       let nomeComanda: string | null = null;
       if (modo === "individual") {
-        nomeComanda = normalizarNomeComanda(res.nomePessoa);
+        nomeComanda = normalizarNomeComanda(resLocked.nomePessoa);
         if (!nomeComanda) {
           return { tipo: "nome_obrigatorio" };
         }
       }
 
+      // 5. Call abrirComandaNaMesa service with external transaction
       const abertura = await abrirComandaNaMesa(tx, {
         restauranteId,
-        mesaId: res.mesaId!,
-        mesaNumero: msa.numero,
+        mesaId: mesaId!,
+        mesaNumero: 0, // Will be fetched from mesa in service
         garcomId: usuarioId,
         total: "0",
         rotulo: nomeComanda,
       } as EntradaAbertura);
 
       if (abertura.tipo !== "criada") {
-        // Mapear erros de abertura
+        // Map service errors to result types
         const erroMap: Record<string, ResultadoSentarReserva["tipo"]> = {
           mesa_nao_encontrada: "mesa_nao_encontrada",
           nome_obrigatorio: "nome_obrigatorio",
@@ -131,17 +165,46 @@ export async function sentarReserva(
       const comanda = abertura.comanda;
       const comandaId = comanda.id;
 
-      // Atualizar a reserva com a comanda e marcar como sentada
-      await tx
+      // 6. Mark mesa as occupied in same transaction (exact same way as abrir-comanda does)
+      const mesasAtualizadas = await tx
+        .update(schema.mesas)
+        .set({ status: "ocupada" as any })
+        .where(
+          and(
+            eq(schema.mesas.id, mesaId as any),
+            eq(schema.mesas.restauranteId, restauranteId)
+          )
+        )
+        .returning();
+
+      if (mesasAtualizadas.length === 0) {
+        // Mesa disappeared - shouldn't happen but let transaction rollback
+        throw new Error("Mesa not found when marking as occupied");
+      }
+
+      // 7. Update reserva: status sentada and comanda_id, filtering by id, restaurante, status confirmada
+      const [reservaAtualizada] = await tx
         .update(schema.reservas)
         .set({
           comandaId,
-          status: "sentada",
+          status: "sentada" as any,
           updatedAt: new Date(),
         })
-        .where(eq(schema.reservas.id, reservaId as any));
+        .where(
+          and(
+            eq(schema.reservas.id, reservaId as any),
+            eq(schema.reservas.restauranteId, restauranteId),
+            eq(schema.reservas.status, "confirmada" as any)
+          )
+        )
+        .returning();
 
-      // Retornar sucesso com o ID da comanda
+      if (!reservaAtualizada) {
+        // Reserva was modified or deleted - let transaction rollback
+        throw new Error("Reserva status changed or deleted during transaction");
+      }
+
+      // Return success with metadata for event publishing
       return {
         tipo: "sucesso",
         comandaId,
@@ -149,7 +212,7 @@ export async function sentarReserva(
       };
     });
 
-    // Publicar evento APÓS a transação ser confirmada
+    // Publish event AFTER transaction is confirmed
     if (resultado.tipo === "sucesso" && resultado.metadata) {
       publicarEventoComandaCriada(app, resultado.metadata, realtimeHub);
     }
@@ -158,8 +221,8 @@ export async function sentarReserva(
   } catch (error) {
     app.logger.error(
       { err: error, reservaId, restauranteId },
-      "Erro ao sentar reserva"
+      "Erro inesperado ao sentar reserva"
     );
-    return { tipo: "mesa_nao_encontrada", detalhes: "Erro interno" };
+    return { tipo: "erro_interno", detalhes: "Erro inesperado ao processar a reserva" };
   }
 }

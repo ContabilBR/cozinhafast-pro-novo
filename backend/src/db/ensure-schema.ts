@@ -275,81 +275,163 @@ export async function backfillQrTokens(app: App): Promise<void> {
 /**
  * Reservations table (ETAPA 1 - Sistema de Reservas).
  *
- * Creates the reservas table if it does not exist, including:
- *  - reserva_status_enum type (confirmada, sentada, cancelada, nao_compareceu)
- *  - reservas table with all required columns and indices
- * Idempotent: checks if table exists before creating; uses IF NOT EXISTS for all DDL.
+ * Ensures the reservas table structure is complete and consistent:
+ *  - Creates reserva_status enum type if missing (confirmada, sentada, cancelada, nao_compareceu)
+ *  - Creates reservas table if missing
+ *  - Ensures all CHECK constraints exist (numero_pessoas and duracao)
+ *  - Ensures all indices exist with exact names from migrations
+ * Idempotent: checks catalog before creating; uses IF NOT EXISTS for all DDL.
  * Does not throw; logs outcome and continues startup.
  */
 export async function garantirTabelaReservas(app: App): Promise<void> {
   const db = app.db as any;
 
   try {
-    // Check if reservas table exists
-    const tableExists = await db.execute(
-      sql`SELECT 1 FROM information_schema.tables
-          WHERE table_schema = current_schema() AND table_name = 'reservas'`
-    );
-
-    const rows = Array.isArray(tableExists) ? tableExists : (tableExists as any)?.rows || [];
-    if (rows.length > 0) {
-      app.logger.debug("Reservas table already exists");
-      return;
+    // 1) Check if enum type exists (using pg_type catalog; no IF NOT EXISTS in Postgres)
+    let tipoExiste = false;
+    try {
+      const tipoResult = await db.execute(
+        sql`SELECT 1 FROM pg_type WHERE typname = 'reserva_status' AND typnamespace = (SELECT oid FROM pg_namespace WHERE nspname = current_schema())`
+      );
+      const tipoRows = Array.isArray(tipoResult) ? tipoResult : (tipoResult as any)?.rows || [];
+      tipoExiste = tipoRows.length > 0;
+    } catch (e) {
+      app.logger.warn({ err: e }, "Could not check if reserva_status enum exists; will attempt to create");
     }
 
-    // Create the enum type
-    await db.execute(
-      sql.raw(
-        `CREATE TYPE IF NOT EXISTS reserva_status AS ENUM ('confirmada', 'sentada', 'cancelada', 'nao_compareceu')`
-      )
-    );
+    // Create enum if missing
+    if (!tipoExiste) {
+      try {
+        await db.execute(
+          sql.raw(`CREATE TYPE reserva_status AS ENUM ('confirmada', 'sentada', 'cancelada', 'nao_compareceu')`)
+        );
+        app.logger.info("Created reserva_status enum type");
+      } catch (err) {
+        // May already exist if created between check and create; log and continue
+        app.logger.debug({ err }, "Enum creation failed (may already exist)");
+      }
+    }
 
-    // Create the reservas table
-    await db.execute(
-      sql.raw(`
-        CREATE TABLE IF NOT EXISTS reservas (
-          id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-          restaurante_id text NOT NULL,
-          mesa_id uuid,
-          nome_pessoa text NOT NULL,
-          telefone text,
-          data_hora timestamp with time zone NOT NULL,
-          numero_pessoas integer NOT NULL,
-          observacao text,
-          status reserva_status NOT NULL DEFAULT 'confirmada',
-          duracao integer NOT NULL DEFAULT 120,
-          comanda_id uuid,
-          criado_por text NOT NULL,
-          created_at timestamp with time zone NOT NULL DEFAULT now(),
-          updated_at timestamp with time zone NOT NULL DEFAULT now(),
-          FOREIGN KEY (restaurante_id) REFERENCES restaurante(id) ON DELETE CASCADE,
-          FOREIGN KEY (mesa_id) REFERENCES mesas(id) ON DELETE SET NULL,
-          FOREIGN KEY (comanda_id) REFERENCES comandas(id) ON DELETE SET NULL
-        )
-      `)
-    );
+    // 2) Check if reservas table exists
+    let tabelaExiste = false;
+    try {
+      const tabelaResult = await db.execute(
+        sql`SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'reservas'`
+      );
+      const tabelaRows = Array.isArray(tabelaResult) ? tabelaResult : (tabelaResult as any)?.rows || [];
+      tabelaExiste = tabelaRows.length > 0;
+    } catch (e) {
+      app.logger.warn({ err: e }, "Could not check if reservas table exists");
+    }
 
-    // Create indices for efficient querying
-    await db.execute(
-      sql.raw(`
-        CREATE INDEX IF NOT EXISTS idx_reservas_restaurante_hora
-        ON reservas(restaurante_id, data_hora)
-      `)
-    );
+    // Create table if missing
+    if (!tabelaExiste) {
+      try {
+        await db.execute(
+          sql.raw(`
+            CREATE TABLE reservas (
+              id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+              restaurante_id text NOT NULL,
+              mesa_id uuid,
+              nome_pessoa text NOT NULL,
+              telefone text,
+              data_hora timestamp with time zone NOT NULL,
+              numero_pessoas integer NOT NULL,
+              observacao text,
+              status reserva_status NOT NULL DEFAULT 'confirmada',
+              duracao integer NOT NULL DEFAULT 120,
+              comanda_id uuid,
+              criado_por text NOT NULL,
+              created_at timestamp with time zone NOT NULL DEFAULT now(),
+              updated_at timestamp with time zone NOT NULL DEFAULT now(),
+              CONSTRAINT fk_reservas_restaurante FOREIGN KEY (restaurante_id) REFERENCES restaurante(id) ON DELETE RESTRICT,
+              CONSTRAINT fk_reservas_mesa FOREIGN KEY (mesa_id) REFERENCES mesas(id) ON DELETE RESTRICT,
+              CONSTRAINT fk_reservas_comanda FOREIGN KEY (comanda_id) REFERENCES comandas(id) ON DELETE RESTRICT,
+              CONSTRAINT ck_reservas_numero_pessoas CHECK (numero_pessoas >= 1 AND numero_pessoas <= 50),
+              CONSTRAINT ck_reservas_duracao_positiva CHECK (duracao > 0)
+            )
+          `)
+        );
+        app.logger.info("Created reservas table");
+      } catch (err) {
+        // May have been created concurrently; log and continue
+        app.logger.debug({ err }, "Table creation failed (may already exist)");
+      }
+    } else {
+      // Table exists; ensure constraints and indices are present
+      try {
+        // Check and create CHECK constraints if missing
+        const constraintsResult = await db.execute(
+          sql`SELECT conname FROM pg_constraint WHERE conrelid = 'reservas'::regclass AND conname IN ('ck_reservas_numero_pessoas', 'ck_reservas_duracao_positiva')`
+        );
+        const constraintRows = Array.isArray(constraintsResult) ? constraintsResult : (constraintsResult as any)?.rows || [];
+        const existingConstraints = new Set(constraintRows.map((r: any) => r.conname));
 
-    await db.execute(
-      sql.raw(`
-        CREATE INDEX IF NOT EXISTS idx_reservas_mesa_hora
-        ON reservas(mesa_id, data_hora)
-      `)
-    );
+        if (!existingConstraints.has('ck_reservas_numero_pessoas')) {
+          try {
+            await db.execute(
+              sql.raw(`ALTER TABLE reservas ADD CONSTRAINT ck_reservas_numero_pessoas CHECK (numero_pessoas >= 1 AND numero_pessoas <= 50)`)
+            );
+            app.logger.info("Added CHECK constraint ck_reservas_numero_pessoas");
+          } catch (err) {
+            app.logger.debug({ err }, "Could not add ck_reservas_numero_pessoas (may exist or rows violate)");
+          }
+        }
 
-    app.logger.info("Reservas table and indices created successfully");
+        if (!existingConstraints.has('ck_reservas_duracao_positiva')) {
+          try {
+            await db.execute(
+              sql.raw(`ALTER TABLE reservas ADD CONSTRAINT ck_reservas_duracao_positiva CHECK (duracao > 0)`)
+            );
+            app.logger.info("Added CHECK constraint ck_reservas_duracao_positiva");
+          } catch (err) {
+            app.logger.debug({ err }, "Could not add ck_reservas_duracao_positiva (may exist or rows violate)");
+          }
+        }
+      } catch (err) {
+        app.logger.debug({ err }, "Could not check/add CHECK constraints");
+      }
+
+      // Ensure indices exist with exact names from migrations
+      try {
+        const indicesResult = await db.execute(
+          sql`SELECT indexname FROM pg_indexes WHERE tablename = 'reservas' AND indexname IN ('idx_reservas_restaurante_data_hora', 'idx_reservas_mesa_data_hora')`
+        );
+        const indexRows = Array.isArray(indicesResult) ? indicesResult : (indicesResult as any)?.rows || [];
+        const existingIndices = new Set(indexRows.map((r: any) => r.indexname));
+
+        if (!existingIndices.has('idx_reservas_restaurante_data_hora')) {
+          try {
+            await db.execute(
+              sql.raw(`CREATE INDEX idx_reservas_restaurante_data_hora ON reservas(restaurante_id, data_hora)`)
+            );
+            app.logger.info("Created index idx_reservas_restaurante_data_hora");
+          } catch (err) {
+            app.logger.debug({ err }, "Could not create idx_reservas_restaurante_data_hora");
+          }
+        }
+
+        if (!existingIndices.has('idx_reservas_mesa_data_hora')) {
+          try {
+            await db.execute(
+              sql.raw(`CREATE INDEX idx_reservas_mesa_data_hora ON reservas(mesa_id, data_hora)`)
+            );
+            app.logger.info("Created index idx_reservas_mesa_data_hora");
+          } catch (err) {
+            app.logger.debug({ err }, "Could not create idx_reservas_mesa_data_hora");
+          }
+        }
+      } catch (err) {
+        app.logger.debug({ err }, "Could not check/add indices");
+      }
+    }
+
+    app.logger.debug("Reservas table structure verified");
   } catch (err) {
     // Extract safe SQLSTATE if available
     const sqlstate = (err as any)?.cause?.code || (err as any)?.code || "UNKNOWN";
     app.logger.warn(
-      { codigo: sqlstate, mensagem: "Falha ao criar tabela de reservas" },
+      { codigo: sqlstate, mensagem: "Falha ao garantir tabela de reservas" },
       "Ensure reservas table"
     );
     // Do not throw - continue startup

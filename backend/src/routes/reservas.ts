@@ -1,5 +1,5 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
-import { eq, and, gte, lt, or, ne } from "drizzle-orm";
+import { eq, and, gte, lt, or, ne, sql } from "drizzle-orm";
 import * as schema from "../db/schema/schema.js";
 import type { App } from "../index.js";
 import { requireAuth as customRequireAuth, requireTenant } from "../utils/auth.js";
@@ -7,6 +7,7 @@ import { sentarReserva } from "../services/sentar-reserva.js";
 
 const PAPEIS_GERENCIAM_RESERVAS = ["administrador", "admin", "gerente", "manager", "superadmin", "super_admin"];
 const PAPEIS_CRIAM_EDITAM = ["garcom", "garçom", ...PAPEIS_GERENCIAM_RESERVAS];
+const PAPEIS_PODEM_LISTAR_SENTAR = ["garcom", "garçom", ...PAPEIS_GERENCIAM_RESERVAS];
 
 // Fuso horário do Brasil
 const FUSO_HORAS = -3;
@@ -38,6 +39,25 @@ function normalizarTelefone(telefone: string): string | null {
   return digitos;
 }
 
+function validarDataFormato(dataStr: string): Date | null {
+  // Validate format YYYY-MM-DD and that it's a real date
+  const match = dataStr.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+
+  const [, yearStr, monthStr, dayStr] = match;
+  const year = parseInt(yearStr, 10);
+  const month = parseInt(monthStr, 10);
+  const day = parseInt(dayStr, 10);
+
+  const date = new Date(Date.UTC(year, month - 1, day));
+  // Check if date is valid (prevents invalid dates like 2024-02-30)
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) {
+    return null;
+  }
+
+  return date;
+}
+
 interface CreateReservaBody {
   nome_pessoa: string;
   telefone?: string;
@@ -60,7 +80,7 @@ export function registerReservasRoutes(app: App) {
         querystring: {
           type: "object",
           properties: {
-            data: { type: "string", description: "YYYY-MM-DD format, defaults to today" },
+            data: { type: "string", description: "YYYY-MM-DD format, defaults to today in Brasília timezone" },
             status: { type: "string", enum: ["confirmada", "sentada", "cancelada", "nao_compareceu"] },
           },
         },
@@ -90,7 +110,9 @@ export function registerReservasRoutes(app: App) {
               },
             },
           },
+          400: { type: "object", properties: { error: { type: "string" } } },
           401: { type: "object", properties: { error: { type: "string" } } },
+          403: { type: "object", properties: { error: { type: "string" } } },
         },
       },
     },
@@ -98,87 +120,88 @@ export function registerReservasRoutes(app: App) {
       const authUser = await customRequireAuth(app, request, reply);
       if (!authUser) return;
 
+      const papel = String(authUser.role ?? "").trim().toLowerCase();
+      if (!PAPEIS_PODEM_LISTAR_SENTAR.includes(papel)) {
+        app.logger.warn({ userId: authUser.id, papel }, "Acesso negado: listar reservas");
+        return await reply.code(403).send({ error: "Você não tem permissão para esta ação." });
+      }
+
       try {
         const restauranteId = requireTenant(authUser);
-        const queryData = request.query.data || new Date().toISOString().split("T")[0];
+        const queryData = request.query.data;
         const queryStatus = request.query.status;
 
-        // Parse the date (in Brasília timezone)
-        const partes = queryData.split("-");
-        const ano = parseInt(partes[0]);
-        const mes0 = parseInt(partes[1]) - 1;
-        const dia = parseInt(partes[2]);
+        // Parse and validate the date in Brasília timezone
+        let inicioData: Date;
+        let fimData: Date;
 
-        const inicioData = inicioDoDiaLocal(ano, mes0, dia);
-        const fimData = inicioDoDiaLocal(ano, mes0, dia + 1);
+        if (queryData) {
+          const dataValidada = validarDataFormato(queryData);
+          if (!dataValidada) {
+            return await reply.code(400).send({ error: "Data inválida." });
+          }
+          const { ano, mes0, dia } = diaLocalDeInstante(dataValidada);
+          inicioData = inicioDoDiaLocal(ano, mes0, dia);
+          fimData = inicioDoDiaLocal(ano, mes0, dia + 1);
+        } else {
+          // Default to today in Brasília timezone
+          const agora = new Date();
+          const { ano, mes0, dia } = diaLocalDeInstante(agora);
+          inicioData = inicioDoDiaLocal(ano, mes0, dia);
+          fimData = inicioDoDiaLocal(ano, mes0, dia + 1);
+        }
 
         app.logger.info(
           { restauranteId, data: queryData, status: queryStatus },
           "Listing reservas"
         );
 
-        let reservasQuery = app.db
-          .select()
-          .from(schema.reservas)
-          .where(
-            and(
-              eq(schema.reservas.restauranteId, restauranteId),
-              gte(schema.reservas.dataHora, inicioData),
-              lt(schema.reservas.dataHora, fimData)
-            )
-          )
-          .orderBy(schema.reservas.dataHora);
+        // Build query with conditions
+        let whereConditions: any[] = [
+          eq(schema.reservas.restauranteId, restauranteId),
+          gte(schema.reservas.dataHora, inicioData),
+          lt(schema.reservas.dataHora, fimData),
+        ];
 
         if (queryStatus) {
-          reservasQuery = app.db
-            .select()
-            .from(schema.reservas)
-            .where(
-              and(
-                eq(schema.reservas.restauranteId, restauranteId),
-                gte(schema.reservas.dataHora, inicioData),
-                lt(schema.reservas.dataHora, fimData),
-                eq(schema.reservas.status, queryStatus as any)
-              )
-            )
-            .orderBy(schema.reservas.dataHora);
+          whereConditions.push(eq(schema.reservas.status, queryStatus as any));
         }
 
-        const reservas = await reservasQuery;
-
-        // Enriquecer com dados da mesa
-        const reservasEnriquecidas = await Promise.all(
-          reservas.map(async (res) => {
-            let mesa = null;
-            if (res.mesaId) {
-              const mesaResult = await app.db
-                .select()
-                .from(schema.mesas)
-                .where(eq(schema.mesas.id, res.mesaId as any))
-                .limit(1);
-              if (mesaResult.length > 0) {
-                mesa = { id: mesaResult[0].id, numero: mesaResult[0].numero };
-              }
-            }
-
-            return {
-              id: res.id,
-              nome_pessoa: res.nomePessoa,
-              telefone: res.telefone || null,
-              data_hora: res.dataHora.toISOString(),
-              numero_pessoas: res.numeroPessoas,
-              mesa,
-              observacao: res.observacao || null,
-              status: res.status,
-              duracao: res.duracao,
-              comanda_id: res.comandaId || null,
-            };
+        const reservas = await app.db
+          .select({
+            id: schema.reservas.id,
+            nomePessoa: schema.reservas.nomePessoa,
+            telefone: schema.reservas.telefone,
+            dataHora: schema.reservas.dataHora,
+            numeroPessoas: schema.reservas.numeroPessoas,
+            observacao: schema.reservas.observacao,
+            status: schema.reservas.status,
+            duracao: schema.reservas.duracao,
+            comandaId: schema.reservas.comandaId,
+            mesaId: schema.reservas.mesaId,
+            mesaNumero: schema.mesas.numero,
           })
-        );
+          .from(schema.reservas)
+          .leftJoin(schema.mesas, eq(schema.reservas.mesaId, schema.mesas.id))
+          .where(and(...whereConditions))
+          .orderBy(schema.reservas.dataHora);
 
-        app.logger.info({ restauranteId, count: reservasEnriquecidas.length }, "Reservas listed successfully");
+        const resultado = reservas.map((res) => ({
+          id: res.id,
+          nome_pessoa: res.nomePessoa,
+          telefone: res.telefone || null,
+          data_hora: res.dataHora.toISOString(),
+          numero_pessoas: res.numeroPessoas,
+          mesa: res.mesaId && res.mesaNumero ? { id: res.mesaId, numero: res.mesaNumero } : null,
+          observacao: res.observacao || null,
+          status: res.status,
+          duracao: res.duracao,
+          comanda_id: res.comandaId || null,
+        }));
 
-        return reservasEnriquecidas;
+        app.logger.info({ restauranteId, count: resultado.length }, "Reservas listed successfully");
+
+        return resultado;
       } catch (error) {
         app.logger.error({ err: error }, "Failed to list reservas");
         return await reply.code(500).send({ error: "Erro interno do servidor" });
@@ -219,7 +242,7 @@ export function registerReservasRoutes(app: App) {
           400: { type: "object", properties: { error: { type: "string" } } },
           401: { type: "object", properties: { error: { type: "string" } } },
           403: { type: "object", properties: { error: { type: "string" } } },
-          409: { type: "object", properties: { error: { type: "string" } } },
+          409: { type: "object", properties: { error: { type: "string" }, conflicting_reservation_time: { type: "string" } } },
         },
       },
     },
@@ -276,7 +299,6 @@ export function registerReservasRoutes(app: App) {
         }
 
         // Validar mesa se informada
-        let mesaValidada: any = null;
         if (mesa_id) {
           const mesaResult = await app.db
             .select()
@@ -290,7 +312,6 @@ export function registerReservasRoutes(app: App) {
           if (mesaResult.length === 0) {
             return await reply.code(400).send({ error: "Mesa não encontrada." });
           }
-          mesaValidada = mesaResult[0];
         }
 
         app.logger.info(
@@ -298,14 +319,41 @@ export function registerReservasRoutes(app: App) {
           "Creating reserva"
         );
 
-        // Verificar conflito de horário (em transação)
+        // Verificar conflito de horário (em transação, com travas apropriadas)
         const resultado = await (app.db as any).transaction(async (tx: any) => {
-          // Se tem mesa, travar a mesa e conferir conflito
           if (mesa_id) {
-            await tx.execute(
-              `SELECT 1 FROM mesas WHERE id = $1 FOR UPDATE`,
-              [mesa_id]
-            );
+            // 1. Trava de leitura no restaurante (FOR SHARE)
+            const restLocked = await tx
+              .select()
+              .from(schema.restaurante)
+              .where(eq(schema.restaurante.id, restauranteId))
+              .for("share");
+
+            if (restLocked.length === 0) {
+              return { tipo: "restaurante_nao_encontrado" };
+            }
+
+            // 2. Trava de escrita na mesa (FOR UPDATE com filtro de restaurante)
+            const mesaLocked = await tx
+              .select()
+              .from(schema.mesas)
+              .where(
+                and(
+                  eq(schema.mesas.id, mesa_id as any),
+                  eq(schema.mesas.restauranteId, restauranteId)
+                )
+              )
+              .for("update");
+
+            if (mesaLocked.length === 0) {
+              return { tipo: "mesa_nao_encontrada" };
+            }
+
+            // 3. Verificar conflito: existe reserva que começa ANTES do fim da nova E termina DEPOIS do início da nova?
+            // fim_existente = data_hora_existente + duracao_existente (minutos)
+            // fim_nova = dataHora + numero_pessoas é o duracao, não numero_pessoas - use duracao padrão 120
+            // Conflito se: existente.data_hora < fim_nova AND (existente.data_hora + existente.duracao) > dataHora
+            // Com comparações estritas: <, >, não <=, >=
 
             const conflito = await tx
               .select()
@@ -317,12 +365,10 @@ export function registerReservasRoutes(app: App) {
                     eq(schema.reservas.status, "confirmada" as any),
                     eq(schema.reservas.status, "sentada" as any)
                   ),
-                  // A reserva começa antes de nossa hora de fim E termina depois de nossa hora de início
+                  // Existing starts before new ends
                   lt(schema.reservas.dataHora, new Date(dataHora.getTime() + 120 * 60 * 1000)),
-                  gte(
-                    schema.reservas.dataHora,
-                    new Date(dataHora.getTime() - 120 * 60 * 1000)
-                  )
+                  // Existing ends (data_hora + duracao) after new starts
+                  sql`${schema.reservas.dataHora} + INTERVAL '1 minute' * ${schema.reservas.duracao} > ${dataHora}`
                 )
               )
               .limit(1);
@@ -335,11 +381,10 @@ export function registerReservasRoutes(app: App) {
             }
           }
 
-          // Criar a reserva
+          // Criar a reserva (banco já gera o id e timestamps)
           const [novaReserva] = await tx
             .insert(schema.reservas)
             .values({
-              id: crypto.randomUUID?.() || require("crypto").randomUUID(),
               restauranteId,
               mesaId: mesa_id || null,
               nomePessoa: nomeTrimado,
@@ -350,8 +395,6 @@ export function registerReservasRoutes(app: App) {
               status: "confirmada",
               duracao: 120,
               criadoPor: authUser.id,
-              createdAt: new Date(),
-              updatedAt: new Date(),
             })
             .returning();
 
@@ -367,6 +410,14 @@ export function registerReservasRoutes(app: App) {
             error: "Já existe uma reserva para esta mesa nesse horário.",
             conflicting_reservation_time: resultado.hora_conflito,
           });
+        }
+
+        if (resultado.tipo === "restaurante_nao_encontrado") {
+          return await reply.code(500).send({ error: "Erro interno do servidor" });
+        }
+
+        if (resultado.tipo === "mesa_nao_encontrada") {
+          return await reply.code(400).send({ error: "Mesa não encontrada." });
         }
 
         const reserva = resultado.reserva;
@@ -428,7 +479,7 @@ export function registerReservasRoutes(app: App) {
           401: { type: "object", properties: { error: { type: "string" } } },
           403: { type: "object", properties: { error: { type: "string" } } },
           404: { type: "object", properties: { error: { type: "string" } } },
-          409: { type: "object", properties: { error: { type: "string" } } },
+          409: { type: "object", properties: { error: { type: "string" }, conflicting_reservation_time: { type: "string" } } },
         },
       },
     },
@@ -537,11 +588,56 @@ export function registerReservasRoutes(app: App) {
         // Verificar conflito de horário (ignorando a própria reserva)
         const resultado = await (app.db as any).transaction(async (tx: any) => {
           if (mesa_id) {
-            await tx.execute(
-              `SELECT 1 FROM mesas WHERE id = $1 FOR UPDATE`,
-              [mesa_id]
-            );
+            // 1. Trava de leitura no restaurante (FOR SHARE)
+            const restLocked = await tx
+              .select()
+              .from(schema.restaurante)
+              .where(eq(schema.restaurante.id, restauranteId))
+              .for("share");
 
+            if (restLocked.length === 0) {
+              return { tipo: "restaurante_nao_encontrado" };
+            }
+
+            // 2. Trava de escrita na mesa (FOR UPDATE com filtro de restaurante)
+            const mesaLocked = await tx
+              .select()
+              .from(schema.mesas)
+              .where(
+                and(
+                  eq(schema.mesas.id, mesa_id as any),
+                  eq(schema.mesas.restauranteId, restauranteId)
+                )
+              )
+              .for("update");
+
+            if (mesaLocked.length === 0) {
+              return { tipo: "mesa_nao_encontrada" };
+            }
+
+            // 3. Relock da reserva dentro da transação
+            const reservaLocked = await tx
+              .select()
+              .from(schema.reservas)
+              .where(
+                and(
+                  eq(schema.reservas.id, id as any),
+                  eq(schema.reservas.restauranteId, restauranteId)
+                )
+              )
+              .for("update")
+              .limit(1);
+
+            if (reservaLocked.length === 0) {
+              return { tipo: "reserva_nao_encontrada" };
+            }
+
+            // Recheck status is still confirmada
+            if (reservaLocked[0].status !== "confirmada") {
+              return { tipo: "status_mudou" };
+            }
+
+            // Verificar conflito com outras reservas (excluding self)
             const conflito = await tx
               .select()
               .from(schema.reservas)
@@ -554,10 +650,7 @@ export function registerReservasRoutes(app: App) {
                     eq(schema.reservas.status, "sentada" as any)
                   ),
                   lt(schema.reservas.dataHora, new Date(dataHora.getTime() + 120 * 60 * 1000)),
-                  gte(
-                    schema.reservas.dataHora,
-                    new Date(dataHora.getTime() - 120 * 60 * 1000)
-                  )
+                  sql`${schema.reservas.dataHora} + INTERVAL '1 minute' * ${schema.reservas.duracao} > ${dataHora}`
                 )
               )
               .limit(1);
@@ -570,7 +663,7 @@ export function registerReservasRoutes(app: App) {
             }
           }
 
-          // Atualizar a reserva
+          // Atualizar a reserva filtrando por id, restaurante, e status confirmada
           const [reservaAtualizada] = await tx
             .update(schema.reservas)
             .set({
@@ -582,11 +675,31 @@ export function registerReservasRoutes(app: App) {
               mesaId: mesa_id || null,
               updatedAt: new Date(),
             })
-            .where(eq(schema.reservas.id, id as any))
+            .where(
+              and(
+                eq(schema.reservas.id, id as any),
+                eq(schema.reservas.restauranteId, restauranteId),
+                eq(schema.reservas.status, "confirmada" as any)
+              )
+            )
             .returning();
+
+          if (!reservaAtualizada) {
+            return { tipo: "atualizacao_falhou" };
+          }
 
           return { tipo: "atualizada", reserva: reservaAtualizada };
         });
+
+        if (resultado.tipo === "reserva_nao_encontrada") {
+          return await reply.code(404).send({ error: "Reserva não encontrada." });
+        }
+
+        if (resultado.tipo === "status_mudou" || resultado.tipo === "atualizacao_falhou") {
+          return await reply.code(409).send({
+            error: "Reserva não pode ser editada neste status.",
+          });
+        }
 
         if (resultado.tipo === "conflito") {
           app.logger.warn({ restauranteId, reservaId: id, mesaId: mesa_id }, "Conflito ao atualizar reserva");
@@ -594,6 +707,10 @@ export function registerReservasRoutes(app: App) {
             error: "Já existe uma reserva para esta mesa nesse horário.",
             conflicting_reservation_time: resultado.hora_conflito,
           });
+        }
+
+        if (resultado.tipo === "restaurante_nao_encontrado" || resultado.tipo === "mesa_nao_encontrada") {
+          return await reply.code(500).send({ error: "Erro interno do servidor" });
         }
 
         const reservaAtualizada = resultado.reserva;
@@ -675,42 +792,45 @@ export function registerReservasRoutes(app: App) {
           return await reply.code(400).send({ error: "Status inválido. Deve ser 'cancelada' ou 'nao_compareceu'." });
         }
 
-        // Buscar reserva
-        const reservaExistente = await app.db
-          .select()
-          .from(schema.reservas)
-          .where(
-            and(
-              eq(schema.reservas.id, id as any),
-              eq(schema.reservas.restauranteId, restauranteId)
-            )
-          )
-          .limit(1);
-
-        if (reservaExistente.length === 0) {
-          return await reply.code(404).send({ error: "Reserva não encontrada." });
-        }
-
-        const reserva = reservaExistente[0];
-
-        // Só pode mudar de confirmada
-        if (reserva.status !== "confirmada") {
-          return await reply.code(409).send({
-            error: `Transição inválida: de '${reserva.status}' para '${status}'`,
-          });
-        }
-
         app.logger.info({ restauranteId, reservaId: id, novoStatus: status }, "Updating reserva status");
 
-        // Atualizar
+        // Atualizar, filtrando por restaurante e status confirmada
         const [reservaAtualizada] = await app.db
           .update(schema.reservas)
           .set({
             status: status as any,
             updatedAt: new Date(),
           })
-          .where(eq(schema.reservas.id, id as any))
+          .where(
+            and(
+              eq(schema.reservas.id, id as any),
+              eq(schema.reservas.restauranteId, restauranteId),
+              eq(schema.reservas.status, "confirmada" as any)
+            )
+          )
           .returning();
+
+        if (!reservaAtualizada) {
+          // Query to determine if not found or invalid status
+          const reserva = await app.db
+            .select()
+            .from(schema.reservas)
+            .where(
+              and(
+                eq(schema.reservas.id, id as any),
+                eq(schema.reservas.restauranteId, restauranteId)
+              )
+            )
+            .limit(1);
+
+          if (reserva.length === 0) {
+            return await reply.code(404).send({ error: "Reserva não encontrada." });
+          }
+
+          return await reply.code(409).send({
+            error: `Transição inválida: de '${reserva[0].status}' para '${status}'`,
+          });
+        }
 
         app.logger.info({ restauranteId, reservaId: id, status }, "Reserva status updated successfully");
 
@@ -748,14 +868,22 @@ export function registerReservasRoutes(app: App) {
           },
           400: { type: "object", properties: { error: { type: "string" } } },
           401: { type: "object", properties: { error: { type: "string" } } },
+          403: { type: "object", properties: { error: { type: "string" } } },
           404: { type: "object", properties: { error: { type: "string" } } },
           409: { type: "object", properties: { error: { type: "string" } } },
+          500: { type: "object", properties: { error: { type: "string" } } },
         },
       },
     },
     async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
       const authUser = await customRequireAuth(app, request, reply);
       if (!authUser) return;
+
+      const papel = String(authUser.role ?? "").trim().toLowerCase();
+      if (!PAPEIS_PODEM_LISTAR_SENTAR.includes(papel)) {
+        app.logger.warn({ userId: authUser.id, papel }, "Acesso negado: sentar reserva");
+        return await reply.code(403).send({ error: "Você não tem permissão para esta ação." });
+      }
 
       try {
         const restauranteId = requireTenant(authUser);
@@ -795,6 +923,9 @@ export function registerReservasRoutes(app: App) {
 
           case "nome_repetido":
             return await reply.code(409).send({ error: "Já existe uma comanda com este nome nesta mesa." });
+
+          case "erro_interno":
+            return await reply.code(500).send({ error: "Erro interno do servidor" });
 
           default:
             return await reply.code(500).send({ error: "Erro ao sentar reserva." });
