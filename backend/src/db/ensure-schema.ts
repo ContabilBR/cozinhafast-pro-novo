@@ -159,3 +159,199 @@ export async function garantirColunasDeModoComanda(app: App): Promise<number> {
 
   return criadas;
 }
+
+/**
+ * Desconto/cortesia (etapa 1a).
+ *
+ * Cria, só se faltarem, sete colunas nas tabelas `comandas` e `comandas_historico`:
+ *  - desconto_valor numeric(10,2) NOT NULL DEFAULT 0
+ *  - desconto_tipo text NULL
+ *  - desconto_motivo text NULL
+ *  - desconto_motivo_detalhe text NULL
+ *  - desconto_por_id text NULL
+ *  - desconto_por_nome text NULL
+ *  - desconto_em timestamp with time zone NULL
+ * Idempotente: confere o information_schema antes e usa IF NOT EXISTS, então convive com
+ * colunas já criadas à mão no banco e com uma eventual migração do Drizzle.
+ * Devolve quantas colunas foram criadas (0 quando o banco já estava em dia).
+ */
+const COLUNAS_DESCONTO: Array<[coluna: string, tipo: string]> = [
+  ["desconto_valor", "numeric(10,2) NOT NULL DEFAULT 0"],
+  ["desconto_tipo", "text"],
+  ["desconto_motivo", "text"],
+  ["desconto_motivo_detalhe", "text"],
+  ["desconto_por_id", "text"],
+  ["desconto_por_nome", "text"],
+  ["desconto_em", "timestamp with time zone"],
+];
+
+const TABELAS_DESCONTO = ["comandas", "comandas_historico"] as const;
+
+export async function garantirColunasContinuasDeDesconto(app: App): Promise<number> {
+  const db = app.db as any;
+  let criadas = 0;
+
+  try {
+    const nomes = COLUNAS_DESCONTO.map(([coluna]) => coluna);
+    let existentes: any[] = [];
+
+    try {
+      const result = await db.execute(
+        sql`SELECT table_name, column_name
+            FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name IN ('comandas', 'comandas_historico')
+              AND column_name IN (${sql.join(nomes.map((n) => sql`${n}`), sql`, `)})`
+      );
+      existentes = linhasDe(result);
+    } catch (queryErr) {
+      app.logger.warn({ err: queryErr }, "Failed to query information_schema for discount columns - proceeding anyway");
+      // Continue without checking existing columns - ALTER TABLE will use IF NOT EXISTS
+    }
+
+    const jaExiste = new Set(existentes.map((r: any) => `${r.table_name}.${r.column_name}`));
+
+    for (const tabela of TABELAS_DESCONTO) {
+      for (const [coluna, tipo] of COLUNAS_DESCONTO) {
+        if (jaExiste.has(`${tabela}.${coluna}`)) continue;
+        try {
+          await db.execute(sql.raw(`ALTER TABLE "${tabela}" ADD COLUMN IF NOT EXISTS "${coluna}" ${tipo}`));
+          criadas++;
+        } catch (err) {
+          // Não derruba o backend: o erro aparece no log e as demais colunas seguem
+          app.logger.error({ err, tabela, coluna }, "Failed to add missing discount column at startup");
+        }
+      }
+    }
+
+    if (criadas > 0) {
+      app.logger.warn({ criadas }, "Missing discount columns were created at startup");
+    } else {
+      app.logger.debug("Discount columns already present");
+    }
+  } catch (err) {
+    app.logger.error({ err }, "Failed to check discount columns at startup");
+  }
+
+  return criadas;
+}
+
+/**
+ * Backfill qrToken for existing mesas that have NULL qr_token.
+ * Single atomic SQL operation: generates 32-char hex tokens (UUID without hyphens).
+ * Idempotent - already-filled mesas are never changed.
+ * Does not throw; logs outcome and continues startup.
+ */
+export async function backfillQrTokens(app: App): Promise<void> {
+  const db = app.db as any;
+
+  try {
+    const result = await db.execute(
+      sql`WITH preenchidas AS (
+            UPDATE mesas
+            SET qr_token = replace(gen_random_uuid()::text, '-', '')
+            WHERE qr_token IS NULL
+            RETURNING 1
+          )
+          SELECT count(*)::int AS quantidade FROM preenchidas`
+    );
+
+    const rows = Array.isArray(result) ? result : (result as any)?.rows || [];
+    const quantidade = rows[0]?.quantidade ?? 0;
+
+    if (quantidade > 0) {
+      app.logger.info({ quantidade }, "QR tokens backfilled for mesas");
+    } else {
+      app.logger.debug("No mesas needed qr_token backfill");
+    }
+  } catch (err) {
+    // Extract safe SQLSTATE if available
+    const sqlstate = (err as any)?.cause?.code || (err as any)?.code || "UNKNOWN";
+    app.logger.warn({ codigo: sqlstate, mensagem: "Falha ao preencher tokens das mesas" }, "Backfill QR tokens");
+    // Do not throw - continue startup
+  }
+}
+
+/**
+ * Reservations table (ETAPA 1 - Sistema de Reservas).
+ *
+ * Creates the reservas table if it does not exist, including:
+ *  - reserva_status_enum type (confirmada, sentada, cancelada, nao_compareceu)
+ *  - reservas table with all required columns and indices
+ * Idempotent: checks if table exists before creating; uses IF NOT EXISTS for all DDL.
+ * Does not throw; logs outcome and continues startup.
+ */
+export async function garantirTabelaReservas(app: App): Promise<void> {
+  const db = app.db as any;
+
+  try {
+    // Check if reservas table exists
+    const tableExists = await db.execute(
+      sql`SELECT 1 FROM information_schema.tables
+          WHERE table_schema = current_schema() AND table_name = 'reservas'`
+    );
+
+    const rows = Array.isArray(tableExists) ? tableExists : (tableExists as any)?.rows || [];
+    if (rows.length > 0) {
+      app.logger.debug("Reservas table already exists");
+      return;
+    }
+
+    // Create the enum type
+    await db.execute(
+      sql.raw(
+        `CREATE TYPE IF NOT EXISTS reserva_status AS ENUM ('confirmada', 'sentada', 'cancelada', 'nao_compareceu')`
+      )
+    );
+
+    // Create the reservas table
+    await db.execute(
+      sql.raw(`
+        CREATE TABLE IF NOT EXISTS reservas (
+          id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+          restaurante_id text NOT NULL,
+          mesa_id uuid,
+          nome_pessoa text NOT NULL,
+          telefone text,
+          data_hora timestamp with time zone NOT NULL,
+          numero_pessoas integer NOT NULL,
+          observacao text,
+          status reserva_status NOT NULL DEFAULT 'confirmada',
+          duracao integer NOT NULL DEFAULT 120,
+          comanda_id uuid,
+          criado_por text NOT NULL,
+          created_at timestamp with time zone NOT NULL DEFAULT now(),
+          updated_at timestamp with time zone NOT NULL DEFAULT now(),
+          FOREIGN KEY (restaurante_id) REFERENCES restaurante(id) ON DELETE CASCADE,
+          FOREIGN KEY (mesa_id) REFERENCES mesas(id) ON DELETE SET NULL,
+          FOREIGN KEY (comanda_id) REFERENCES comandas(id) ON DELETE SET NULL
+        )
+      `)
+    );
+
+    // Create indices for efficient querying
+    await db.execute(
+      sql.raw(`
+        CREATE INDEX IF NOT EXISTS idx_reservas_restaurante_hora
+        ON reservas(restaurante_id, data_hora)
+      `)
+    );
+
+    await db.execute(
+      sql.raw(`
+        CREATE INDEX IF NOT EXISTS idx_reservas_mesa_hora
+        ON reservas(mesa_id, data_hora)
+      `)
+    );
+
+    app.logger.info("Reservas table and indices created successfully");
+  } catch (err) {
+    // Extract safe SQLSTATE if available
+    const sqlstate = (err as any)?.cause?.code || (err as any)?.code || "UNKNOWN";
+    app.logger.warn(
+      { codigo: sqlstate, mensagem: "Falha ao criar tabela de reservas" },
+      "Ensure reservas table"
+    );
+    // Do not throw - continue startup
+  }
+}

@@ -1,8 +1,9 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
-import { eq, ne, and, gte, lte } from "drizzle-orm";
+import { eq, ne, and, or, gte, lte } from "drizzle-orm";
 import * as schema from "../db/schema/schema.js";
 import type { App } from "../index.js";
 import { requireAuth as customRequireAuth, requireRole } from "../utils/auth.js";
+import { generateQrToken } from "../utils/qr-token.js";
 
 // Teto realista para o número de uma mesa. Nenhum restaurante tem mais de 9.999 mesas;
 // números acima disso só aparecem por erro ou por dados de teste gravados no banco real
@@ -55,7 +56,18 @@ export function registerTableRoutes(app: App) {
                 numero: { type: "number" },
                 status: { type: "string", enum: ["disponivel", "ocupada", "reservada"] },
                 capacidade: { type: "number" },
+                qr_token: { type: "string" },
                 created_at: { type: "string", format: "date-time" },
+                proxima_reserva: {
+                  type: "object",
+                  properties: {
+                    id: { type: "string", format: "uuid" },
+                    nome: { type: "string" },
+                    horario: { type: "string", format: "date-time" },
+                    pessoas: { type: "number" },
+                  },
+                  nullable: true,
+                },
               },
             },
           },
@@ -91,12 +103,48 @@ export function registerTableRoutes(app: App) {
         const mesas = await mesasQuery;
         app.logger.info({ tenantId, count: mesas.length }, "Mesas listed successfully");
 
+        const podeVerToken = ["gerente", "administrador", "admin"].includes(String(authUser.role ?? "").toLowerCase());
+
+        // Fetch next reservations for all mesas within 30 minutes
+        const agora = new Date();
+        const trinta_min_no_futuro = new Date(agora.getTime() + 30 * 60 * 1000);
+        const trinta_min_no_passado = new Date(agora.getTime() - 30 * 60 * 1000);
+
+        const proximasReservas = await app.db
+          .select()
+          .from(schema.reservas)
+          .where(
+            and(
+              eq(schema.reservas.restauranteId, tenantId as any),
+              or(
+                eq(schema.reservas.status, "confirmada" as any),
+                eq(schema.reservas.status, "sentada" as any)
+              )
+            )
+          );
+
+        const reservasPorMesa = new Map<string, any>();
+        for (const res of proximasReservas) {
+          if (res.mesaId && (res.dataHora >= trinta_min_no_passado && res.dataHora <= trinta_min_no_futuro)) {
+            if (!reservasPorMesa.has(res.mesaId)) {
+              reservasPorMesa.set(res.mesaId, {
+                id: res.id,
+                nome: res.nomePessoa,
+                horario: res.dataHora.toISOString(),
+                pessoas: res.numeroPessoas,
+              });
+            }
+          }
+        }
+
         return mesas.map((m) => ({
           id: m.id,
           numero: m.numero,
           status: m.status,
           capacidade: m.capacidade,
+          ...(podeVerToken ? { qr_token: m.qrToken } : {}),
           created_at: m.createdAt.toISOString(),
+          proxima_reserva: reservasPorMesa.get(m.id as string) || null,
         }));
       } catch (error) {
         app.logger.error({ err: error }, "Failed to list mesas");
@@ -197,6 +245,8 @@ export function registerTableRoutes(app: App) {
           return reply.code(409).send({ error: "Mesa com este número já existe" });
         }
 
+        const qrToken = generateQrToken();
+
         const [newMesa] = await app.db
           .insert(schema.mesas)
           .values({
@@ -204,6 +254,7 @@ export function registerTableRoutes(app: App) {
             capacidade,
             status: status as any,
             restauranteId: tenantId as any,
+            qrToken,
             createdAt: new Date(),
           })
           .returning();
@@ -255,7 +306,7 @@ export function registerTableRoutes(app: App) {
                     numero: { type: "number" },
                     status: { type: "string" },
                     capacidade: { type: "number" },
-                  },
+                        },
                 },
               },
             },
@@ -345,6 +396,7 @@ export function registerTableRoutes(app: App) {
           capacidade,
           status: "disponivel" as any,
           restauranteId: tenantId as any,
+          qrToken: generateQrToken(),
           createdAt: agora,
         }));
 
@@ -720,6 +772,192 @@ export function registerTableRoutes(app: App) {
           return await reply.code(400).send({ error: "Não é possível deletar mesa com registros relacionados" });
         }
         app.logger.error({ err: error }, "Failed to delete mesa");
+        return await reply.code(500).send({ error: "Internal server error" });
+      }
+    }
+  );
+
+  // POST /api/mesas/qr-token/regenerar-todas - Regenerate QR tokens for all tables in the restaurant
+  app.fastify.post(
+    "/api/mesas/qr-token/regenerar-todas",
+    {
+      schema: {
+        description: "Regenerate QR tokens for all tables in the restaurant (requires admin/gerente role)",
+        tags: ["mesas"],
+        response: {
+          200: {
+            type: "object",
+            properties: {
+              mesas: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    id: { type: "string", format: "uuid" },
+                    numero: { type: "number" },
+                    qr_token: { type: "string" },
+                  },
+                },
+              },
+              quantidade: { type: "number" },
+            },
+          },
+          401: { type: "object", properties: { error: { type: "string" } } },
+          403: { type: "object", properties: { error: { type: "string" } } },
+          500: { type: "object", properties: { error: { type: "string" } } },
+        },
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const authUser = await customRequireAuth(app, request, reply);
+      if (!authUser) return;
+
+      try {
+        const tenantId = authUser.restauranteId;
+
+        // Check current database role
+        const authUserProfile = await app.db
+          .select()
+          .from(schema.profiles)
+          .where(and(
+            eq(schema.profiles.userId, authUser.id),
+            eq(schema.profiles.restauranteId, tenantId as any)
+          ))
+          .limit(1);
+
+        const dbRole = authUserProfile.length > 0 ? authUserProfile[0].role?.toLowerCase() : authUser.role?.toLowerCase();
+        const isAdmin = ["admin", "administrador", "gerente"].includes(dbRole ?? "");
+
+        if (!isAdmin) {
+          app.logger.warn({ tenantId }, "User lacks permission to regenerate QR tokens");
+          return reply.code(403).send({ error: "Forbidden" });
+        }
+
+        const updatedMesas = await app.db.transaction(async (tx) => {
+          const mesas = await tx
+            .select()
+            .from(schema.mesas)
+            .where(eq(schema.mesas.restauranteId, tenantId as any))
+            .orderBy(schema.mesas.numero);
+
+          const results = [];
+          for (const mesa of mesas) {
+            const newToken = generateQrToken();
+            const [updated] = await tx
+              .update(schema.mesas)
+              .set({ qrToken: newToken })
+              .where(and(
+                eq(schema.mesas.id, mesa.id),
+                eq(schema.mesas.restauranteId, tenantId as any)
+              ))
+              .returning();
+
+            if (updated) {
+              results.push({
+                id: updated.id,
+                numero: updated.numero,
+                qr_token: updated.qrToken,
+              });
+            }
+          }
+          return results;
+        });
+
+        app.logger.info({ quantidade: updatedMesas.length, tenantId, usuarioId: authUser.id }, "QR tokens regenerated for all tables");
+
+        return await reply.code(200).send({
+          mesas: updatedMesas.sort((a, b) => a.numero - b.numero),
+          quantidade: updatedMesas.length,
+        });
+      } catch (error) {
+        app.logger.error({ tenantId: authUser.restauranteId, usuarioId: authUser.id }, "Failed to regenerate QR tokens for all tables");
+        return await reply.code(500).send({ error: "Internal server error" });
+      }
+    }
+  );
+
+  // POST /api/mesas/:id/qr-token/regenerar - Regenerate QR token for a specific table
+  app.fastify.post<{ Params: { id: string } }>(
+    "/api/mesas/:id/qr-token/regenerar",
+    {
+      schema: {
+        description: "Regenerate QR token for a specific table (requires admin/gerente role)",
+        tags: ["mesas"],
+        params: {
+          type: "object",
+          required: ["id"],
+          properties: {
+            id: { type: "string", format: "uuid" },
+          },
+        },
+        response: {
+          200: {
+            type: "object",
+            properties: {
+              id: { type: "string", format: "uuid" },
+              numero: { type: "number" },
+              qr_token: { type: "string" },
+            },
+          },
+          400: { type: "object", properties: { error: { type: "string" } } },
+          401: { type: "object", properties: { error: { type: "string" } } },
+          403: { type: "object", properties: { error: { type: "string" } } },
+          404: { type: "object", properties: { error: { type: "string" } } },
+          500: { type: "object", properties: { error: { type: "string" } } },
+        },
+      },
+    },
+    async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const authUser = await customRequireAuth(app, request, reply);
+      if (!authUser) return;
+
+      try {
+        const tenantId = authUser.restauranteId;
+
+        // Check current database role
+        const authUserProfile = await app.db
+          .select()
+          .from(schema.profiles)
+          .where(and(
+            eq(schema.profiles.userId, authUser.id),
+            eq(schema.profiles.restauranteId, tenantId as any)
+          ))
+          .limit(1);
+
+        const dbRole = authUserProfile.length > 0 ? authUserProfile[0].role?.toLowerCase() : authUser.role?.toLowerCase();
+        const isAdmin = ["admin", "administrador", "gerente"].includes(dbRole ?? "");
+
+        if (!isAdmin) {
+          app.logger.warn({ tenantId }, "User lacks permission to regenerate QR token");
+          return reply.code(403).send({ error: "Forbidden" });
+        }
+
+        const { id } = request.params;
+
+        const newToken = generateQrToken();
+        const [updated] = await app.db
+          .update(schema.mesas)
+          .set({ qrToken: newToken })
+          .where(and(
+            eq(schema.mesas.id, id as any),
+            eq(schema.mesas.restauranteId, tenantId as any)
+          ))
+          .returning();
+
+        if (!updated) {
+          app.logger.warn({ tenantId, mesaId: id }, "Mesa not found");
+          return await reply.code(404).send({ error: "Mesa nao encontrada" });
+        }
+
+        app.logger.info({ mesaId: id, tenantId, usuarioId: authUser.id }, "QR token regenerated for table");
+
+        return await reply.code(200).send({
+          id: updated.id,
+          numero: updated.numero,
+          qr_token: updated.qrToken,
+        });
+      } catch (error) {
+        app.logger.error({ tenantId: authUser.restauranteId, mesaId: request.params.id, usuarioId: authUser.id }, "Failed to regenerate QR token for table");
         return await reply.code(500).send({ error: "Internal server error" });
       }
     }

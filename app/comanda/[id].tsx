@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -9,16 +9,20 @@ import {
   ActivityIndicator,
   Alert,
   StyleSheet,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { apiGet, apiPost } from '@/utils/api';
+import { apiGet, apiPost, apiDelete } from '@/utils/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { useColors } from '@/hooks/useColors';
 import { CancelarItemModal } from '@/components/CancelarItemModal';
 import { cancelarItem, permissaoCancelarItem, subtotalItensAtivos } from '@/utils/cancelamento';
+import { DescontoModal } from '@/components/DescontoModal';
+import { aplicarDesconto, removerDesconto, calcularTotalComDesconto, podeAbrirFluxoDesconto, exigeAutorizacaoGerente, MOTIVOS_DESCONTO } from '@/utils/desconto';
 
 type Prato = {
   id: string;
@@ -57,6 +61,9 @@ type Comanda = {
   rotulo?: string | null;
   status: string;
   total: number | string;
+  desconto_valor: number;
+  desconto_tipo: string | null;
+  desconto_motivo: string | null;
 };
 
 // Brazilian currency formatter: 1234.5 → "R$ 1.234,50"
@@ -74,12 +81,14 @@ function PratoCardWaiter({
   stagedObservacao,
   onAdd,
   onUpdateObservacao,
+  onFocusObservacao,
   COLORS,
 }: {
   item: Prato;
   stagedObservacao: string | undefined;
   onAdd: (observacao: string) => void;
   onUpdateObservacao: (text: string) => void;
+  onFocusObservacao?: () => void;
   COLORS: any;
 }) {
   const [pendingObservacao, setPendingObservacao] = useState('');
@@ -118,6 +127,7 @@ function PratoCardWaiter({
               setPendingObservacao(text);
             }
           }}
+          onFocus={onFocusObservacao}
           placeholder="Observação (opcional)"
           placeholderTextColor="#9ca3af"
         />
@@ -138,6 +148,49 @@ function PratoCardWaiter({
   );
 }
 
+type NavBarProps = {
+  title: string;
+  semConsumo: boolean;
+  canFechar: boolean;
+  encerrando: boolean;
+  comandaId: string;
+  onEncerrar: () => void;
+  onFechar: () => void;
+};
+
+function NavBar({ title, semConsumo, canFechar, encerrando, comandaId, onEncerrar, onFechar }: NavBarProps) {
+  const router = useRouter();
+
+  return (
+    <View style={styles.navBar}>
+      <Pressable onPress={() => {
+        console.log('[ComandaDetail] back pressed');
+        if (router.canGoBack()) {
+          router.back();
+        } else {
+          router.replace('/(tabs)/(mesas)');
+        }
+      }} hitSlop={10} style={styles.backBtn}>
+        <Ionicons name="arrow-back" size={22} color="#007AFF" />
+        <Text style={styles.backText}>Voltar</Text>
+      </Pressable>
+      <Text style={styles.navTitle} numberOfLines={1}>{title}</Text>
+      {semConsumo ? (
+        <View style={{ width: 60 }} />
+      ) : canFechar ? (
+        <Pressable
+          onPress={() => { console.log('[ComandaDetail] Fechar header button pressed', { comandaId }); onFechar(); }}
+          style={styles.fecharHeaderBtn}
+        >
+          <Text style={styles.fecharHeaderBtnText}>Fechar</Text>
+        </Pressable>
+      ) : (
+        <View style={{ width: 60 }} />
+      )}
+    </View>
+  );
+}
+
 // ─── Main Screen ─────────────────────────────────────────────────────────────
 
 export default function ComandaDetailScreen() {
@@ -147,10 +200,12 @@ export default function ComandaDetailScreen() {
   const isManager = user?.role === 'gerente' || user?.role === 'admin' || user?.role === 'administrador';
 
   const COLORS = useColors();
+  const pratosListRef = useRef<FlatList<Prato>>(null);
   const [comanda, setComanda] = useState<Comanda | null>(null);
+  const [descontoVisible, setDescontoVisible] = useState(false);
   const [pratos, setPratos] = useState<Prato[]>([]);
   const [pedidosEnviados, setPedidosEnviados] = useState<Pedido[]>([]);
-  const [itemParaCancelar, setItemParaCancelar] = useState<{ id: string; nome: string; aposInicio: boolean } | null>(null);
+  const [itemParaCancelar, setItemParaCancelar] = useState<{ id: string; nome: string; aposInicio: boolean; quantidade: number; exigeAutorizacao: boolean } | null>(null);
   const [stagedItems, setStagedItems] = useState<StagedItem[]>([]);
   const [activeTab, setActiveTab] = useState<'cardapio' | 'pedido'>('cardapio');
   const [loading, setLoading] = useState(true);
@@ -225,7 +280,13 @@ export default function ComandaDetailScreen() {
       }
 
       const found: Comanda | null = raw
-        ? { ...raw, mesa_numero: resolvedMesaNumero }
+        ? {
+            ...raw,
+            mesa_numero: resolvedMesaNumero,
+            desconto_valor: raw.desconto_valor ?? 0,
+            desconto_tipo: raw.desconto_tipo ?? null,
+            desconto_motivo: raw.desconto_motivo ?? null,
+          }
         : null;
 
       console.log('[ComandaDetail] comanda loaded:', found?.id, 'mesa_numero:', found?.mesa_numero, '(raw mesa_numero:', raw?.mesa_numero, ', mesa.numero:', raw?.mesa?.numero, ', param:', mesaNumeroParam, ')');
@@ -321,6 +382,8 @@ export default function ComandaDetailScreen() {
         ? pedidosRes
         : pedidosRes?.pedidos ?? [];
       setPedidosEnviados(allPedidos.filter((p) => p.comanda_id === id));
+      // O servidor pode recalcular/limitar o desconto ao incluir novos itens.
+      await fetchData();
       Alert.alert('Sucesso', 'Pedido enviado para a cozinha!');
       setActiveTab('pedido');
     } catch (e: any) {
@@ -348,6 +411,57 @@ export default function ComandaDetailScreen() {
   // Item cancelado não é venda: fica fora do total
   const total = subtotalItensAtivos(pedidosEnviados);
   const totalDisplay = `R$ ${total.toFixed(2).replace(".", ",")}`;
+  const temDesconto = comanda?.desconto_tipo === 'desconto' || comanda?.desconto_tipo === 'cortesia';
+  const { descontoEfetivo, total: totalComDesconto } = calcularTotalComDesconto(total, comanda?.desconto_tipo, comanda?.desconto_valor);
+  const motivoDesconto = MOTIVOS_DESCONTO.find((m) => m.value === comanda?.desconto_motivo)?.label;
+  const podeAbrirDesconto = podeAbrirFluxoDesconto(user?.role) && comanda?.status === 'aberta' && total > 0;
+  const [footerHeight, setFooterHeight] = useState(120);
+
+  const resumoDesconto = (
+    <View style={{ gap: 8, paddingVertical: 12 }}>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 12 }}>
+        <Text style={{ color: COLORS.textSecondary }}>Subtotal</Text>
+        <Text style={{ color: COLORS.text }}>{formatBRL(total)}</Text>
+      </View>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 12 }}>
+        <View style={{ flex: 1 }}>
+          <Text style={{ color: COLORS.text }}>Desconto</Text>
+          {motivoDesconto ? <Text style={{ fontSize: 12, color: COLORS.textSecondary, marginTop: 2 }}>{motivoDesconto}</Text> : null}
+        </View>
+        <Text style={{ color: COLORS.danger }}>− {formatBRL(descontoEfetivo)}</Text>
+      </View>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 12 }}>
+        <Text style={{ color: COLORS.text, fontSize: 16, fontWeight: '700' }}>Total</Text>
+        <Text style={{ color: COLORS.success, fontSize: 18, fontWeight: '700' }}>{formatBRL(totalComDesconto)}</Text>
+      </View>
+    </View>
+  );
+  const botaoDesconto = podeAbrirDesconto ? (
+    <Pressable onPress={() => setDescontoVisible(true)} accessibilityRole="button"
+      style={{ minHeight: 44, borderWidth: 1, borderColor: COLORS.primary, backgroundColor: COLORS.primaryMuted, borderRadius: 12, padding: 12, alignItems: 'center', marginBottom: 12 }}>
+      <Text style={{ color: COLORS.primary, fontFamily: 'Outfit_600SemiBold', fontSize: 14 }}>
+        {comanda?.desconto_tipo === 'cortesia' ? 'Cortesia' : temDesconto ? 'Desconto aplicado' : 'Desconto'}
+      </Text>
+    </Pressable>
+  ) : null;
+  const modalDesconto = (
+    <DescontoModal visible={descontoVisible} subtotal={total} descontoAtual={comanda}
+      exigeAutorizacao={exigeAutorizacaoGerente(user?.role)}
+      onClose={() => setDescontoVisible(false)}
+      onApply={async (corpo, autorizacao) => {
+        if (!id) return;
+        await aplicarDesconto(id, corpo, autorizacao);
+        setDescontoVisible(false);
+        await fetchData();
+      }}
+      onRemove={async (autorizacao) => {
+        if (!id) return;
+        await removerDesconto(id, autorizacao);
+        setDescontoVisible(false);
+        await fetchData();
+      }}
+    />
+  );
   console.log("[ComandaDetail] total calculado:", totalDisplay, "— pedidos:", pedidosEnviados.length);
 
   const mesaNum = mesaNumero ?? '?';
@@ -365,6 +479,94 @@ export default function ComandaDetailScreen() {
     pedidosEnviados.every((p) => p.status === 'cancelado');
 
   const [encerrando, setEncerrando] = useState(false);
+  const [excluindoVazia, setExcluindoVazia] = useState(false);
+
+  // Comanda aberta sem nenhum pedido (nem cancelado): única saída é excluir
+  const podeExcluirVazia =
+    comanda?.status === 'aberta' &&
+    pedidosEnviados.length === 0 &&
+    user?.role !== 'cozinheiro';
+
+  const executarExclusaoVazia = async () => {
+    if (!id || excluindoVazia) return;
+    setExcluindoVazia(true);
+    try {
+      await apiDelete(`/api/comandas/${id}`);
+      if (router.canGoBack()) {
+        router.back();
+      } else {
+        router.replace('/(tabs)/(mesas)');
+      }
+      Alert.alert('Comanda excluída');
+    } catch (e: any) {
+      const msg = typeof e?.message === 'string' ? e.message.trim() : '';
+      Alert.alert('Erro', msg ? msg : 'Não foi possível excluir a comanda. Tente novamente.');
+    } finally {
+      setExcluindoVazia(false);
+    }
+  };
+
+  const handleExcluirVazia = () => {
+    Alert.alert(
+      'Excluir comanda vazia?',
+      'Esta comanda não tem itens e será removida. A mesa será liberada se não houver outra comanda aberta nela.',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        { text: 'Excluir', style: 'destructive', onPress: executarExclusaoVazia },
+      ]
+    );
+  };
+
+  // Aviso + botão no corpo da tela quando todos os itens foram cancelados
+  const renderEncerrarSemConsumo = () =>
+    semConsumo ? (
+      <View style={{ marginBottom: 12 }}>
+        <Text style={{ color: '#6b7280', fontSize: 14, textAlign: 'center', marginBottom: 8 }}>
+          Todos os itens desta comanda foram cancelados
+        </Text>
+        <Pressable
+          onPress={() =>
+            Alert.alert(
+              'Encerrar sem consumo',
+              'Todos os itens desta comanda foram cancelados. Ela será encerrada sem cobrança e ficará no histórico com total zero. Os cancelamentos continuam registrados.',
+              [
+                { text: 'Cancelar', style: 'cancel' },
+                { text: 'Encerrar', style: 'destructive', onPress: handleEncerrarSemConsumo },
+              ]
+            )
+          }
+          disabled={encerrando}
+          style={{ backgroundColor: '#6b7280', borderRadius: 12, padding: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, opacity: encerrando ? 0.6 : 1 }}
+        >
+          <Ionicons name="close-circle-outline" size={20} color="white" />
+          <Text style={{ color: 'white', fontSize: 16, fontWeight: '600' }}>
+            {encerrando ? 'Encerrando...' : 'Encerrar sem consumo'}
+          </Text>
+        </Pressable>
+      </View>
+    ) : null;
+
+  const renderExcluirVazia = () =>
+    podeExcluirVazia ? (
+      <Pressable
+        onPress={handleExcluirVazia}
+        disabled={excluindoVazia}
+        style={{
+          marginTop: 16,
+          alignSelf: 'center',
+          paddingVertical: 10,
+          paddingHorizontal: 16,
+          borderRadius: 8,
+          borderWidth: 1,
+          borderColor: '#fca5a5',
+          opacity: excluindoVazia ? 0.5 : 1,
+        }}
+      >
+        <Text style={{ color: '#dc2626', fontSize: 14, fontWeight: '600' }}>
+          {excluindoVazia ? 'Excluindo...' : 'Excluir comanda vazia'}
+        </Text>
+      </Pressable>
+    ) : null;
 
   const handleEncerrarSemConsumo = async () => {
     if (!id) return;
@@ -391,7 +593,15 @@ export default function ComandaDetailScreen() {
     if (permissao.pode) {
       return (
         <Pressable
-          onPress={() => setItemParaCancelar({ id: p.id, nome: pratoNome, aposInicio: permissao.aposInicio })}
+          onPress={() =>
+            setItemParaCancelar({
+              id: p.id,
+              nome: pratoNome,
+              aposInicio: permissao.aposInicio,
+              quantidade: p.quantidade ?? 1,
+              exigeAutorizacao: permissao.exigeAutorizacao,
+            })
+          }
           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           style={{ marginLeft: 8, padding: 2 }}
         >
@@ -418,10 +628,12 @@ export default function ComandaDetailScreen() {
       visible={itemParaCancelar !== null}
       pratoNome={itemParaCancelar?.nome ?? ''}
       aposInicio={itemParaCancelar?.aposInicio ?? false}
+      quantidadeItem={itemParaCancelar?.quantidade ?? 1}
+      exigeAutorizacao={itemParaCancelar?.exigeAutorizacao ?? false}
       onClose={() => setItemParaCancelar(null)}
-      onConfirm={async (motivo, detalhe) => {
+      onConfirm={async (motivo, detalhe, quantidade, autorizacao) => {
         if (!itemParaCancelar) return;
-        await cancelarItem(itemParaCancelar.id, motivo, detalhe);
+        await cancelarItem(itemParaCancelar.id, motivo, detalhe, quantidade, autorizacao);
         await fetchData();
       }}
     />
@@ -446,47 +658,18 @@ export default function ComandaDetailScreen() {
     });
   }, [pratos, searchQuery, selectedCategory]);
 
-  const NavBar = ({ title }: { title: string }) => (
-    <View style={styles.navBar}>
-      <Pressable onPress={() => { console.log('[ComandaDetail] back pressed'); router.back(); }} style={styles.backBtn}>
-        <Ionicons name="arrow-back" size={22} color="#007AFF" />
-        <Text style={styles.backText}>Voltar</Text>
-      </Pressable>
-      <Text style={styles.navTitle} numberOfLines={1}>{title}</Text>
-      {semConsumo ? (
-        <Pressable
-          onPress={() =>
-            Alert.alert(
-              'Encerrar sem consumo',
-              'Todos os itens desta comanda foram cancelados. Ela será encerrada sem cobrança e ficará no histórico com total zero. Os cancelamentos continuam registrados.',
-              [
-                { text: 'Cancelar', style: 'cancel' },
-                { text: 'Encerrar', style: 'destructive', onPress: handleEncerrarSemConsumo },
-              ]
-            )
-          }
-          style={[styles.fecharHeaderBtn, { backgroundColor: '#6b7280' }]}
-          disabled={encerrando}
-        >
-          <Text style={styles.fecharHeaderBtnText}>{encerrando ? '...' : 'Encerrar'}</Text>
-        </Pressable>
-      ) : canFechar ? (
-        <Pressable
-          onPress={() => { console.log('[ComandaDetail] Fechar header button pressed', { comandaId: id }); router.push({ pathname: '/comanda/fechar-conta', params: { id } }); }}
-          style={styles.fecharHeaderBtn}
-        >
-          <Text style={styles.fecharHeaderBtnText}>Fechar</Text>
-        </Pressable>
-      ) : (
-        <View style={{ width: 60 }} />
-      )}
-    </View>
-  );
-
   if (loading) {
     return (
       <SafeAreaView style={styles.centered} edges={['top', 'left', 'right']}>
-        <NavBar title={headerTitle} />
+        <NavBar
+          title={headerTitle}
+          semConsumo={semConsumo}
+          canFechar={canFechar}
+          encerrando={encerrando}
+          comandaId={id}
+          onEncerrar={handleEncerrarSemConsumo}
+          onFechar={() => router.push({ pathname: '/comanda/fechar-conta', params: { id } })}
+        />
         <ActivityIndicator size="large" color="#007AFF" style={{ marginTop: 40 }} />
         <Text style={{ marginTop: 12, color: '#6b7280' }}>Carregando...</Text>
       </SafeAreaView>
@@ -496,7 +679,15 @@ export default function ComandaDetailScreen() {
   if (error) {
     return (
       <SafeAreaView style={styles.centered} edges={['top', 'left', 'right']}>
-        <NavBar title={headerTitle} />
+        <NavBar
+          title={headerTitle}
+          semConsumo={semConsumo}
+          canFechar={canFechar}
+          encerrando={encerrando}
+          comandaId={id}
+          onEncerrar={handleEncerrarSemConsumo}
+          onFechar={() => router.push({ pathname: '/comanda/fechar-conta', params: { id } })}
+        />
         <Text style={{ color: '#ef4444', marginTop: 40, marginBottom: 16, textAlign: 'center' }}>{error}</Text>
         <Pressable onPress={fetchData} style={styles.retryBtn}>
           <Text style={{ color: 'white', fontWeight: '600' }}>Tentar novamente</Text>
@@ -550,8 +741,17 @@ export default function ComandaDetailScreen() {
   if (isManager) {
     return (
       <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
-        <NavBar title={headerTitle} />
+        <NavBar
+          title={headerTitle}
+          semConsumo={semConsumo}
+          canFechar={canFechar}
+          encerrando={encerrando}
+          comandaId={id}
+          onEncerrar={handleEncerrarSemConsumo}
+          onFechar={() => router.push({ pathname: '/comanda/fechar-conta', params: { id } })}
+        />
         {modalCancelarItem}
+        {modalDesconto}
 
         <ScrollView contentContainerStyle={mgStyles.scrollContent}>
           {/* Header card */}
@@ -594,10 +794,13 @@ export default function ComandaDetailScreen() {
           {/* Pedidos section */}
           <Text style={mgStyles.sectionTitle}>Pedidos</Text>
 
+          {renderEncerrarSemConsumo()}
+
           {pedidosEnviados.length === 0 ? (
             <View style={mgStyles.emptyBox}>
               <Ionicons name="receipt-outline" size={40} color="#d1d5db" />
               <Text style={mgStyles.emptyText}>Nenhum pedido nesta comanda</Text>
+              {renderExcluirVazia()}
             </View>
           ) : (
             pedidosEnviados.map((p) => {
@@ -626,39 +829,20 @@ export default function ComandaDetailScreen() {
           )}
 
           {/* Spacer for fixed footer */}
-          <View style={{ height: 120 }} />
+          <View style={{ height: footerHeight }} />
         </ScrollView>
 
         {/* Fixed footer */}
-        <View style={mgStyles.footer}>
-          <View style={mgStyles.footerTotalRow}>
-            <Text style={mgStyles.footerTotalLabel}>Total da comanda</Text>
-            <Text style={mgStyles.footerTotalValue}>{totalDisplay}</Text>
-          </View>
-
-          {semConsumo ? (
-            <View style={{ paddingHorizontal: 0, marginBottom: 8 }}>
-              <Pressable
-                onPress={() =>
-                  Alert.alert(
-                    'Encerrar sem consumo',
-                    'Todos os itens desta comanda foram cancelados. Ela será encerrada sem cobrança e ficará no histórico com total zero. Os cancelamentos continuam registrados.',
-                    [
-                      { text: 'Cancelar', style: 'cancel' },
-                      { text: 'Encerrar', style: 'destructive', onPress: handleEncerrarSemConsumo },
-                    ]
-                  )
-                }
-                disabled={encerrando}
-                style={{ backgroundColor: '#6b7280', borderRadius: 12, padding: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, opacity: encerrando ? 0.6 : 1 }}
-              >
-                <Ionicons name="close-circle-outline" size={20} color="white" />
-                <Text style={{ color: 'white', fontSize: 16, fontWeight: '600' }}>
-                  {encerrando ? 'Encerrando...' : 'Encerrar sem consumo'}
-                </Text>
-              </Pressable>
+        <View onLayout={(event) => setFooterHeight(event.nativeEvent.layout.height)} style={[mgStyles.footer, temDesconto && { backgroundColor: COLORS.surface }]}>
+          {temDesconto ? resumoDesconto : (
+            <View style={mgStyles.footerTotalRow}>
+              <Text style={mgStyles.footerTotalLabel}>Total da comanda</Text>
+              <Text style={mgStyles.footerTotalValue}>{totalDisplay}</Text>
             </View>
-          ) : canFechar ? (
+          )}
+          {botaoDesconto}
+
+          {semConsumo ? null : canFechar ? (
             <>
               <View style={{ paddingHorizontal: 0, marginBottom: 8 }}>
                 <Pressable onPress={() => { console.log('[ComandaDetail] Fechar conta footer button pressed', { comandaId: id }); router.push({ pathname: "/comanda/fechar-conta", params: { id } }); }} style={{ backgroundColor: "#E8521A", borderRadius: 12, padding: 16, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8 }}>
@@ -674,12 +858,22 @@ export default function ComandaDetailScreen() {
     );
   }
 
-  // ─── Waiter view (unchanged) ───────────────────────────────────────────────
+  // ─── Waiter view ───────────────────────────────────────────────────────────
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
-      <NavBar title={headerTitle} />
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <NavBar
+        title={headerTitle}
+        semConsumo={semConsumo}
+        canFechar={canFechar}
+        encerrando={encerrando}
+        comandaId={id}
+        onEncerrar={handleEncerrarSemConsumo}
+        onFechar={() => router.push({ pathname: '/comanda/fechar-conta', params: { id } })}
+      />
       {modalCancelarItem}
+      {modalDesconto}
 
       {/* Tab bar */}
       <View style={styles.tabBar}>
@@ -704,12 +898,8 @@ export default function ComandaDetailScreen() {
       {/* Content area */}
       <View style={{ flex: 1 }}>
         {activeTab === 'cardapio' ? (
-          <FlatList
-            data={filteredPratos}
-            keyExtractor={(item) => item.id}
-            contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 12, paddingTop: 0 }}
-            ListHeaderComponent={
-              <View style={{ paddingTop: 12 }}>
+          <View style={{ flex: 1 }}>
+              <View style={{ paddingTop: 12, paddingHorizontal: 12, flexShrink: 0 }}>
                 {/* Search field */}
                 <View
                   style={{
@@ -750,6 +940,8 @@ export default function ComandaDetailScreen() {
                 <ScrollView
                   horizontal
                   showsHorizontalScrollIndicator={false}
+                  keyboardShouldPersistTaps="handled"
+                  style={{ flexGrow: 0 }}
                   contentContainerStyle={{ paddingBottom: 10, gap: 8 }}
                 >
                   {pratoCategories.map((cat) => {
@@ -784,8 +976,15 @@ export default function ComandaDetailScreen() {
                   })}
                 </ScrollView>
               </View>
-            }
-            renderItem={({ item }) => {
+          <FlatList
+            ref={pratosListRef}
+            style={{ flex: 1 }}
+            onScrollToIndexFailed={() => {}}
+            data={filteredPratos}
+            keyExtractor={(item) => item.id}
+            contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 12, paddingTop: 0 }}
+            keyboardShouldPersistTaps="handled"
+            renderItem={({ item, index }) => {
               const staged = stagedItems.find((s) => s.pratoId === item.id);
               return (
                 <PratoCardWaiter
@@ -793,6 +992,12 @@ export default function ComandaDetailScreen() {
                   stagedObservacao={staged?.observacao}
                   onAdd={(observacao) => addToStaging(item, observacao)}
                   onUpdateObservacao={(text) => updateObservacao(item.id, text)}
+                  onFocusObservacao={() => {
+                    // Espera o teclado abrir e leva o prato para a parte visível da lista
+                    setTimeout(() => {
+                      pratosListRef.current?.scrollToIndex({ index, viewPosition: 0.1, animated: true });
+                    }, 250);
+                  }}
                   COLORS={COLORS}
                 />
               );
@@ -808,6 +1013,7 @@ export default function ComandaDetailScreen() {
               </View>
             }
           />
+          </View>
         ) : (
           <ScrollView contentContainerStyle={{ padding: 12 }}>
             <Text style={styles.sectionTitle}>Itens a enviar</Text>
@@ -854,8 +1060,12 @@ export default function ComandaDetailScreen() {
             )}
 
             <Text style={[styles.sectionTitle, { marginTop: 24 }]}>Pedidos Enviados</Text>
+            {renderEncerrarSemConsumo()}
             {pedidosEnviados.length === 0 ? (
-              <Text style={styles.emptyText}>Nenhum pedido enviado ainda</Text>
+              <>
+                <Text style={styles.emptyText}>Nenhum pedido enviado ainda</Text>
+                {renderExcluirVazia()}
+              </>
             ) : (
               pedidosEnviados.map((p) => {
                 const pratoNome = pratos.find((pr) => pr.id === p.prato_id)?.nome ?? p.prato_id;
@@ -881,10 +1091,13 @@ export default function ComandaDetailScreen() {
               })
             )}
 
-            <View style={styles.totalRow}>
-              <Text style={styles.totalLabel}>Total:</Text>
-              <Text style={styles.totalValue}>{totalDisplay}</Text>
-            </View>
+            {temDesconto ? resumoDesconto : (
+              <View style={styles.totalRow}>
+                <Text style={styles.totalLabel}>Total:</Text>
+                <Text style={styles.totalValue}>{totalDisplay}</Text>
+              </View>
+            )}
+            {botaoDesconto}
 
           </ScrollView>
         )}
@@ -908,6 +1121,7 @@ export default function ComandaDetailScreen() {
         </Text>
       </Pressable>
 
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }

@@ -337,6 +337,48 @@
       "when": 1791761640763,
       "tag": "20261011233400_short_human_robot",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1792188144939,
+      "tag": "20261016220224_slow_mattie_franklin",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1792278145088,
+      "tag": "20261017230225_green_champions",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1792362366255,
+      "tag": "20261018222606_fantastic_logan",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1792435047303,
+      "tag": "20261019183727_goofy_madame_web",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1792435833427,
+      "tag": "20261019185033_fearless_satana",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1793452980705,
+      "tag": "20261031132300_daffy_jane_foster",
+      "breakpoints": true
     }
   ]
 }

@@ -59,6 +59,7 @@ export default function NovoPedidoScreen() {
   const [pratos, setPratos] = useState<ApiPrato[]>([]);
   const [categorias, setCategorias] = useState<ApiCategoria[]>([]);
   const [selectedCategoria, setSelectedCategoria] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
   const [cart, setCart] = useState<CartItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -137,7 +138,11 @@ export default function NovoPedidoScreen() {
     }
   };
 
-  const filteredPratos = selectedCategoria ? pratos.filter((p) => p.categoria_id === selectedCategoria) : pratos;
+  const filteredPratos = pratos.filter((p) => {
+    const matchesCategory = !selectedCategoria || (p.categoria_id ?? p.categoria?.id) === selectedCategoria;
+    const matchesSearch = !searchQuery.trim() || p.nome.toLowerCase().includes(searchQuery.trim().toLowerCase());
+    return matchesCategory && matchesSearch;
+  });
   const cartTotal = cart.reduce((sum, c) => sum + c.prato.preco * c.quantidade, 0);
   const cartCount = cart.reduce((sum, c) => sum + c.quantidade, 0);
   const cartTotalStr = formatCurrency(cartTotal);
@@ -223,20 +228,41 @@ export default function NovoPedidoScreen() {
       {/* Nav bar */}
       <View style={{ flexDirection: "row", alignItems: "center", height: 56, paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: COLORS.border, backgroundColor: COLORS.surface }}>
         <Pressable
-          onPress={() => { console.log("[NovoPedido] Botão voltar pressionado"); router.back(); }}
-          style={{ flexDirection: "row", alignItems: "center", paddingRight: 12 }}
+          onPress={() => {
+            console.log("[NovoPedido] Botão voltar pressionado");
+            if (router.canGoBack()) {
+              router.back();
+            } else {
+              router.replace("/(tabs)/(mesas)");
+            }
+          }}
+          hitSlop={10}
+          style={{ flexDirection: "row", alignItems: "center", paddingRight: 12, paddingVertical: 8 }}
         >
           <Ionicons name="arrow-back" size={22} color="#007AFF" />
           <Text style={{ color: "#007AFF", fontSize: 16, marginLeft: 4 }}>Voltar</Text>
         </Pressable>
-        <Text style={{ position: "absolute", left: 0, right: 0, textAlign: "center", fontSize: 17, fontWeight: "700", color: "#111" }}>
+        <Text style={{ flex: 1, minWidth: 0, textAlign: "center", fontSize: 17, fontWeight: "700", color: "#111" }} numberOfLines={1}>
           Novo Pedido
         </Text>
+        <View style={{ width: 80 }} />
       </View>
 
-      {/* Category filter */}
-      <View style={{ backgroundColor: COLORS.surface, borderBottomWidth: 1, borderBottomColor: COLORS.border }}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, padding: 12 }}>
+      {/* Fixed search and category filter */}
+      <View style={{ flexShrink: 0, backgroundColor: COLORS.surface, borderBottomWidth: 1, borderBottomColor: COLORS.border }}>
+        <View style={{ flexDirection: "row", alignItems: "center", marginHorizontal: 12, marginTop: 10, paddingHorizontal: 12, paddingVertical: 9, gap: 8, backgroundColor: COLORS.surfaceSecondary, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border }}>
+          <Ionicons name="search-outline" size={16} color={COLORS.textTertiary} />
+          <TextInput
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            placeholder="Buscar prato..."
+            placeholderTextColor={COLORS.textTertiary}
+            style={{ flex: 1, padding: 0, fontFamily: "Outfit_400Regular", fontSize: 14, color: COLORS.text }}
+            returnKeyType="search"
+            clearButtonMode="while-editing"
+          />
+        </View>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" style={{ flexGrow: 0 }} contentContainerStyle={{ gap: 8, paddingHorizontal: 12, paddingVertical: 10 }}>
           <AnimatedPressable
             onPress={() => { console.log("[NovoPedido] Filtro: Todos"); setSelectedCategoria(null); }}
             style={{ paddingHorizontal: 14, paddingVertical: 7, borderRadius: 20, backgroundColor: !selectedCategoria ? COLORS.primary : COLORS.surfaceSecondary }}
@@ -246,7 +272,7 @@ export default function NovoPedidoScreen() {
           {categorias.map((cat) => (
             <AnimatedPressable
               key={cat.id}
-              onPress={() => { console.log("[NovoPedido] Filtro categoria:", cat.nome); setSelectedCategoria(cat.id === selectedCategoria ? null : cat.id); }}
+              onPress={() => { console.log("[NovoPedido] Filtro categoria:", cat.nome); setSelectedCategoria(cat.id); }}
               style={{ paddingHorizontal: 14, paddingVertical: 7, borderRadius: 20, backgroundColor: selectedCategoria === cat.id ? COLORS.primary : COLORS.surfaceSecondary }}
             >
               <Text style={{ fontFamily: "Outfit_600SemiBold", fontSize: 13, color: selectedCategoria === cat.id ? "#fff" : COLORS.textSecondary }}>{cat.nome}</Text>
@@ -261,6 +287,7 @@ export default function NovoPedidoScreen() {
         </View>
       ) : (
         <FlatList
+          style={{ flex: 1 }}
           ref={listRef}
           data={filteredPratos}
           extraData={cart}

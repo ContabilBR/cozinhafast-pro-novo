@@ -10,6 +10,7 @@ import {
   pgEnum,
   unique,
   index,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { user } from "./auth-schema.js";
 
@@ -35,6 +36,7 @@ export const regimeTributarioEnum = pgEnum("regime_tributario", ["simples_nacion
 export const planoEnum = pgEnum("plano", ["trial", "basico", "profissional", "enterprise"]);
 export const assinaturaStatusEnum = pgEnum("assinatura_status", ["trial", "ativa", "inadimplente", "cancelada", "expirada"]);
 export const modoComandaEnum = pgEnum("modo_comanda", ["mesa", "individual"]);
+export const reservaStatusEnum = pgEnum("reserva_status", ["confirmada", "sentada", "cancelada", "nao_compareceu"]);
 
 // Restaurante (Restaurant information) - Define early since many tables reference it
 export const restaurante = pgTable("restaurante", {
@@ -81,10 +83,12 @@ export const mesas = pgTable("mesas", {
   numero: integer("numero").notNull(),
   status: mesaStatusEnum("status").default("disponivel").notNull(),
   capacidade: integer("capacidade").default(4).notNull(),
+  qrToken: text("qr_token"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   restauranteId: text("restaurante_id").notNull().references(() => restaurante.id, { onDelete: "restrict" }),
 }, (table) => ({
   unqNumeroRestaurante: unique().on(table.numero, table.restauranteId),
+  qrTokenUnique: uniqueIndex("mesas_qr_token_uq").on(table.qrToken),
 }));
 
 // Categorias
@@ -126,7 +130,9 @@ export const pratos = pgTable("pratos", {
   cstIcms: text("cst_icms"),
   aliquotaIcms: numeric("aliquota_icms", { precision: 5, scale: 2 }),
   restauranteId: text("restaurante_id").notNull().references(() => restaurante.id, { onDelete: "restrict" }),
-});
+}, (table) => ({
+  idxRestauranteId: index("idx_pratos_restaurante_id").on(table.restauranteId),
+}));
 
 // Comandas (Orders/Bills)
 export const comandas = pgTable("comandas", {
@@ -139,12 +145,23 @@ export const comandas = pgTable("comandas", {
   total: numeric("total", { precision: 10, scale: 2 }).default("0").notNull(),
   subtotal: numeric("subtotal", { precision: 10, scale: 2 }).default("0").notNull(),
   gorjeta: numeric("gorjeta", { precision: 10, scale: 2 }).default("0").notNull(),
+  descontoValor: numeric("desconto_valor", { precision: 10, scale: 2 }).default("0").notNull(),
+  descontoTipo: text("desconto_tipo"),
+  descontoMotivo: text("desconto_motivo"),
+  descontoMotivoDetalhe: text("desconto_motivo_detalhe"),
+  descontoPorId: text("desconto_por_id"),
+  descontoPorNome: text("desconto_por_nome"),
+  descontoAplicadoPorNome: text("desconto_aplicado_por_nome"),
+  descontoEm: timestamp("desconto_em", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   closedAt: timestamp("closed_at", { withTimezone: true }),
   restauranteId: text("restaurante_id").notNull().references(() => restaurante.id, { onDelete: "restrict" }),
   // Nome da comanda (modo individual). Nulo no modo "mesa".
   rotulo: text("rotulo"),
-});
+}, (table) => ({
+  idxRestauranteIdStatusClosedAt: index("idx_comandas_restaurante_id_status_closed_at").on(table.restauranteId, table.status, table.closedAt),
+  idxRestauranteIdCreatedAt: index("idx_comandas_restaurante_id_created_at").on(table.restauranteId, table.createdAt),
+}));
 
 // Pedidos (Order Items)
 export const pedidos = pgTable("pedidos", {
@@ -168,7 +185,10 @@ export const pedidos = pgTable("pedidos", {
   canceladoAposInicio: boolean("cancelado_apos_inicio"),
   iniciadoEm: timestamp("iniciado_em", { withTimezone: true }),
   prontoEm: timestamp("pronto_em", { withTimezone: true }),
-});
+}, (table) => ({
+  idxRestauranteIdComandaId: index("idx_pedidos_restaurante_id_comanda_id").on(table.restauranteId, table.comandaId),
+  idxComandaId: index("idx_pedidos_comanda_id").on(table.comandaId),
+}));
 
 // Pagamentos (Payments)
 export const pagamentos = pgTable("pagamentos", {
@@ -185,7 +205,9 @@ export const pagamentos = pgTable("pagamentos", {
   confirmadoEm: timestamp("confirmado_em", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   restauranteId: text("restaurante_id").notNull().references(() => restaurante.id, { onDelete: "restrict" }),
-});
+}, (table) => ({
+  idxComandaId: index("idx_pagamentos_comanda_id").on(table.comandaId),
+}));
 
 // Profiles for users
 export const profiles = pgTable("profiles", {
@@ -243,6 +265,14 @@ export const comandasHistorico = pgTable("comandas_historico", {
   total: numeric("total", { precision: 10, scale: 2 }).default("0").notNull(),
   subtotal: numeric("subtotal", { precision: 10, scale: 2 }).default("0").notNull(),
   gorjeta: numeric("gorjeta", { precision: 10, scale: 2 }).default("0").notNull(),
+  descontoValor: numeric("desconto_valor", { precision: 10, scale: 2 }).default("0").notNull(),
+  descontoTipo: text("desconto_tipo"),
+  descontoMotivo: text("desconto_motivo"),
+  descontoMotivoDetalhe: text("desconto_motivo_detalhe"),
+  descontoPorId: text("desconto_por_id"),
+  descontoPorNome: text("desconto_por_nome"),
+  descontoAplicadoPorNome: text("desconto_aplicado_por_nome"),
+  descontoEm: timestamp("desconto_em", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   closedAt: timestamp("closed_at", { withTimezone: true }),
   archivedAt: timestamp("archived_at", { withTimezone: true }).defaultNow().notNull(),
@@ -252,7 +282,9 @@ export const comandasHistorico = pgTable("comandas_historico", {
   restauranteId: text("restaurante_id").notNull().references(() => restaurante.id, { onDelete: "restrict" }),
   // Nome da comanda (modo individual). Nulo no modo "mesa".
   rotulo: text("rotulo"),
-});
+}, (table) => ({
+  idxRestauranteIdStatusClosedAt: index("idx_comandas_historico_restaurante_id_status_closed_at").on(table.restauranteId, table.status, table.closedAt),
+}));
 
 // Pedidos Historico (Archived Order Items)
 export const pedidosHistorico = pgTable("pedidos_historico", {
@@ -276,7 +308,9 @@ export const pedidosHistorico = pgTable("pedidos_historico", {
   canceladoAposInicio: boolean("cancelado_apos_inicio"),
   iniciadoEm: timestamp("iniciado_em", { withTimezone: true }),
   prontoEm: timestamp("pronto_em", { withTimezone: true }),
-});
+}, (table) => ({
+  idxRestauranteIdComandaId: index("idx_pedidos_historico_restaurante_id_comanda_id").on(table.restauranteId, table.comandaId),
+}));
 
 // Pagamentos Historico (Archived Payments)
 export const pagamentosHistorico = pgTable("pagamentos_historico", {
@@ -382,4 +416,27 @@ export const entregas = pgTable("entregas", {
   entregueEm: timestamp("entregue_em", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   restauranteId: text("restaurante_id").notNull().references(() => restaurante.id, { onDelete: "restrict" }),
-});
+}, (table) => ({
+  idxRestauranteIdComandaId: index("idx_entregas_restaurante_id_comanda_id").on(table.restauranteId, table.comandaId),
+}));
+
+// Reservas (Table Reservations)
+export const reservas = pgTable("reservas", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  restauranteId: text("restaurante_id").notNull().references(() => restaurante.id, { onDelete: "restrict" }),
+  mesaId: uuid("mesa_id").references(() => mesas.id, { onDelete: "restrict" }),
+  nomePessoa: text("nome_pessoa").notNull(),
+  telefone: text("telefone"),
+  dataHora: timestamp("data_hora", { withTimezone: true }).notNull(),
+  numeroPessoas: integer("numero_pessoas").notNull(),
+  observacao: text("observacao"),
+  status: reservaStatusEnum("status").default("confirmada").notNull(),
+  duracao: integer("duracao").default(120).notNull(),
+  comandaId: uuid("comanda_id").references(() => comandas.id, { onDelete: "restrict" }),
+  criadoPor: text("criado_por").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  idxRestauranteDataHora: index("idx_reservas_restaurante_data_hora").on(table.restauranteId, table.dataHora),
+  idxMesaDataHora: index("idx_reservas_mesa_data_hora").on(table.mesaId, table.dataHora),
+}));

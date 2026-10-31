@@ -21,7 +21,12 @@ import { apiGet, apiPut, apiDelete } from "@/utils/api";
 import { Plus, Minus } from "lucide-react-native";
 import { useAuth } from "@/contexts/AuthContext";
 import { CancelarItemModal } from "@/components/CancelarItemModal";
-import { cancelarItem, permissaoCancelarItem, type MotivoCancelamento } from "@/utils/cancelamento";
+import {
+  cancelarItem,
+  permissaoCancelarItem,
+  type AutorizacaoCancelamento,
+  type MotivoCancelamento,
+} from "@/utils/cancelamento";
 
 // ─── API response types ───────────────────────────────────────────────────────
 
@@ -306,7 +311,13 @@ function ItemRow({
 }: {
   item: GarcomPedidoItem;
   role: string | null | undefined;
-  onCancel: (id: string, motivo: MotivoCancelamento, detalhe: string | null) => Promise<void>;
+  onCancel: (
+    id: string,
+    motivo: MotivoCancelamento,
+    detalhe: string | null,
+    quantidade: number,
+    autorizacao?: AutorizacaoCancelamento
+  ) => Promise<void>;
   onUpdate: (id: string, fields: { quantidade?: number; observacao?: string }) => void;
 }) {
   const COLORS = useColors();
@@ -431,8 +442,10 @@ function ItemRow({
         visible={cancelarVisivel}
         pratoNome={item.prato_nome}
         aposInicio={permissao.aposInicio}
+        quantidadeItem={item.quantidade}
+        exigeAutorizacao={permissao.exigeAutorizacao}
         onClose={() => setCancelarVisivel(false)}
-        onConfirm={(motivo, detalhe) => onCancel(item.id, motivo, detalhe)}
+        onConfirm={(motivo, detalhe, quantidade, autorizacao) => onCancel(item.id, motivo, detalhe, quantidade, autorizacao)}
       />
       {/* Top row: name + status badge + cancelar */}
       <View style={{ flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between" }}>
@@ -598,7 +611,14 @@ function PedidoCard({
 }: {
   pedido: GarcomPedido;
   index: number;
-  onCancelItem: (comandaId: string, itemId: string, motivo: MotivoCancelamento, detalhe: string | null) => Promise<void>;
+  onCancelItem: (
+    comandaId: string,
+    itemId: string,
+    motivo: MotivoCancelamento,
+    detalhe: string | null,
+    quantidade: number,
+    autorizacao?: AutorizacaoCancelamento
+  ) => Promise<void>;
   onDeleteComanda: (comandaId: string) => void;
   onUpdateItem: (comandaId: string, itemId: string, fields: { quantidade?: number; observacao?: string }) => void;
   role: string | null | undefined;
@@ -763,7 +783,9 @@ function PedidoCard({
               <ItemRow
                 item={item}
                 role={role}
-                onCancel={(itemId, motivo, detalhe) => onCancelItem(pedido.comanda_id, itemId, motivo, detalhe)}
+                onCancel={(itemId, motivo, detalhe, quantidade, autorizacao) =>
+                  onCancelItem(pedido.comanda_id, itemId, motivo, detalhe, quantidade, autorizacao)
+                }
                 onUpdate={(itemId, fields) => onUpdateItem(pedido.comanda_id, itemId, fields)}
               />
               {i < pedido.itens.length - 1 && (
@@ -989,10 +1011,23 @@ export default function PedidosGarcomScreen() {
 
   // Cancela um item (não é venda). Erros sobem para o modal, que mostra a mensagem do servidor.
   const handleCancelItem = useCallback(
-    async (comandaId: string, itemId: string, motivo: MotivoCancelamento, detalhe: string | null) => {
-      console.log("[Pedidos] PUT /api/pedidos/" + itemId + "/cancelar (comanda:", comandaId + ")", motivo);
-      const res = await cancelarItem(itemId, motivo, detalhe);
-      showToast(res.cancelado_apos_inicio ? "Item cancelado (registrado como perda)" : "Item cancelado");
+    async (
+      comandaId: string,
+      itemId: string,
+      motivo: MotivoCancelamento,
+      detalhe: string | null,
+      quantidade: number,
+      autorizacao?: AutorizacaoCancelamento
+    ) => {
+      console.log("[Pedidos] PUT /api/pedidos/" + itemId + "/cancelar (comanda:", comandaId + ")", motivo, "qtd:", quantidade);
+      const res = await cancelarItem(itemId, motivo, detalhe, quantidade, autorizacao);
+      const qtdCancelada = res.quantidade_cancelada ?? quantidade;
+      const base = res.parcial
+        ? qtdCancelada === 1
+          ? "1 item cancelado"
+          : `${qtdCancelada} itens cancelados`
+        : "Item cancelado";
+      showToast(res.cancelado_apos_inicio ? `${base} (registrado como perda)` : base);
       // Re-fetch para atualizar itens e totais
       await fetchPedidos();
     },
@@ -1012,7 +1047,7 @@ export default function PedidosGarcomScreen() {
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error("[Pedidos] Erro ao deletar comanda:", msg);
-      Alert.alert("Erro", "Não foi possível remover o pedido. Tente novamente.");
+      Alert.alert("Erro", msg.trim() ? msg : "Não foi possível remover o pedido. Tente novamente.");
     }
   }, [fetchPedidos, showToast]);
 

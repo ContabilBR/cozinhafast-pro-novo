@@ -9,6 +9,9 @@ import { realtimeHub } from "../realtime/hub.js";
 import { fecharComanda } from "../services/fechamento-comanda.js";
 import { liberarMesaSeVazia } from "../services/liberar-mesa.js";
 import { abrirComandaNaMesa, TAMANHO_MAXIMO_NOME_COMANDA } from "../services/abrir-comanda.js";
+import { calcularTotalComandaMesa, calcularTotalComandaMesaComDesconto, subtotalDaComanda } from "../services/total-comanda.js";
+import { compare } from "bcryptjs";
+import { increment, getCount, resetKey } from "../utils/rate-limit.js";
 
 interface CreateComandaBody {
   mesaId?: string;
@@ -38,6 +41,96 @@ interface CreatePedidosBody {
 interface FecharComandaBody {
   gorjeta?: number;
   num_pessoas?: number;
+}
+
+// Helper for manager authorization (garcom requesting discount/cortesia via manager credentials)
+async function validateManagerAuthorization(
+  app: App,
+  db: any,
+  restauranteId: string,
+  sessionId: string,
+  sessionEmail: string,
+  autorizacao: any
+): Promise<{ valid: boolean; managerName?: string; managerId?: string; error?: string }> {
+  // Rate limit check - shared between PUT and DELETE
+  const rateLimitKey = `desconto-auth:${restauranteId}:${sessionId}`;
+  const windowMs = 15 * 60 * 1000; // 15 minutes
+  const maxAttempts = 5;
+
+  const currentCount = getCount(rateLimitKey);
+  if (currentCount >= maxAttempts) {
+    return { valid: false, error: "rate-limited" };
+  }
+
+  // Validate autorizacao structure - must be plain object with email and senha strings
+  if (!autorizacao || typeof autorizacao !== "object" || Array.isArray(autorizacao)) {
+    increment(rateLimitKey, windowMs);
+    return { valid: false, error: "invalid-format" };
+  }
+
+  const { email: managerEmail, senha: senhaRaw } = autorizacao;
+
+  if (typeof managerEmail !== "string" || typeof senhaRaw !== "string") {
+    increment(rateLimitKey, windowMs);
+    return { valid: false, error: "invalid-format" };
+  }
+
+  // Trim email and check length; check password length (bytes)
+  const emailTrimmed = managerEmail.trim();
+  const passwordBytes = Buffer.byteLength(senhaRaw, "utf8");
+
+  if (emailTrimmed.length === 0 || emailTrimmed.length > 254 || passwordBytes > 200) {
+    increment(rateLimitKey, windowMs);
+    return { valid: false, error: "invalid-format" };
+  }
+
+  // Normalize email and check against session email to prevent self-authorization
+  const emailNormalized = emailTrimmed.toLowerCase();
+  if (emailNormalized === sessionEmail.toLowerCase()) {
+    increment(rateLimitKey, windowMs);
+    return { valid: false, error: "unauthorized" };
+  }
+
+  // Query usuario table with normalized email (using SQL lower/trim for case-insensitive comparison)
+  const managers = await db
+    .select({
+      id: schema.usuarios.id,
+      nome: schema.usuarios.nome,
+      senhaHash: schema.usuarios.senhaHash,
+      role: schema.usuarios.role,
+      ativo: schema.usuarios.ativo,
+    })
+    .from(schema.usuarios)
+    .where(
+      and(
+        eq(schema.usuarios.restauranteId, restauranteId),
+        sql`LOWER(TRIM(${schema.usuarios.email})) = ${emailNormalized}`
+      )
+    )
+    .limit(1);
+
+  // Always perform bcrypt compare, even if user not found (timing-safe)
+  // Use a realistic dummy hash if user not found
+  const manager = managers.length > 0 ? managers[0] : null;
+  const hashToCompare = manager?.senhaHash || "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcg7b3XeKeUxWdeS86E36DvDPyE";
+
+  const passwordValid = await compare(senhaRaw, hashToCompare);
+
+  // Verify manager eligibility (only if password matched, for early exit)
+  if (passwordValid) {
+    if (!manager || !manager.ativo || !["gerente", "administrador", "admin"].includes(manager.role?.toLowerCase() ?? "")) {
+      increment(rateLimitKey, windowMs);
+      return { valid: false, error: "unauthorized" };
+    }
+
+    // Reset rate limit on success
+    resetKey(rateLimitKey);
+    return { valid: true, managerName: manager.nome, managerId: manager.id };
+  }
+
+  // Password mismatch or user not eligible
+  increment(rateLimitKey, windowMs);
+  return { valid: false, error: "unauthorized" };
 }
 
 export function registerOrderRoutes(app: App) {
@@ -73,6 +166,9 @@ export function registerOrderRoutes(app: App) {
                     created_at: { type: "string", format: "date-time" },
                     closed_at: { type: "string", format: "date-time" },
                     item_count: { type: "number" },
+                    desconto_valor: { type: "number" },
+                    desconto_tipo: { type: ["string", "null"] },
+                    desconto_motivo: { type: ["string", "null"] },
                   },
                   additionalProperties: true,
                 },
@@ -108,6 +204,9 @@ export function registerOrderRoutes(app: App) {
             c.status,
             c.created_at,
             c.closed_at,
+            c.desconto_valor,
+            c.desconto_tipo,
+            c.desconto_motivo,
             COUNT(p.id) FILTER (WHERE p.status <> 'cancelado')::integer AS item_count,
             COALESCE(SUM(p.quantidade * p.preco_unitario) FILTER (WHERE p.status <> 'cancelado'), 0) as total
           FROM comandas c
@@ -131,7 +230,7 @@ export function registerOrderRoutes(app: App) {
         }
 
         sqlQuery = sql`${sqlQuery}
-          GROUP BY c.id, c.mesa_id, m.numero, c.garcom_id, c.rotulo, c.status, c.created_at, c.closed_at
+          GROUP BY c.id, c.mesa_id, m.numero, c.garcom_id, c.rotulo, c.status, c.created_at, c.closed_at, c.desconto_valor, c.desconto_tipo, c.desconto_motivo
           ORDER BY c.created_at DESC
         `;
 
@@ -151,6 +250,9 @@ export function registerOrderRoutes(app: App) {
             created_at: c.created_at ? new Date(c.created_at).toISOString() : null,
             closed_at: c.closed_at ? new Date(c.closed_at).toISOString() : null,
             item_count: Number(c.item_count),
+            desconto_valor: Number(c.desconto_valor || 0),
+            desconto_tipo: c.desconto_tipo ?? null,
+            desconto_motivo: c.desconto_motivo ?? null,
           })),
         });
       } catch (error) {
@@ -423,6 +525,9 @@ export function registerOrderRoutes(app: App) {
               status: { type: "string" },
               total: { type: "string" },
               created_at: { type: "string", format: "date-time" },
+              desconto_valor: { type: "number" },
+              desconto_tipo: { type: ["string", "null"] },
+              desconto_motivo: { type: ["string", "null"] },
               mesa: {
                 type: "object",
                 properties: {
@@ -480,6 +585,9 @@ export function registerOrderRoutes(app: App) {
             total: schema.comandas.total,
             createdAt: schema.comandas.createdAt,
             tipo: schema.comandas.tipo,
+            descontoValor: schema.comandas.descontoValor,
+            descontoTipo: schema.comandas.descontoTipo,
+            descontoMotivo: schema.comandas.descontoMotivo,
           })
           .from(schema.comandas)
           .leftJoin(schema.mesas, eq(schema.mesas.id, schema.comandas.mesaId))
@@ -523,6 +631,9 @@ export function registerOrderRoutes(app: App) {
           status: c.status,
           total: c.total,
           created_at: c.createdAt.toISOString(),
+          desconto_valor: Number(c.descontoValor || 0),
+          desconto_tipo: c.descontoTipo ?? null,
+          desconto_motivo: c.descontoMotivo ?? null,
           mesa: {
             numero: c.mesaNumero,
           },
@@ -709,19 +820,27 @@ export function registerOrderRoutes(app: App) {
         const subtotalValue = subtotalResult[0]?.subtotal || "0";
         const subtotal = parseFloat(String(subtotalValue));
 
-        const gorjetaResult = await app.db
-          .select({ gorjeta: schema.comandas.gorjeta })
+        const comandaResult = await app.db
+          .select({
+            gorjeta: schema.comandas.gorjeta,
+            descontoValor: schema.comandas.descontoValor,
+            descontoTipo: schema.comandas.descontoTipo,
+          })
           .from(schema.comandas)
           .where(eq(schema.comandas.id, comandaId));
 
-        const gorjetaValue = gorjetaResult[0]?.gorjeta || "0";
-        const gorjeta = parseFloat(String(gorjetaValue));
-        const total = (subtotal + gorjeta).toFixed(2);
+        const gorjeta = parseFloat(String(comandaResult[0]?.gorjeta || "0"));
+        const { total: totalValue, descontoEfetivo } = calcularTotalComandaMesaComDesconto(subtotal, gorjeta, comandaResult[0]?.descontoTipo, comandaResult[0]?.descontoValor);
+        const total = totalValue.toFixed(2);
 
         // Update comanda subtotal and total
         await app.db
           .update(schema.comandas)
-          .set({ subtotal: subtotal.toString(), total })
+          .set({
+            subtotal: subtotal.toString(),
+            total,
+            ...(descontoEfetivo !== undefined && { descontoValor: descontoEfetivo.toFixed(2) })
+          })
           .where(and(eq(schema.comandas.id, comandaId), eq(schema.comandas.restauranteId, restauranteId)));
 
         app.logger.info(
@@ -794,10 +913,522 @@ export function registerOrderRoutes(app: App) {
         }
 
         const subtotal = parseFloat(comanda[0].subtotal ?? "0");
-        const novoTotal = subtotal + gorjetaValue;
-        await app.db.update(schema.comandas).set({ total: novoTotal.toString(), gorjeta: gorjetaValue.toString() }).where(and(eq(schema.comandas.id, request.params.id), eq(schema.comandas.restauranteId, restauranteId)));
-        return await reply.code(200).send({ subtotal, gorjeta: gorjetaValue, total: novoTotal });
+        const { total: novoTotal, descontoEfetivo } = calcularTotalComandaMesaComDesconto(subtotal, gorjetaValue, comanda[0].descontoTipo, comanda[0].descontoValor);
+        await app.db.update(schema.comandas).set({
+          total: novoTotal.toString(),
+          gorjeta: gorjetaValue.toString(),
+          ...(descontoEfetivo !== undefined && { descontoValor: descontoEfetivo.toFixed(2) })
+        }).where(and(eq(schema.comandas.id, request.params.id), eq(schema.comandas.restauranteId, restauranteId)));
+        return await reply.code(200).send({ subtotal, gorjeta: gorjetaValue, desconto_valor: descontoEfetivo, total: novoTotal });
       } catch (err) {
+        return await reply.code(500).send({ error: "Erro interno" });
+      }
+    }
+  );
+
+  // PUT /api/comandas/:id/desconto - Apply or update discount/courtesy for a comanda
+  app.fastify.put<{ Params: { id: string }; Body: { tipo: string; valor?: number | string; percentual?: number; motivo: string; detalhe?: string; autorizacao?: any } }>(
+    "/api/comandas/:id/desconto",
+    {
+      attachValidation: true,
+      schema: {
+        description: "Apply or update discount/courtesy for a comanda",
+        tags: ["comandas"],
+        params: {
+          type: "object",
+          required: ["id"],
+          properties: { id: { type: "string", format: "uuid" } },
+        },
+        body: {
+          type: "object",
+          required: ["tipo", "motivo"],
+          properties: {
+            tipo: { type: "string", enum: ["desconto", "cortesia"] },
+            valor: {},
+            percentual: {},
+            motivo: { type: "string", enum: ["cliente", "erro_atendimento", "promocao", "funcionario", "outro"] },
+            detalhe: {},
+            autorizacao: {},
+          },
+        },
+        response: {
+          200: {
+            description: "Discount applied successfully",
+            type: "object",
+            properties: {
+              subtotal: { type: "number" },
+              gorjeta: { type: "number" },
+              desconto_valor: { type: "number" },
+              desconto_tipo: { type: "string" },
+              desconto_motivo: { type: "string" },
+              desconto_por_nome: { type: ["string", "null"] },
+              desconto_aplicado_por_nome: { type: ["string", "null"] },
+              total: { type: "number" },
+            },
+          },
+          400: { type: "object", properties: { error: { type: "string" } } },
+          403: { type: "object", properties: { error: { type: "string" } } },
+          404: { type: "object", properties: { error: { type: "string" } } },
+          409: { type: "object", properties: { error: { type: "string" } } },
+          429: { type: "object", properties: { error: { type: "string" } } },
+        },
+      },
+    },
+    async (
+      request: FastifyRequest<{ Params: { id: string }; Body: { tipo: string; valor?: number | string; percentual?: number; motivo: string; detalhe?: string; autorizacao?: any } }>,
+      reply: FastifyReply
+    ) => {
+      try {
+        const session = await customRequireAuth(app, request, reply);
+        if (!session) return;
+
+        // Role check
+        const userRole = session.role?.toLowerCase() ?? "";
+        let authorizerName: string | null = null;
+        let authorizerId: string | null = null;
+
+        if (userRole === "garcom") {
+          // Garcom must provide valid autorizacao
+          const { autorizacao } = request.body as any;
+          if (!autorizacao) {
+            return await reply.code(403).send({ error: "Autorização inválida" });
+          }
+
+          // Validate authorization before DB operations
+          const authResult = await validateManagerAuthorization(
+            app,
+            app.db as any,
+            requireTenant(session),
+            session.id,
+            session.email ?? "",
+            autorizacao
+          );
+
+          if (authResult.error === "rate-limited") {
+            return await reply.code(429).send({ error: "Muitas tentativas. Tente novamente em 15 minutos." });
+          }
+
+          if (!authResult.valid) {
+            return await reply.code(403).send({ error: "Autorização inválida" });
+          }
+
+          authorizerName = authResult.managerName ?? null;
+          authorizerId = authResult.managerId ?? null;
+        } else if (!["gerente", "administrador", "admin"].includes(userRole)) {
+          return await reply.code(403).send({ error: "Sem permissão para alterar descontos." });
+        }
+        // else: manager/admin/administrador - ignore autorizacao field completely
+
+        const restauranteId = requireTenant(session);
+        const comandaId = request.params.id;
+
+        // UUID validation using attachValidation - check for format validation errors
+        if (request.validationError && request.validationError.validation) {
+          for (const err of request.validationError.validation) {
+            if (err.dataPath === "/id" || err.dataPath === ".id" || err.keyword === "format") {
+              return await reply.code(404).send({ error: "Comanda não encontrada" });
+            }
+          }
+        }
+
+        // Body validation
+        if (!request.body || typeof request.body !== "object" || Array.isArray(request.body)) {
+          return await reply.code(400).send({ error: "Corpo da requisição inválido." });
+        }
+
+        const { tipo, valor, percentual, motivo, detalhe: detalheRaw } = request.body as any;
+
+        if (tipo !== "desconto" && tipo !== "cortesia") {
+          return await reply.code(400).send({ error: "Tipo deve ser 'desconto' ou 'cortesia'." });
+        }
+
+        const motivoEnum = ["cliente", "erro_atendimento", "promocao", "funcionario", "outro"];
+        if (!motivoEnum.includes(motivo)) {
+          return await reply.code(400).send({ error: "Motivo inválido." });
+        }
+
+        // Process detalhe
+        let detalhe = null;
+        if (detalheRaw !== undefined) {
+          if (typeof detalheRaw !== "string") {
+            return await reply.code(400).send({ error: "Detalhe deve ser uma string." });
+          }
+          const detalheTrimmed = detalheRaw.trim();
+          if (detalheTrimmed.length > 200) {
+            return await reply.code(400).send({ error: "Detalhe não pode ter mais de 200 caracteres." });
+          }
+          detalhe = detalheTrimmed.length > 0 ? detalheTrimmed : null;
+        }
+
+        // Motivo 'outro' requires non-empty detalhe
+        if (motivo === "outro" && !detalhe) {
+          return await reply.code(400).send({ error: "Detalhe é obrigatório quando motivo é 'outro'." });
+        }
+
+        app.logger.info({ comandaId, tipo, motivo }, "Applying discount to comanda");
+
+        // Start transaction with row-level lock
+        const result = await (app.db as any).transaction(async (tx: any) => {
+          // Lock comanda and fetch it
+          const comandas = await tx
+            .select({
+              id: schema.comandas.id,
+              tipo: schema.comandas.tipo,
+              status: schema.comandas.status,
+              gorjeta: schema.comandas.gorjeta,
+            })
+            .from(schema.comandas)
+            .where(and(eq(schema.comandas.id, comandaId), eq(schema.comandas.restauranteId, restauranteId)))
+            .for("update");
+
+          if (!comandas.length) {
+            return { error: "Comanda não encontrada", status: 404 };
+          }
+
+          const comanda = comandas[0];
+
+          // Only mesa type allowed
+          if (comanda.tipo !== "mesa") {
+            return { error: "Descontos não são permitidos para pedidos de delivery.", status: 400 };
+          }
+
+          // Status must be aberta
+          if (comanda.status !== "aberta") {
+            return { error: "Comanda não está aberta.", status: 409 };
+          }
+
+          // Check for confirmed payments
+          const confirmedPayments = await tx
+            .select({ id: schema.pagamentos.id })
+            .from(schema.pagamentos)
+            .where(
+              and(
+                eq(schema.pagamentos.comandaId, comandaId),
+                eq(schema.pagamentos.restauranteId, restauranteId),
+                eq(schema.pagamentos.status, "confirmado")
+              )
+            )
+            .limit(1);
+
+          if (confirmedPayments.length > 0) {
+            return { error: "Não é possível alterar o desconto quando há pagamentos confirmados.", status: 409 };
+          }
+
+          // Get fresh subtotal
+          const subtotal = await subtotalDaComanda(tx, comandaId);
+
+          if (!Number.isFinite(subtotal) || subtotal <= 0) {
+            return { error: "Subtotal inválido para aplicar desconto.", status: 400 };
+          }
+
+          let valorCalculado = 0;
+
+          if (tipo === "desconto") {
+            // Check that exactly one of valor/percentual is present
+            const temValor = "valor" in request.body;
+            const temPercentual = "percentual" in request.body;
+
+            if (!temValor && !temPercentual) {
+              return { error: "Um dos campos 'valor' ou 'percentual' é obrigatório para tipo 'desconto'.", status: 400 };
+            }
+            if (temValor && temPercentual) {
+              return { error: "Apenas um dos campos 'valor' ou 'percentual' deve ser fornecido.", status: 400 };
+            }
+
+            if (temValor) {
+              // Validate valor type: must be number or string
+              if (typeof valor !== "number" && typeof valor !== "string") {
+                return { error: "Valor deve ser um número ou texto.", status: 400 };
+              }
+              // Parse valor (number or numeric string)
+              let valorNum = 0;
+              if (typeof valor === "number") {
+                valorNum = valor;
+              } else if (typeof valor === "string") {
+                const trimmedValor = valor.trim();
+                // Replace comma with dot for decimal
+                const normalized = trimmedValor.replace(",", ".");
+                // Validate format: only digits, one dot, no other chars
+                if (!/^\d+(\.\d{1,2})?$/.test(normalized)) {
+                  return { error: "Valor deve ser um número válido.", status: 400 };
+                }
+                valorNum = parseFloat(normalized);
+              }
+
+              if (!Number.isFinite(valorNum) || valorNum <= 0) {
+                return { error: "Valor deve ser um número maior que zero.", status: 400 };
+              }
+              if (valorNum > subtotal) {
+                return { error: "Valor não pode ser maior que o subtotal.", status: 400 };
+              }
+
+              valorCalculado = Math.round(valorNum * 100) / 100;
+              if (valorCalculado === 0) {
+                return { error: "Valor de desconto após arredondamento resulta em zero.", status: 400 };
+              }
+            } else {
+              // percentual
+              if (typeof percentual !== "number") {
+                return { error: "Percentual deve ser um número.", status: 400 };
+              }
+              let percentualNum = percentual;
+              if (!Number.isFinite(percentualNum) || percentualNum <= 0 || percentualNum > 100) {
+                return { error: "Percentual deve ser um número entre 0 (excluído) e 100.", status: 400 };
+              }
+
+              valorCalculado = Math.round((subtotal * percentualNum) / 100 * 100) / 100;
+              if (valorCalculado === 0) {
+                return { error: "Percentual resulta em desconto zero após arredondamento.", status: 400 };
+              }
+            }
+          } else {
+            // cortesia: use full subtotal
+            valorCalculado = subtotal;
+          }
+
+          // Calculate total with helper
+          const gorjetaNum = Number(comanda.gorjeta) || 0;
+          const { total: novoTotal, descontoEfetivo } = calcularTotalComandaMesaComDesconto(subtotal, gorjetaNum, tipo, valorCalculado);
+
+          // Update comanda
+          // For garcom: descontoPorId is manager id, descontoPorNome is manager name, descontoAplicadoPorNome is garcom name
+          // For manager: descontoPorId is session id, descontoPorNome is session name, descontoAplicadoPorNome is session name
+          const descontoPorIdValue = userRole === "garcom" ? authorizerId : session.id;
+          const descontoPorNomeValue = userRole === "garcom" ? authorizerName : session.name;
+          const descontoAplicadoPorNomeValue = session.name;
+
+          await tx
+            .update(schema.comandas)
+            .set({
+              subtotal: subtotal.toFixed(2),
+              descontoValor: descontoEfetivo.toFixed(2),
+              descontoTipo: tipo,
+              descontoMotivo: motivo,
+              descontoMotivoDetalhe: detalhe,
+              descontoPorId: descontoPorIdValue,
+              descontoPorNome: descontoPorNomeValue,
+              descontoAplicadoPorNome: descontoAplicadoPorNomeValue,
+              descontoEm: new Date(),
+              total: novoTotal.toFixed(2),
+            })
+            .where(and(eq(schema.comandas.id, comandaId), eq(schema.comandas.restauranteId, restauranteId)));
+
+          return {
+            subtotal,
+            gorjeta: gorjetaNum,
+            desconto_valor: descontoEfetivo,
+            desconto_tipo: tipo,
+            desconto_motivo: motivo,
+            desconto_por_nome: descontoPorNomeValue,
+            desconto_aplicado_por_nome: descontoAplicadoPorNomeValue,
+            total: novoTotal,
+          };
+        });
+
+        if (result.error) {
+          return await reply.code(result.status).send({ error: result.error });
+        }
+
+        app.logger.info({ comandaId, tipo, motivo, descontoValor: result.desconto_valor }, "Discount applied successfully");
+        return await reply.code(200).send(result);
+      } catch (error) {
+        app.logger.error({ err: error }, "Failed to apply discount");
+        return await reply.code(500).send({ error: "Erro interno" });
+      }
+    }
+  );
+
+  // DELETE /api/comandas/:id/desconto - Remove discount from a comanda
+  app.fastify.delete<{ Params: { id: string }; Body?: { autorizacao?: any } }>(
+    "/api/comandas/:id/desconto",
+    {
+      attachValidation: true,
+      schema: {
+        description: "Remove discount from a comanda",
+        tags: ["comandas"],
+        params: {
+          type: "object",
+          required: ["id"],
+          properties: { id: { type: "string", format: "uuid" } },
+        },
+        body: {
+          type: "object",
+          properties: {
+            autorizacao: {},
+          },
+        },
+        response: {
+          200: {
+            description: "Discount removed successfully",
+            type: "object",
+            properties: {
+              subtotal: { type: "number" },
+              gorjeta: { type: "number" },
+              desconto_valor: { type: "number" },
+              desconto_tipo: { type: ["string", "null"] },
+              desconto_motivo: { type: ["string", "null"] },
+              desconto_por_nome: { type: ["string", "null"] },
+              desconto_aplicado_por_nome: { type: ["string", "null"] },
+              total: { type: "number" },
+            },
+          },
+          400: { type: "object", properties: { error: { type: "string" } } },
+          403: { type: "object", properties: { error: { type: "string" } } },
+          404: { type: "object", properties: { error: { type: "string" } } },
+          409: { type: "object", properties: { error: { type: "string" } } },
+          429: { type: "object", properties: { error: { type: "string" } } },
+        },
+      },
+    },
+    async (request: FastifyRequest<{ Params: { id: string }; Body?: { autorizacao?: any } }>, reply: FastifyReply) => {
+      try {
+        const session = await customRequireAuth(app, request, reply);
+        if (!session) return;
+
+        // Role check
+        const userRole = session.role?.toLowerCase() ?? "";
+        let authorizerName: string | null = null;
+        let authorizerId: string | null = null;
+
+        if (userRole === "garcom") {
+          // Garcom must provide valid autorizacao
+          const bodyContent = request.body as any;
+          const autorizacao = bodyContent?.autorizacao;
+
+          if (!autorizacao) {
+            return await reply.code(403).send({ error: "Autorização inválida" });
+          }
+
+          // Validate authorization before DB operations
+          const authResult = await validateManagerAuthorization(
+            app,
+            app.db as any,
+            requireTenant(session),
+            session.id,
+            session.email ?? "",
+            autorizacao
+          );
+
+          if (authResult.error === "rate-limited") {
+            return await reply.code(429).send({ error: "Muitas tentativas. Tente novamente em 15 minutos." });
+          }
+
+          if (!authResult.valid) {
+            return await reply.code(403).send({ error: "Autorização inválida" });
+          }
+
+          authorizerName = authResult.managerName ?? null;
+          authorizerId = authResult.managerId ?? null;
+        } else if (!["gerente", "administrador", "admin"].includes(userRole)) {
+          return await reply.code(403).send({ error: "Sem permissão para remover descontos." });
+        }
+        // else: manager/admin/administrador - ignore autorizacao field completely
+
+        const restauranteId = requireTenant(session);
+        const comandaId = request.params.id;
+
+        // UUID validation using attachValidation - check for format validation errors
+        if (request.validationError && request.validationError.validation) {
+          for (const err of request.validationError.validation) {
+            if (err.dataPath === "/id" || err.dataPath === ".id" || err.keyword === "format") {
+              return await reply.code(404).send({ error: "Comanda não encontrada" });
+            }
+          }
+        }
+
+        app.logger.info({ comandaId }, "Removing discount from comanda");
+
+        // Start transaction with row-level lock
+        const result = await (app.db as any).transaction(async (tx: any) => {
+          // Lock comanda and fetch it
+          const comandas = await tx
+            .select({
+              id: schema.comandas.id,
+              tipo: schema.comandas.tipo,
+              status: schema.comandas.status,
+              gorjeta: schema.comandas.gorjeta,
+            })
+            .from(schema.comandas)
+            .where(and(eq(schema.comandas.id, comandaId), eq(schema.comandas.restauranteId, restauranteId)))
+            .for("update");
+
+          if (!comandas.length) {
+            return { error: "Comanda não encontrada", status: 404 };
+          }
+
+          const comanda = comandas[0];
+
+          // Only mesa type allowed
+          if (comanda.tipo !== "mesa") {
+            return { error: "Descontos não são permitidos para pedidos de delivery.", status: 400 };
+          }
+
+          // Status must be aberta
+          if (comanda.status !== "aberta") {
+            return { error: "Comanda não está aberta.", status: 409 };
+          }
+
+          // Check for confirmed payments
+          const confirmedPayments = await tx
+            .select({ id: schema.pagamentos.id })
+            .from(schema.pagamentos)
+            .where(
+              and(
+                eq(schema.pagamentos.comandaId, comandaId),
+                eq(schema.pagamentos.restauranteId, restauranteId),
+                eq(schema.pagamentos.status, "confirmado")
+              )
+            )
+            .limit(1);
+
+          if (confirmedPayments.length > 0) {
+            return { error: "Não é possível remover o desconto quando há pagamentos confirmados.", status: 409 };
+          }
+
+          // Get fresh subtotal
+          const subtotal = await subtotalDaComanda(tx, comandaId);
+
+          // Calculate total without discount
+          const gorjetaNum = Number(comanda.gorjeta) || 0;
+          const { total: novoTotal } = calcularTotalComandaMesaComDesconto(subtotal, gorjetaNum, null, 0);
+
+          // Clear discount fields
+          await tx
+            .update(schema.comandas)
+            .set({
+              subtotal: subtotal.toFixed(2),
+              descontoValor: "0.00",
+              descontoTipo: null,
+              descontoMotivo: null,
+              descontoMotivoDetalhe: null,
+              descontoPorId: null,
+              descontoPorNome: null,
+              descontoAplicadoPorNome: null,
+              descontoEm: null,
+              total: novoTotal.toFixed(2),
+            })
+            .where(and(eq(schema.comandas.id, comandaId), eq(schema.comandas.restauranteId, restauranteId)));
+
+          return {
+            subtotal,
+            gorjeta: gorjetaNum,
+            desconto_valor: 0,
+            desconto_tipo: null,
+            desconto_motivo: null,
+            desconto_por_nome: null,
+            desconto_aplicado_por_nome: null,
+            total: novoTotal,
+          };
+        });
+
+        if (result.error) {
+          return await reply.code(result.status).send({ error: result.error });
+        }
+
+        app.logger.info({ comandaId }, "Discount removed successfully");
+        return await reply.code(200).send(result);
+      } catch (error) {
+        app.logger.error({ err: error }, "Failed to remove discount");
         return await reply.code(500).send({ error: "Erro interno" });
       }
     }
@@ -831,6 +1462,8 @@ export function registerOrderRoutes(app: App) {
               rotulo: { type: "string", nullable: true },
               subtotal: { type: "number" },
               gorjeta: { type: "number" },
+              desconto_valor: { type: "number" },
+              desconto_tipo: { type: "string", nullable: true },
               total_final: { type: "number" },
               num_pessoas: { type: "number", nullable: true },
               valor_por_pessoa: { type: "number", nullable: true },
@@ -937,6 +1570,8 @@ export function registerOrderRoutes(app: App) {
           rotulo: resultado.rotulo ?? null,
           subtotal: resultado.subtotal,
           gorjeta: resultado.gorjeta,
+          desconto_valor: resultado.desconto_valor,
+          desconto_tipo: resultado.desconto_tipo,
           total_final: resultado.totalFinal,
           num_pessoas: numPessoas > 0 ? numPessoas : null,
           valor_por_pessoa: valorPorPessoa,
@@ -1072,7 +1707,9 @@ export function registerOrderRoutes(app: App) {
         response: {
           204: { description: "Comanda deleted successfully" },
           401: { type: "object", properties: { error: { type: "string" } } },
+          403: { type: "object", properties: { error: { type: "string" } } },
           404: { type: "object", properties: { error: { type: "string" } } },
+          409: { type: "object", properties: { error: { type: "string" } } },
         },
       },
     },
@@ -1120,6 +1757,15 @@ export function registerOrderRoutes(app: App) {
         const activeItemsCount = Number(activeItemsResult[0]?.count ?? 0);
         if (activeItemsCount > 0) {
           return await reply.code(409).send({ error: "Não é possível excluir uma comanda com itens. Cancele os itens primeiro." });
+        }
+
+        // Cancelled items check: comanda with cancelled pedidos cannot be deleted (loss record preservation)
+        const cancelledItemsResult = await (app.db as any).execute(
+          sql`SELECT COUNT(*) as count FROM pedidos WHERE comanda_id = ${request.params.id} AND restaurante_id = ${restauranteId} AND status = 'cancelado'`
+        ) as any[];
+        const cancelledItemsCount = Number(cancelledItemsResult[0]?.count ?? 0);
+        if (cancelledItemsCount > 0) {
+          return await reply.code(409).send({ error: "Esta comanda tem itens cancelados que ficam registrados como perda e não podem ser apagados. Use \"Encerrar sem consumo\" para encerrar a comanda." });
         }
 
         // Delete pedidos and comanda and, na mesma transação, libera a mesa só se não restar
@@ -1297,6 +1943,9 @@ export function registerOrderRoutes(app: App) {
                   status: { type: "string" },
                   total: { type: "string" },
                   created_at: { type: "string", format: "date-time" },
+                  desconto_valor: { type: "number" },
+                  desconto_tipo: { type: ["string", "null"] },
+                  desconto_motivo: { type: ["string", "null"] },
                   pedidos: {
                     type: "array",
                     items: {
@@ -1355,6 +2004,9 @@ export function registerOrderRoutes(app: App) {
             c.rotulo,
             c.status,
             c.created_at,
+            c.desconto_valor,
+            c.desconto_tipo,
+            c.desconto_motivo,
             COALESCE(u.name, us.nome, 'Garçom') AS garcom_nome,
             COALESCE(u.email, us.email) AS garcom_email,
             COALESCE(SUM(p.quantidade * p.preco_unitario) FILTER (WHERE p.status <> 'cancelado'), 0)::float as total
@@ -1363,7 +2015,7 @@ export function registerOrderRoutes(app: App) {
           LEFT JOIN usuarios us ON us.id::text = c.garcom_id
           LEFT JOIN pedidos p ON p.comanda_id = c.id
           WHERE c.mesa_id = ${mesaId} AND c.status = 'aberta'
-          GROUP BY c.id, c.mesa_id, c.mesa_numero, c.garcom_id, c.rotulo, c.status, c.created_at, u.name, u.email, us.nome, us.email
+          GROUP BY c.id, c.mesa_id, c.mesa_numero, c.garcom_id, c.rotulo, c.status, c.created_at, c.desconto_valor, c.desconto_tipo, c.desconto_motivo, u.name, u.email, us.nome, us.email
           ORDER BY c.created_at DESC
           LIMIT 1
         `;
@@ -1428,6 +2080,9 @@ export function registerOrderRoutes(app: App) {
             status: comandaRow.status,
             total: comandaRow.total,
             created_at: comandaRow.created_at ? new Date(comandaRow.created_at).toISOString() : null,
+            desconto_valor: Number(comandaRow.desconto_valor || 0),
+            desconto_tipo: comandaRow.desconto_tipo ?? null,
+            desconto_motivo: comandaRow.desconto_motivo ?? null,
             pedidos: pedidosResult.map((p: any) => ({
               id: p.id,
               prato_id: p.prato_id,
@@ -1492,6 +2147,9 @@ export function registerOrderRoutes(app: App) {
                     total: { type: "number" },
                     item_count: { type: "number" },
                     created_at: { type: ["string", "null"] },
+                    desconto_valor: { type: "number" },
+                    desconto_tipo: { type: ["string", "null"] },
+                    desconto_motivo: { type: ["string", "null"] },
                   },
                 },
               },
@@ -1534,6 +2192,9 @@ export function registerOrderRoutes(app: App) {
             c.garcom_id,
             c.status,
             c.created_at,
+            c.desconto_valor,
+            c.desconto_tipo,
+            c.desconto_motivo,
             COALESCE(u.name, us.nome, 'Garçom') AS garcom_nome,
             COUNT(p.id) FILTER (WHERE p.status <> 'cancelado')::integer AS item_count,
             COALESCE(SUM(p.quantidade * p.preco_unitario) FILTER (WHERE p.status <> 'cancelado'), 0)::float AS total
@@ -1542,7 +2203,7 @@ export function registerOrderRoutes(app: App) {
           LEFT JOIN usuarios us ON us.id::text = c.garcom_id
           LEFT JOIN pedidos p ON p.comanda_id = c.id
           WHERE c.mesa_id = ${mesaId} AND c.restaurante_id = ${restauranteId} AND c.status = 'aberta'
-          GROUP BY c.id, c.mesa_id, c.mesa_numero, c.rotulo, c.garcom_id, c.status, c.created_at, u.name, us.nome
+          GROUP BY c.id, c.mesa_id, c.mesa_numero, c.rotulo, c.garcom_id, c.status, c.created_at, c.desconto_valor, c.desconto_tipo, c.desconto_motivo, u.name, us.nome
           ORDER BY c.created_at ASC
         `)) as any;
         const linhas: any[] = Array.isArray(resultado) ? resultado : resultado?.rows ?? [];
@@ -1561,6 +2222,9 @@ export function registerOrderRoutes(app: App) {
             total: Number(c.total),
             item_count: Number(c.item_count),
             created_at: c.created_at ? new Date(c.created_at).toISOString() : null,
+            desconto_valor: Number(c.desconto_valor || 0),
+            desconto_tipo: c.desconto_tipo ?? null,
+            desconto_motivo: c.desconto_motivo ?? null,
           })),
         });
       } catch (error) {
@@ -1919,6 +2583,9 @@ export function registerOrderRoutes(app: App) {
                     total: { type: "string" },
                     total_itens: { type: "number" },
                     tipo: { type: "string" },
+                    desconto_valor: { type: "number" },
+                    desconto_tipo: { type: ["string", "null"] },
+                    desconto_motivo: { type: ["string", "null"] },
                     entrega_cliente_nome: { type: "string" },
                     entrega_bairro: { type: "string" },
                     entrega_observacao: { type: "string" },
@@ -1976,6 +2643,9 @@ export function registerOrderRoutes(app: App) {
               c.total,
               c.created_at,
               c.tipo,
+              c.desconto_valor,
+              c.desconto_tipo,
+              c.desconto_motivo,
               COALESCE(u.nome, 'Não informado') as garcom_nome,
               e.cliente_nome   as entrega_cliente_nome,
               e.bairro         as entrega_bairro,
@@ -2041,6 +2711,9 @@ export function registerOrderRoutes(app: App) {
               c.total,
               c.created_at,
               c.tipo,
+              c.desconto_valor,
+              c.desconto_tipo,
+              c.desconto_motivo,
               COALESCE(u.nome, 'Não informado') as garcom_nome,
               e.cliente_nome   as entrega_cliente_nome,
               e.bairro         as entrega_bairro,
@@ -2119,6 +2792,9 @@ export function registerOrderRoutes(app: App) {
             total: row.total,
             total_itens: totalItens,
             tipo: row.tipo || "mesa",
+            desconto_valor: Number(row.desconto_valor || 0),
+            desconto_tipo: row.desconto_tipo ?? null,
+            desconto_motivo: row.desconto_motivo ?? null,
             entrega_cliente_nome: row.entrega_cliente_nome || null,
             entrega_bairro: row.entrega_bairro || null,
             entrega_observacao: row.entrega_observacao || null,

@@ -8,6 +8,7 @@ export type MesaClienteConfig = {
   restauranteNome: string;
   mesaId: string;
   mesaNumero: number;
+  qrToken: string;
   configuradoEm: string;
 };
 
@@ -24,12 +25,10 @@ export const getMesaClienteConfig = async (
   try {
     const raw = await readRaw();
     if (!raw) return null;
-    return JSON.parse(raw) as MesaClienteConfig;
-  } catch (error) {
-    console.error(
-      `[MesaCliente] Erro ao ler configuração (tentativa ${attempt + 1}):`,
-      error
-    );
+    const config = JSON.parse(raw) as MesaClienteConfig;
+    return { ...config, qrToken: typeof config.qrToken === "string" ? config.qrToken : "" };
+  } catch {
+    console.error(`[MesaCliente] Erro ao ler configuração (tentativa ${attempt + 1}).`);
     // Logo após o app voltar de muito tempo em segundo plano (ou de o SO tê-lo
     // matado silenciosamente), a primeira leitura do armazenamento seguro pode
     // falhar de forma passageira antes do módulo nativo estar pronto. Tenta
@@ -55,9 +54,9 @@ export const saveMesaClienteConfig = async (
       await SecureStore.setItemAsync(MESA_CLIENTE_CONFIG_KEY, raw);
     }
     console.log("[MesaCliente] Configuração salva para mesa", config.mesaNumero);
-  } catch (error) {
-    console.error("[MesaCliente] Erro ao salvar configuração:", error);
-    throw error;
+  } catch {
+    console.error("[MesaCliente] Erro ao salvar configuração.");
+    throw new Error("Não foi possível salvar a configuração deste tablet.");
   }
 };
 

@@ -28,6 +28,16 @@
  * (SELECT ... FOR UPDATE na linha da mesa DO RESTAURANTE) faz as aberturas da mesma mesa andarem
  * em fila; a conferência e a gravação acontecem já com a mesa travada.
  *
+ * Por que trava o restaurante (hierarquia de travas: SEMPRE restaurante, depois mesa):
+ *  - a abertura toma SELECT ... FOR SHARE na linha do restaurante ANTES da trava da mesa, lê o modo
+ *    de comanda por ela e a segura até o fim da transação. Várias aberturas andam em paralelo
+ *    (FOR SHARE não bloqueia outro FOR SHARE);
+ *  - a troca de modo (PUT /api/restaurante/modo-comanda) toma FOR UPDATE na mesma linha: espera as
+ *    aberturas em andamento terminarem e só então conta as comandas de mesa abertas. Assim, uma
+ *    comanda aberta durante a troca é sempre vista pela contagem, e nenhuma abertura grava com o
+ *    modo antigo depois que o novo foi gravado;
+ *  - a troca nunca trava mesas, então não existe espera circular entre as duas travas.
+ *
  * Precisa rodar DENTRO de uma transação (`tx`): fora dela a trava é solta na hora e perde o efeito.
  * Este módulo só grava a linha da comanda. Itens, total e status da mesa continuam com a rota,
  * na mesma transação.
@@ -151,21 +161,20 @@ export function chaveDeNome(nomeNormalizado: string): string {
 export async function abrirComandaNaMesa(tx: any, entrada: EntradaAbertura): Promise<ResultadoAbertura> {
   const { restauranteId, mesaId } = entrada;
 
-  // 1) Trava a mesa DO RESTAURANTE (sem linha: não existe ou é de outro restaurante)
+  // 1) Trava de leitura (FOR SHARE) na linha do restaurante, SEMPRE antes da trava da mesa: lê o modo
+  //    de comanda e o mantém fixo até o fim da transação (a troca de modo espera esta transação).
+  const modos = linhasDe(
+    await tx.execute(sql`SELECT modo_comanda FROM restaurante WHERE id = ${restauranteId} FOR SHARE`)
+  );
+  const individual = modos[0]?.modo_comanda === "individual";
+
+  // 2) Trava a mesa DO RESTAURANTE (sem linha: não existe ou é de outro restaurante)
   const travada = linhasDe(
     await tx.execute(
       sql`SELECT id FROM mesas WHERE id = ${mesaId} AND restaurante_id = ${restauranteId} FOR UPDATE`
     )
   );
   if (travada.length === 0) return { tipo: "mesa_nao_encontrada" };
-
-  // 2) Modo do restaurante, lido já com a mesa travada
-  const modos = await tx
-    .select({ modoComanda: schema.restaurante.modoComanda })
-    .from(schema.restaurante)
-    .where(eq(schema.restaurante.id, restauranteId))
-    .limit(1);
-  const individual = modos[0]?.modoComanda === "individual";
 
   let rotulo: string | null = null;
 
