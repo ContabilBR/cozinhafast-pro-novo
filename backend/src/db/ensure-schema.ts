@@ -353,6 +353,25 @@ export async function garantirTabelaReservas(app: App): Promise<void> {
           `)
         );
         app.logger.info("Created reservas table");
+
+        // Create indices for the new table
+        try {
+          await db.execute(
+            sql.raw(`CREATE INDEX IF NOT EXISTS idx_reservas_restaurante_data_hora ON reservas(restaurante_id, data_hora)`)
+          );
+          app.logger.debug("Created index idx_reservas_restaurante_data_hora");
+        } catch (err) {
+          app.logger.warn({ err }, "Could not create idx_reservas_restaurante_data_hora");
+        }
+
+        try {
+          await db.execute(
+            sql.raw(`CREATE INDEX IF NOT EXISTS idx_reservas_mesa_data_hora ON reservas(mesa_id, data_hora)`)
+          );
+          app.logger.debug("Created index idx_reservas_mesa_data_hora");
+        } catch (err) {
+          app.logger.warn({ err }, "Could not create idx_reservas_mesa_data_hora");
+        }
       } catch (err) {
         // May have been created concurrently; log and continue
         app.logger.debug({ err }, "Table creation failed (may already exist)");
@@ -374,7 +393,7 @@ export async function garantirTabelaReservas(app: App): Promise<void> {
             );
             app.logger.info("Added CHECK constraint ck_reservas_numero_pessoas");
           } catch (err) {
-            app.logger.debug({ err }, "Could not add ck_reservas_numero_pessoas (may exist or rows violate)");
+            app.logger.warn({ err }, "Could not add ck_reservas_numero_pessoas (may exist or rows violate)");
           }
         }
 
@@ -385,7 +404,7 @@ export async function garantirTabelaReservas(app: App): Promise<void> {
             );
             app.logger.info("Added CHECK constraint ck_reservas_duracao_positiva");
           } catch (err) {
-            app.logger.debug({ err }, "Could not add ck_reservas_duracao_positiva (may exist or rows violate)");
+            app.logger.warn({ err }, "Could not add ck_reservas_duracao_positiva (may exist or rows violate)");
           }
         }
       } catch (err) {
@@ -403,22 +422,22 @@ export async function garantirTabelaReservas(app: App): Promise<void> {
         if (!existingIndices.has('idx_reservas_restaurante_data_hora')) {
           try {
             await db.execute(
-              sql.raw(`CREATE INDEX idx_reservas_restaurante_data_hora ON reservas(restaurante_id, data_hora)`)
+              sql.raw(`CREATE INDEX IF NOT EXISTS idx_reservas_restaurante_data_hora ON reservas(restaurante_id, data_hora)`)
             );
             app.logger.info("Created index idx_reservas_restaurante_data_hora");
           } catch (err) {
-            app.logger.debug({ err }, "Could not create idx_reservas_restaurante_data_hora");
+            app.logger.warn({ err }, "Could not create idx_reservas_restaurante_data_hora");
           }
         }
 
         if (!existingIndices.has('idx_reservas_mesa_data_hora')) {
           try {
             await db.execute(
-              sql.raw(`CREATE INDEX idx_reservas_mesa_data_hora ON reservas(mesa_id, data_hora)`)
+              sql.raw(`CREATE INDEX IF NOT EXISTS idx_reservas_mesa_data_hora ON reservas(mesa_id, data_hora)`)
             );
             app.logger.info("Created index idx_reservas_mesa_data_hora");
           } catch (err) {
-            app.logger.debug({ err }, "Could not create idx_reservas_mesa_data_hora");
+            app.logger.warn({ err }, "Could not create idx_reservas_mesa_data_hora");
           }
         }
       } catch (err) {

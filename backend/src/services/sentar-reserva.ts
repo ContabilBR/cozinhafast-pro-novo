@@ -27,7 +27,8 @@ export interface ResultadoSentarReserva {
     | "nome_obrigatorio"
     | "nome_muito_longo"
     | "nome_repetido"
-    | "erro_interno";
+    | "erro_interno"
+    | "reserva_alterada";
   comandaId?: string;
   detalhes?: string;
   metadata?: any;
@@ -90,6 +91,9 @@ export async function sentarReserva(
         if (mesaLocked.length === 0) {
           return { tipo: "mesa_nao_encontrada" };
         }
+
+        // Store the mesa number for later use
+        var mesaNumero = mesaLocked[0].numero;
       } else {
         return { tipo: "reserva_sem_mesa" };
       }
@@ -108,7 +112,7 @@ export async function sentarReserva(
         .limit(1);
 
       if (reservaLocked.length === 0) {
-        return { tipo: "reserva_nao_encontrada" };
+        return { tipo: "reserva_alterada", detalhes: "A reserva foi alterada ou não está mais disponível para sentar." };
       }
 
       const resLocked = reservaLocked[0];
@@ -116,8 +120,8 @@ export async function sentarReserva(
       // Validate: status must be confirmada, has mesa, same mesa as before
       if (resLocked.status !== "confirmada") {
         return {
-          tipo: "reserva_nao_confirmada",
-          detalhes: `Status atual: ${resLocked.status}`,
+          tipo: "reserva_alterada",
+          detalhes: "A reserva foi alterada ou não está mais disponível para sentar.",
         };
       }
 
@@ -140,10 +144,11 @@ export async function sentarReserva(
       }
 
       // 5. Call abrirComandaNaMesa service with external transaction
+      // Use the actual mesa number retrieved from the locked row
       const abertura = await abrirComandaNaMesa(tx, {
         restauranteId,
         mesaId: mesaId!,
-        mesaNumero: 0, // Will be fetched from mesa in service
+        mesaNumero: mesaNumero!,
         garcomId: usuarioId,
         total: "0",
         rotulo: nomeComanda,
@@ -211,6 +216,11 @@ export async function sentarReserva(
         metadata: abertura.__metadataParaPublicar,
       };
     });
+
+    // Handle reserva_alterada as 409 response before throwing
+    if (resultado.tipo === "reserva_alterada") {
+      return resultado;
+    }
 
     // Publish event AFTER transaction is confirmed
     if (resultado.tipo === "sucesso" && resultado.metadata) {

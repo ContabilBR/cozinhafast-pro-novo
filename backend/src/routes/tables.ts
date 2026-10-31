@@ -1,5 +1,5 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
-import { eq, ne, and, or, gte, lte } from "drizzle-orm";
+import { eq, ne, and, or, gte, lte, isNotNull } from "drizzle-orm";
 import * as schema from "../db/schema/schema.js";
 import type { App } from "../index.js";
 import { requireAuth as customRequireAuth, requireRole } from "../utils/auth.js";
@@ -79,14 +79,6 @@ export function registerTableRoutes(app: App) {
       const authUser = await customRequireAuth(app, request, reply);
       if (!authUser) return;
 
-      // Check permissions: only allow garcom, gerente, administrador
-      const papel = String(authUser.role ?? "").trim().toLowerCase();
-      const PAPEIS_PERMITIDOS = ["garcom", "garçom", "administrador", "admin", "gerente", "manager", "superadmin", "super_admin"];
-      if (!PAPEIS_PERMITIDOS.includes(papel)) {
-        app.logger.warn({ userId: authUser.id, papel }, "Acesso negado: listar mesas");
-        return await reply.code(403).send({ error: "Você não tem permissão para esta ação." });
-      }
-
       try {
         const tenantId = authUser.restauranteId;
         app.logger.info({ tenantId, status: request.query.status }, "Listing mesas");
@@ -111,7 +103,7 @@ export function registerTableRoutes(app: App) {
         const mesas = await mesasQuery;
         app.logger.info({ tenantId, count: mesas.length }, "Mesas listed successfully");
 
-        const podeVerToken = ["gerente", "manager", "administrador", "admin", "superadmin", "super_admin"].includes(papel);
+        const podeVerToken = ["gerente", "administrador", "admin"].includes(String(authUser.role ?? "").toLowerCase());
 
         // Fetch next reservations for each mesa within 30 minutes, filtered in database
         const agora = new Date();
@@ -131,7 +123,7 @@ export function registerTableRoutes(app: App) {
             and(
               eq(schema.reservas.restauranteId, tenantId as any),
               eq(schema.reservas.status, "confirmada" as any), // Only confirmada, NOT sentada
-              schema.reservas.mesaId,
+              isNotNull(schema.reservas.mesaId),
               gte(schema.reservas.dataHora, trinta_min_no_passado),
               lte(schema.reservas.dataHora, trinta_min_no_futuro)
             )

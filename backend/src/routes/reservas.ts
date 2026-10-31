@@ -8,6 +8,7 @@ import { sentarReserva } from "../services/sentar-reserva.js";
 const PAPEIS_GERENCIAM_RESERVAS = ["administrador", "admin", "gerente", "manager", "superadmin", "super_admin"];
 const PAPEIS_CRIAM_EDITAM = ["garcom", "garçom", ...PAPEIS_GERENCIAM_RESERVAS];
 const PAPEIS_PODEM_LISTAR_SENTAR = ["garcom", "garçom", ...PAPEIS_GERENCIAM_RESERVAS];
+const DURACAO_PADRAO_RESERVA_MIN = 120;
 
 // Fuso horário do Brasil
 const FUSO_HORAS = -3;
@@ -136,13 +137,26 @@ export function registerReservasRoutes(app: App) {
         let fimData: Date;
 
         if (queryData) {
-          const dataValidada = validarDataFormato(queryData);
-          if (!dataValidada) {
+          // Validate format YYYY-MM-DD
+          const match = queryData.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+          if (!match) {
             return await reply.code(400).send({ error: "Data inválida." });
           }
-          const { ano, mes0, dia } = diaLocalDeInstante(dataValidada);
-          inicioData = inicioDoDiaLocal(ano, mes0, dia);
-          fimData = inicioDoDiaLocal(ano, mes0, dia + 1);
+
+          const [, yearStr, monthStr, dayStr] = match;
+          const year = parseInt(yearStr, 10);
+          const month = parseInt(monthStr, 10);
+          const day = parseInt(dayStr, 10);
+
+          // Validate it's a real date (e.g., not 2024-02-30)
+          const dateCheck = new Date(Date.UTC(year, month - 1, day));
+          if (dateCheck.getUTCFullYear() !== year || dateCheck.getUTCMonth() !== month - 1 || dateCheck.getUTCDate() !== day) {
+            return await reply.code(400).send({ error: "Data inválida." });
+          }
+
+          // Parse directly: início = midnight Brasília = 3:00 UTC
+          inicioData = new Date(Date.UTC(year, month - 1, day, 3, 0, 0));
+          fimData = new Date(inicioData.getTime() + 24 * 60 * 60 * 1000);
         } else {
           // Default to today in Brasília timezone
           const agora = new Date();
@@ -350,8 +364,6 @@ export function registerReservasRoutes(app: App) {
             }
 
             // 3. Verificar conflito: existe reserva que começa ANTES do fim da nova E termina DEPOIS do início da nova?
-            // fim_existente = data_hora_existente + duracao_existente (minutos)
-            // fim_nova = dataHora + numero_pessoas é o duracao, não numero_pessoas - use duracao padrão 120
             // Conflito se: existente.data_hora < fim_nova AND (existente.data_hora + existente.duracao) > dataHora
             // Com comparações estritas: <, >, não <=, >=
 
@@ -366,7 +378,7 @@ export function registerReservasRoutes(app: App) {
                     eq(schema.reservas.status, "sentada" as any)
                   ),
                   // Existing starts before new ends
-                  lt(schema.reservas.dataHora, new Date(dataHora.getTime() + 120 * 60 * 1000)),
+                  lt(schema.reservas.dataHora, new Date(dataHora.getTime() + DURACAO_PADRAO_RESERVA_MIN * 60 * 1000)),
                   // Existing ends (data_hora + duracao) after new starts
                   sql`${schema.reservas.dataHora} + INTERVAL '1 minute' * ${schema.reservas.duracao} > ${dataHora}`
                 )
@@ -393,7 +405,7 @@ export function registerReservasRoutes(app: App) {
               numeroPessoas: numero_pessoas,
               observacao: observacaoTrimada || null,
               status: "confirmada",
-              duracao: 120,
+              duracao: DURACAO_PADRAO_RESERVA_MIN,
               criadoPor: authUser.id,
             })
             .returning();
@@ -638,6 +650,8 @@ export function registerReservasRoutes(app: App) {
             }
 
             // Verificar conflito com outras reservas (excluding self)
+            // Use the existing reservation's duration for calculating new end time
+            const novaFim = new Date(dataHora.getTime() + (reservaLocked[0].duracao || DURACAO_PADRAO_RESERVA_MIN) * 60 * 1000);
             const conflito = await tx
               .select()
               .from(schema.reservas)
@@ -649,7 +663,7 @@ export function registerReservasRoutes(app: App) {
                     eq(schema.reservas.status, "confirmada" as any),
                     eq(schema.reservas.status, "sentada" as any)
                   ),
-                  lt(schema.reservas.dataHora, new Date(dataHora.getTime() + 120 * 60 * 1000)),
+                  lt(schema.reservas.dataHora, novaFim),
                   sql`${schema.reservas.dataHora} + INTERVAL '1 minute' * ${schema.reservas.duracao} > ${dataHora}`
                 )
               )
@@ -900,6 +914,9 @@ export function registerReservasRoutes(app: App) {
 
           case "reserva_nao_encontrada":
             return await reply.code(404).send({ error: "Reserva não encontrada." });
+
+          case "reserva_alterada":
+            return await reply.code(409).send({ error: resultado.detalhes || "A reserva foi alterada ou não está mais disponível para sentar." });
 
           case "reserva_nao_confirmada":
             return await reply.code(409).send({
