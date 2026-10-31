@@ -1,3 +1,4 @@
 - [Decisões da R2.3](r23-decisoes.md): autorização do gerente para garçom, gorjeta bruta, NFC-e fora do escopo e validação real pendente.
 - [Estado do CMV teórico](cmv-teorico-estado.md): backend criado com defeitos, correção pendente; tela não iniciada.
 - [Estado das reservas](reservas-estado.md): backend gerado com defeitos conhecidos; correção pendente; app não iniciado.
+- [Verificação de reservas pendente](reservas-verificacao-pendente.md): aguardando aviso de que o login da dev funciona
