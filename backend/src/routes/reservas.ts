@@ -70,7 +70,14 @@ interface CreateReservaBody {
   observacao?: string;
 }
 
-interface UpdateReservaBody extends CreateReservaBody {}
+interface UpdateReservaBody {
+  nome_pessoa: string;
+  telefone?: string;
+  data_hora: string;
+  numero_pessoas: number;
+  mesa_id?: string | null;
+  observacao?: string;
+}
 
 export function registerReservasRoutes(app: App) {
   // GET /api/reservas - List reservas for a date with optional status filter
@@ -601,8 +608,7 @@ export function registerReservasRoutes(app: App) {
             telefone: { type: "string" },
             data_hora: { type: "string", format: "date-time" },
             numero_pessoas: { type: "number" },
-            mesa_id: { type: "string", format: "uuid" },
-            mesa_ids: { type: "array", items: { type: "string", format: "uuid" }, minItems: 2, maxItems: 20 },
+            mesa_id: { type: "string", format: "uuid", nullable: true },
             observacao: { type: "string" },
           },
         },
@@ -648,16 +654,8 @@ export function registerReservasRoutes(app: App) {
           data_hora,
           numero_pessoas,
           mesa_id,
-          mesa_ids,
           observacao,
         } = request.body;
-
-        // Não permitir mudar mesas
-        if (mesa_id || mesa_ids) {
-          return await reply.code(400).send({
-            error: "Não é permitido alterar as mesas. Para trocar as mesas, cancele a reserva e crie uma nova.",
-          });
-        }
 
         // Buscar reserva
         const reservaExistente = await app.db
@@ -714,16 +712,58 @@ export function registerReservasRoutes(app: App) {
           });
         }
 
+        // Validação de troca de mesas por tipo de reserva
+        const grupoId = reserva.grupoId;
+        if (grupoId) {
+          // GRUPO: rejeitar mudança de mesas
+          const mesaIdNormalizada = mesa_id ? String(mesa_id).trim().toLowerCase() : null;
+          const mesaReservaAtualNormalizada = reserva.mesaId ? String(reserva.mesaId).trim().toLowerCase() : null;
+
+          if (mesaIdNormalizada && mesaIdNormalizada !== mesaReservaAtualNormalizada) {
+            return await reply.code(400).send({
+              error: "Não é permitido alterar as mesas. Para trocar as mesas, cancele a reserva de grupo e crie uma nova.",
+            });
+          }
+
+          // Rejeitar mesa_ids (buscar no body, se vier como propriedade extra)
+          if ((request.body as any).mesa_ids) {
+            return await reply.code(400).send({
+              error: "Lista de mesas não é permitida na edição. Para alterar as mesas, cancele a reserva de grupo e crie uma nova.",
+            });
+          }
+        } else {
+          // RESERVA ÚNICA: rejeitar mesa_ids
+          if ((request.body as any).mesa_ids) {
+            return await reply.code(400).send({
+              error: "Lista de mesas só é permitida na criação de reservas em grupo.",
+            });
+          }
+        }
+
+        // Validar mesa se informada
+        let mesaIdAAtualizar: string | null = mesa_id || null;
+        if (mesaIdAAtualizar) {
+          const mesaResult = await app.db
+            .select()
+            .from(schema.mesas)
+            .where(and(
+              eq(schema.mesas.id, mesaIdAAtualizar as any),
+              eq(schema.mesas.restauranteId, restauranteId)
+            ))
+            .limit(1);
+
+          if (mesaResult.length === 0) {
+            return await reply.code(400).send({ error: "Mesa não encontrada." });
+          }
+        }
+
         app.logger.info(
-          { restauranteId, reservaId: id, nomePessoa: nomeTrimado, isGrupo: !!reserva.grupoId },
+          { restauranteId, reservaId: id, nomePessoa: nomeTrimado, isGrupo: !!grupoId },
           "Updating reserva"
         );
 
         // Verificar conflito de horário (em transação com travas apropriadas)
         const resultado = await (app.db as any).transaction(async (tx: any) => {
-          const grupoId = reserva.grupoId;
-          let reservasDoGrupo: any[] = [];
-
           if (grupoId) {
             // GRUPO: Lock das mesas e reservas do grupo
             // 1. Trava de leitura no restaurante (FOR SHARE)
@@ -780,7 +820,7 @@ export function registerReservasRoutes(app: App) {
             }
 
             // 2b. Trava de escrita nas linhas do grupo (em ordem crescente de id)
-            reservasDoGrupo = await tx
+            const reservasDoGrupo = await tx
               .select()
               .from(schema.reservas)
               .where(
@@ -834,7 +874,7 @@ export function registerReservasRoutes(app: App) {
               }
             }
 
-            // Atualizar todas as linhas do grupo
+            // Atualizar todas as linhas do grupo (SEM mudar mesaId)
             const idsDoGrupo = reservasDoGrupo.map((r: any) => r.id);
             const reservasAtualizadas = await tx
               .update(schema.reservas)
@@ -859,11 +899,12 @@ export function registerReservasRoutes(app: App) {
               return { tipo: "atualizacao_falhou" };
             }
 
-            // Retornar a primeira reserva do grupo como resposta
-            return { tipo: "atualizada", reserva: reservasAtualizadas[0] };
+            // Retornar a reserva cujo id foi informado
+            const reservaRetorno = reservasAtualizadas.find((r: any) => r.id === id) || reservasAtualizadas[0];
+            return { tipo: "atualizada", reserva: reservaRetorno };
           } else {
-            // RESERVA ÚNICA: comportamento original
-            if (reserva.mesaId) {
+            // RESERVA ÚNICA
+            if (mesaIdAAtualizar) {
               // 1. Trava de leitura no restaurante (FOR SHARE)
               const restLocked = await tx
                 .select()
@@ -881,7 +922,7 @@ export function registerReservasRoutes(app: App) {
                 .from(schema.mesas)
                 .where(
                   and(
-                    eq(schema.mesas.id, reserva.mesaId as any),
+                    eq(schema.mesas.id, mesaIdAAtualizar as any),
                     eq(schema.mesas.restauranteId, restauranteId)
                   )
                 )
@@ -920,7 +961,7 @@ export function registerReservasRoutes(app: App) {
                 .from(schema.reservas)
                 .where(
                   and(
-                    eq(schema.reservas.mesaId, reserva.mesaId as any),
+                    eq(schema.reservas.mesaId, mesaIdAAtualizar as any),
                     ne(schema.reservas.id, id as any),
                     or(
                       eq(schema.reservas.status, "confirmada" as any),
@@ -949,6 +990,7 @@ export function registerReservasRoutes(app: App) {
                 dataHora,
                 numeroPessoas: numero_pessoas,
                 observacao: observacaoTrimada || null,
+                mesaId: mesaIdAAtualizar,
                 updatedAt: new Date(),
               })
               .where(
@@ -1139,7 +1181,9 @@ export function registerReservasRoutes(app: App) {
               return { tipo: "atualizacao_falhou" };
             }
 
-            return { tipo: "atualizada", reserva: reservasAtualizadas[0] };
+            // Retornar a reserva cujo id foi informado
+            const reservaRetorno = reservasAtualizadas.find((r: any) => r.id === id) || reservasAtualizadas[0];
+            return { tipo: "atualizada", reserva: reservaRetorno };
           } else {
             // RESERVA ÚNICA: comportamento original
             const [reservaAtualizada] = await tx
