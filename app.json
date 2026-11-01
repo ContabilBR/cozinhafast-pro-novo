@@ -42,7 +42,16 @@
       "expo-font",
       "expo-router",
       "expo-web-browser",
-      "expo-secure-store"
+      "expo-secure-store",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "minSdkVersion": 24,
+            "targetSdkVersion": 35
+          }
+        }
+      ]
     ],
     "scheme": "cozinhafastpro",
     "experiments": {
