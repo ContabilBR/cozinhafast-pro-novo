@@ -19,13 +19,13 @@
  *
  * O módulo não conhece HTTP: devolve um resultado com desfecho nomeado.
  */
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import * as schema from "../db/schema/schema.js";
 import type { App } from "../index.js";
 import { realtimeHub } from "../realtime/hub.js";
-import { subtotalDaComanda, totalDelivery, calcularTotalComandaMesa, calcularTotalComandaMesaComDesconto } from "./total-comanda.js";
+import { subtotalDaComanda } from "./total-comanda.js";
 import { liberarMesaSeVazia } from "./liberar-mesa.js";
-import { MOTIVOS_CANCELAMENTO, ROLES_GESTAO, ehGestor, type MotivoCancelamento } from "./cancelamento-pedido.js";
+import { MOTIVOS_CANCELAMENTO, ehGestor, type MotivoCancelamento } from "./cancelamento-pedido.js";
 
 export interface EntradaCancelamentoComanda {
   restauranteId: string;
@@ -156,13 +156,14 @@ export async function cancelarComanda(
 
     // 7) Carrega nomes dos pratos (uma query, sem N+1)
     const pratoIds = pedidos.map((p: any) => p.pratoId).filter((id: any) => id);
-    const pratos = pratoIds.length
+    const uniquePratoIds = [...new Set(pratoIds)] as string[];
+    const pratos = uniquePratoIds.length
       ? await tx
           .select({ id: schema.pratos.id, nome: schema.pratos.nome })
           .from(schema.pratos)
-          .where(sql`${schema.pratos.id} IN (${sql.join(pratoIds)})`)
+          .where(and(inArray(schema.pratos.id, uniquePratoIds), eq(schema.pratos.restauranteId, restauranteId)))
       : [];
-    const mapaProtoNome = new Map(pratos.map((p: any) => [p.id, p.nome]));
+    const mapaPratoNome = new Map(pratos.map((p: any) => [p.id, p.nome]));
 
     // 8) Marca os ativos como cancelados
     let itensCancelados = 0;
@@ -176,7 +177,7 @@ export async function cancelarComanda(
       }
       itensCancelados++;
 
-      const pratoNome = mapaProtoNome.get(pedido.pratoId) || null;
+      const pratoNome = mapaPratoNome.get(pedido.pratoId) || null;
 
       await tx
         .update(schema.pedidos)
@@ -200,19 +201,8 @@ export async function cancelarComanda(
       });
     }
 
-    // 9) Recalcula totais (sem os cancelados)
-    const subtotal = await subtotalDaComanda(tx, comandaId);
-    let total: number;
-    let descontoEfetivo: number | undefined;
-
-    if (comanda.tipo === "delivery") {
-      total = await totalDelivery(tx, comandaId);
-    } else {
-      const gorjeta = parseFloat(String(comanda.gorjeta || "0"));
-      const result = calcularTotalComandaMesaComDesconto(subtotal, gorjeta, comanda.descontoTipo, comanda.descontoValor);
-      total = result.total;
-      descontoEfetivo = result.descontoEfetivo;
-    }
+    // 9) Comanda cancelada: total e subtotal são 0
+    const total = 0;
 
     // 10) Atualiza a comanda: status, total, closedAt
     const now = new Date();
@@ -221,9 +211,8 @@ export async function cancelarComanda(
       .set({
         status: "cancelada",
         closedAt: now,
-        subtotal: subtotal.toString(),
-        total: total.toFixed(2),
-        ...(descontoEfetivo !== undefined && { descontoValor: descontoEfetivo.toFixed(2) })
+        subtotal: "0",
+        total: "0.00",
       })
       .where(and(eq(schema.comandas.id, comandaId), eq(schema.comandas.restauranteId, restauranteId)));
 
