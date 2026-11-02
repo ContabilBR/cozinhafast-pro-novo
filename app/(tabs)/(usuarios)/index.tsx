@@ -186,6 +186,12 @@ export default function UsuariosScreen() {
   // Modal state
   const [showModal, setShowModal] = useState(false);
   const [editingUser, setEditingUser] = useState<ApiUser | null>(null);
+  const normEmail = (e: unknown) => String(e ?? "").trim().toLowerCase();
+  const gerenteEditaASiMesmo =
+    souGerente &&
+    !!editingUser &&
+    ((!!authUser?.id && String(editingUser.id) === String(authUser.id)) ||
+      (!!normEmail(editingUser.email) && normEmail(editingUser.email) === normEmail(authUser?.email)));
   const [nome, setNome] = useState("");
   const [email, setEmail] = useState("");
   const [senha, setSenha] = useState("");
@@ -458,7 +464,7 @@ export default function UsuariosScreen() {
             <View style={{ gap: 6 }}>
               <Text style={{ fontFamily: "Outfit_600SemiBold", fontSize: 14, color: COLORS.text }}>Função</Text>
               <AnimatedPressable
-                disabled={souGerente && !!editingUser}
+                disabled={gerenteEditaASiMesmo}
                 onPress={() => {
                   console.log("[Usuarios] Role picker toggled");
                   setShowRolePicker((v) => !v);
@@ -470,7 +476,7 @@ export default function UsuariosScreen() {
                 </Text>
                 <ChevronDown size={16} color={COLORS.textSecondary} />
               </AnimatedPressable>
-              {showRolePicker && !(souGerente && !!editingUser) && (
+              {showRolePicker && !gerenteEditaASiMesmo && (
                 <View style={{ backgroundColor: COLORS.surface, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border, overflow: "hidden" }}>
                   {rolesPermitidas.map((r) => (
                     <AnimatedPressable

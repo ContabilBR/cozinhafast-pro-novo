@@ -134,6 +134,12 @@ export default function EditarUsuarioScreen() {
   const souGerente = normRole(authUser?.role) === "gerente";
   const alvoAdmin = ["administrador", "admin"].includes(normRole(role));
   const somenteLeitura = souGerente && alvoAdmin;
+  const normEmail = (e: unknown) => String(e ?? "").trim().toLowerCase();
+  const ehEuMesmo =
+    (!!id && !!authUser?.id && String(id) === String(authUser.id)) ||
+    (!!normEmail(email) && normEmail(email) === normEmail(authUser?.email));
+  const seletorTravado = souGerente && ehEuMesmo;
+  const rolesPermitidas = souGerente ? ROLES.filter((r) => r !== "administrador") : ROLES;
 
   if (loading) {
     return (
@@ -247,16 +253,16 @@ export default function EditarUsuarioScreen() {
 
           <FormField label="Função">
             <AnimatedPressable
-              disabled={souGerente}
+              disabled={seletorTravado}
               onPress={() => { console.log("[EditarUsuario] Seletor de função alternado"); setShowRolePicker((v) => !v); }}
               style={[inputStyle, { flexDirection: "row", justifyContent: "space-between", alignItems: "center" }]}
             >
               <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 15, color: COLORS.text }}>{roleLabel}</Text>
               <ChevronDown size={16} color={COLORS.textSecondary} />
             </AnimatedPressable>
-            {showRolePicker && !souGerente && (
+            {showRolePicker && !seletorTravado && (
               <View style={{ backgroundColor: COLORS.surface, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border, overflow: "hidden" }}>
-                {ROLES.map((r) => (
+                {rolesPermitidas.map((r) => (
                   <AnimatedPressable
                     key={r}
                     onPress={() => { console.log("[EditarUsuario] Função selecionada:", r); setRole(r); setShowRolePicker(false); }}
