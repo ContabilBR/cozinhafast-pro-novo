@@ -506,7 +506,7 @@ export function registerUsuariosRoutes(app: App) {
               }
             }
 
-            await tx.delete(schema.usuarios).where(eq(schema.usuarios.id, request.params.id));
+            await tx.delete(schema.usuarios).where(and(eq(schema.usuarios.id, request.params.id), eq(schema.usuarios.restauranteId, restauranteId)));
             return { podeExcluir: true };
           });
 
