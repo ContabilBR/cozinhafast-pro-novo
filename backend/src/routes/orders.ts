@@ -10,6 +10,9 @@ import { fecharComanda } from "../services/fechamento-comanda.js";
 import { liberarMesaSeVazia } from "../services/liberar-mesa.js";
 import { abrirComandaNaMesa, TAMANHO_MAXIMO_NOME_COMANDA } from "../services/abrir-comanda.js";
 import { calcularTotalComandaMesa, calcularTotalComandaMesaComDesconto, subtotalDaComanda } from "../services/total-comanda.js";
+import { cancelarComanda, MOTIVOS_CANCELAMENTO_REEXPORT } from "../services/cancelamento-comanda.js";
+import { validarAutorizacaoGerente } from "../services/autorizacao-gerente.js";
+import { MOTIVOS_CANCELAMENTO, ehGestor } from "../services/cancelamento-pedido.js";
 import { compare } from "bcryptjs";
 import { increment, getCount, resetKey } from "../utils/rate-limit.js";
 
@@ -1588,102 +1591,147 @@ export function registerOrderRoutes(app: App) {
   );
 
   // PUT /api/comandas/:id/cancelar - Cancel a comanda
-  app.fastify.put<{ Params: { id: string } }>(
+  app.fastify.put<{ Params: { id: string }; Body: { motivo: string; detalhe?: string; autorizacao?: any } }>(
     "/api/comandas/:id/cancelar",
     {
       schema: {
-        description: "Cancel a comanda",
+        description: "Cancela uma comanda aberta de mesa. Regras: gerente/administrador cancelam qualquer comanda do restaurante; garçom só a sua. Itens pendentes cancelam sempre; itens em preparo/prontos só com autorização de gerente (email e senha). Comanda com pagamento confirmado não cancela.",
         tags: ["comandas"],
         params: {
           type: "object",
           required: ["id"],
           properties: { id: { type: "string", format: "uuid" } },
         },
+        body: {
+          type: "object",
+          required: ["motivo"],
+          properties: {
+            motivo: { type: "string", enum: [...MOTIVOS_CANCELAMENTO] },
+            detalhe: { type: "string", maxLength: 300 },
+            autorizacao: { type: "object" },
+          },
+        },
         response: {
-          200: { type: "object" },
+          200: {
+            type: "object",
+            properties: {
+              id: { type: "string", format: "uuid" },
+              mesa_id: { type: ["string", "null"] },
+              mesa_numero: { type: ["integer", "null"] },
+              garcom_id: { type: ["string", "null"] },
+              status: { type: "string" },
+              total: { type: "number" },
+              closed_at: { type: "string", format: "date-time" },
+              created_at: { type: "string", format: "date-time" },
+              itens_cancelados: { type: "integer" },
+              itens_perda: { type: "integer" },
+              autorizado_por_nome: { type: ["string", "null"] },
+            },
+          },
+          400: { type: "object", properties: { error: { type: "string" } } },
+          403: { type: "object", properties: { error: { type: "string" } } },
           404: { type: "object", properties: { error: { type: "string" } } },
+          409: { type: "object", properties: { error: { type: "string" } } },
+          429: { type: "object", properties: { error: { type: "string" } } },
         },
       },
     },
-    async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+    async (
+      request: FastifyRequest<{ Params: { id: string }; Body: { motivo: string; detalhe?: string; autorizacao?: any } }>,
+      reply: FastifyReply
+    ) => {
       const session = await customRequireAuth(app, request, reply);
       if (!session) return;
 
+      // Validate body and motivo
+      if (!request.body || typeof request.body.motivo !== "string") {
+        return await reply.code(400).send({ error: "Motivo é obrigatório" });
+      }
+
+      if (!(MOTIVOS_CANCELAMENTO as readonly string[]).includes(request.body.motivo)) {
+        return await reply.code(400).send({ error: "Motivo inválido" });
+      }
+
       try {
-        app.logger.info({ comandaId: request.params.id }, "Canceling comanda");
         const restauranteId = requireTenant(session);
-
-        const existing = await app.db
-          .select()
-          .from(schema.comandas)
-          .where(and(eq(schema.comandas.id, request.params.id), eq(schema.comandas.restauranteId, restauranteId)));
-
-        if (!existing.length) {
-          return await reply.code(404).send({ error: "Comanda não encontrada" });
+        if (!restauranteId) {
+          return await reply.code(404).send({ error: "Nenhum restaurante associado" });
         }
 
-        const comanda = existing[0];
-
-        // Status check
-        if (comanda.status !== 'aberta') {
-          return await reply.code(409).send({ error: "Só é possível cancelar uma comanda aberta." });
+        // Validate detalhe if motivo is 'outro'
+        const detalhe = request.body.detalhe?.trim() || null;
+        if (request.body.motivo === "outro" && !detalhe) {
+          return await reply.code(400).send({ error: "Informe o detalhe do motivo quando o motivo for 'outro'." });
         }
 
-        // Delivery guard
-        if (comanda.tipo === 'delivery') {
-          return await reply.code(409).send({ error: "Pedido de delivery: use a tela de Delivery." });
-        }
+        app.logger.info(
+          { comandaId: request.params.id, userRole: session.role, motivo: request.body.motivo, temAutorizacao: !!request.body.autorizacao },
+          "Canceling comanda"
+        );
 
-        // Role check
-        const userRole = session.role?.toLowerCase() ?? "";
-        if (userRole === "cozinheiro" || userRole === "kitchen") {
-          return await reply.code(403).send({ error: "Sem permissão para cancelar comandas." });
-        }
-        if (userRole === "garcom") {
-          if (comanda.garcomId !== session.id) {
-            return await reply.code(403).send({ error: "Você só pode cancelar suas próprias comandas." });
+        let autorizadorGerente: { id: string; nome: string; role: string } | undefined = undefined;
+
+        // Se garçom e enviou autorização, validar
+        if (session.role?.toLowerCase() === "garcom" && request.body.autorizacao) {
+          const authResult = await validarAutorizacaoGerente(app.db, restauranteId, session.id, session.email ?? "", request.body.autorizacao);
+          if (authResult.valida === false) {
+            const motivoInvalido = authResult.motivo;
+            if (motivoInvalido === "limite_de_tentativas") {
+              app.logger.warn({ sessionId: session.id, restauranteId }, "Manager auth rate limit exceeded");
+              return await reply.code(429).send({ error: "Muitas tentativas. Tente novamente em 15 minutos." });
+            } else {
+              app.logger.warn({ sessionId: session.id, restauranteId }, "Manager auth failed");
+              return await reply.code(403).send({ error: "Autorização inválida" });
+            }
           }
+          autorizadorGerente = { id: authResult.id, nome: authResult.nome, role: authResult.role };
+          app.logger.info({ managerId: authResult.id, managerName: authResult.nome }, "Manager authorization validated");
         }
-        // gerente, administrador, admin can cancel any comanda of the tenant
 
-        // Cancela e, na mesma transação, libera a mesa só se não restar outra comanda aberta nela
-        // (regra única em services/liberar-mesa.ts)
-        const updated = await (app.db as any).transaction(async (tx: any) => {
-          const [cancelada] = await tx
-            .update(schema.comandas)
-            .set({
-              status: "cancelada",
-              closedAt: new Date(),
-            })
-            .where(and(eq(schema.comandas.id, request.params.id), eq(schema.comandas.restauranteId, restauranteId)))
-            .returning();
-
-          await liberarMesaSeVazia(tx, cancelada.mesaId, restauranteId);
-          return cancelada;
+        const resultado = await cancelarComanda(app, {
+          restauranteId,
+          comandaId: request.params.id,
+          motivo: request.body.motivo as any,
+          detalhe,
+          canceladoPor: { id: session.id, nome: session.name, role: session.role },
+          autorizadorGerente,
         });
 
-        app.logger.info({ comandaId: updated.id }, "Comanda cancelled successfully");
-
-        // Publish realtime event
-        try {
-          realtimeHub.publish(restauranteId, {
-            type: "comanda.cancelled",
-            entityId: updated.id,
-            occurredAt: new Date().toISOString(),
-          });
-        } catch (err) {
-          app.logger.error({ err }, "Failed to publish comanda.cancelled event");
+        if (resultado.tipo !== "cancelada") {
+          switch (resultado.tipo) {
+            case "nao_encontrada":
+              return await reply.code(404).send({ error: "Comanda não encontrada" });
+            case "delivery":
+              return await reply.code(409).send({ error: "Pedido de delivery: use a tela de Delivery." });
+            case "nao_aberta":
+              return await reply.code(409).send({ error: "Só é possível cancelar uma comanda aberta." });
+            case "sem_permissao":
+              return await reply.code(403).send({ error: "Sem permissão para cancelar comandas." });
+            case "so_propria_comanda":
+              return await reply.code(403).send({ error: "Você só pode cancelar suas próprias comandas." });
+            case "item_entregue":
+              return await reply.code(409).send({ error: "Comanda com item já entregue: deve ser paga e encerrada normalmente, não cancelada." });
+            case "requer_gestor":
+              return await reply.code(403).send({ error: "Comanda com itens em preparo ou prontos: o gerente precisa autorizar o cancelamento com e-mail e senha." });
+            case "pagamento_confirmado":
+              return await reply.code(409).send({ error: "Comanda com pagamento confirmado: o reembolso é manual e deve ser processado antes do cancelamento." });
+          }
         }
 
+        app.logger.info({ comandaId: resultado.comandaId, itensCancelados: resultado.itensCancelados, itensPerda: resultado.itensPerda }, "Comanda cancelled successfully");
+
         return await reply.code(200).send({
-          id: updated.id,
-          mesa_id: updated.mesaId,
-          mesa_numero: updated.mesaNumero,
-          garcom_id: updated.garcomId,
-          status: updated.status,
-          total: updated.total,
-          closed_at: updated.closedAt?.toISOString(),
-          created_at: updated.createdAt.toISOString(),
+          id: resultado.comandaId,
+          mesa_id: resultado.mesaId,
+          mesa_numero: resultado.mesaNumero,
+          garcom_id: resultado.garcomId,
+          status: resultado.status,
+          total: resultado.total,
+          closed_at: resultado.closedAt.toISOString(),
+          created_at: resultado.createdAt.toISOString(),
+          itens_cancelados: resultado.itensCancelados,
+          itens_perda: resultado.itensPerda,
+          autorizado_por_nome: resultado.autorizadoPorNome,
         });
       } catch (error) {
         app.logger.error({ err: error }, "Failed to cancel comanda");
