@@ -1,10 +1,11 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import * as bcrypt from "bcrypt";
 import { randomUUID } from "crypto";
 import * as schema from "../db/schema/schema.js";
 import type { App } from "../index.js";
 import { requireAuth as customRequireAuth, requireRole, requireTenant } from "../utils/auth.js";
+import { normalizarEmail, papelNormalizado, ehAdministrador, validarSenhaNova } from "../utils/credenciais.js";
 
 const VALID_ROLES = ["administrador", "gerente", "garcom", "cozinheiro"] as const;
 
@@ -134,11 +135,24 @@ export function registerUsuariosRoutes(app: App) {
 
       try {
         if (!request.body.nome || !request.body.email || !request.body.senha) {
-          return await reply.code(400).send({ error: "nome, email, and senha are required" });
+          return await reply.code(400).send({ error: "nome, email e senha são obrigatórios" });
         }
 
-        if (request.body.role !== undefined && !VALID_ROLES.includes(request.body.role as any)) {
+        const emailNormalizado = normalizarEmail(request.body.email);
+        const roleNormalizado = papelNormalizado(request.body.role || "garcom");
+
+        if (!VALID_ROLES.includes(roleNormalizado as any)) {
           return await reply.code(400).send({ error: "role inválido" });
+        }
+
+        const authUserRoleNormalizado = papelNormalizado(authUser.role || "");
+        if (ehAdministrador(roleNormalizado) && !ehAdministrador(authUserRoleNormalizado)) {
+          return await reply.code(403).send({ error: "Somente o administrador pode criar outro administrador." });
+        }
+
+        const erroSenha = validarSenhaNova(request.body.senha);
+        if (erroSenha) {
+          return await reply.code(400).send({ error: erroSenha });
         }
 
         const restauranteId = requireTenant(authUser);
@@ -146,7 +160,18 @@ export function registerUsuariosRoutes(app: App) {
           return await reply.code(404).send({ error: "Nenhum restaurante associado" });
         }
 
-        app.logger.info({ email: request.body.email, restauranteId, authUserId: authUser.id, authUserEmail: authUser.email }, "Creating usuario");
+        app.logger.info({ email: emailNormalizado, restauranteId, authUserId: authUser.id, authUserEmail: authUser.email }, "Creating usuario");
+
+        // Verificar se e-mail já existe em qualquer restaurante
+        const existingEmail = await app.db
+          .select()
+          .from(schema.usuarios)
+          .where(sql`LOWER(${schema.usuarios.email}) = LOWER(${emailNormalizado})`)
+          .limit(1);
+
+        if (existingEmail.length > 0) {
+          return await reply.code(409).send({ error: "Este e-mail já está em uso." });
+        }
 
         const hashedPassword = await bcrypt.hash(request.body.senha, 10);
 
@@ -155,9 +180,9 @@ export function registerUsuariosRoutes(app: App) {
           .values({
             id: randomUUID(),
             nome: request.body.nome,
-            email: request.body.email,
+            email: emailNormalizado,
             senhaHash: hashedPassword,
-            role: request.body.role || "garcom",
+            role: roleNormalizado,
             restauranteId,
             ativo: true,
             createdAt: new Date(),
@@ -174,8 +199,12 @@ export function registerUsuariosRoutes(app: App) {
           role: usuario.role,
           createdAt: usuario.createdAt.toISOString(),
         });
-      } catch (error) {
-        app.logger.error({ err: error, body: request.body }, "Failed to create usuario");
+      } catch (error: any) {
+        if (error.code === "23505" || error.cause?.code === "23505") {
+          app.logger.warn({ err: error }, "Email unique constraint violation");
+          return await reply.code(409).send({ error: "Este e-mail já está em uso." });
+        }
+        app.logger.error({ err: error }, "Failed to create usuario");
         return await reply.code(500).send({ error: "Internal server error" });
       }
     }
@@ -234,7 +263,8 @@ export function registerUsuariosRoutes(app: App) {
       try {
         app.logger.info({ usuarioId: request.params.id }, "Updating usuario");
 
-        if (request.body.role !== undefined && !VALID_ROLES.includes(request.body.role as any)) {
+        const roleNormalizado = request.body.role !== undefined ? papelNormalizado(request.body.role) : undefined;
+        if (roleNormalizado !== undefined && !VALID_ROLES.includes(roleNormalizado as any)) {
           return await reply.code(400).send({ error: "role inválido" });
         }
 
@@ -247,19 +277,72 @@ export function registerUsuariosRoutes(app: App) {
           return await reply.code(404).send({ error: "Usuario not found" });
         }
 
+        const alvo = existing[0];
+        const authUserRoleNormalizado = papelNormalizado(authUser.role || "");
+        const isAuthUserAdmin = ehAdministrador(authUserRoleNormalizado);
+
+        if (!isAuthUserAdmin) {
+          if (ehAdministrador(alvo.role)) {
+            return await reply.code(403).send({ error: "Somente o administrador pode alterar um administrador." });
+          }
+          if (roleNormalizado !== undefined && roleNormalizado !== papelNormalizado(alvo.role)) {
+            return await reply.code(403).send({ error: "Somente o administrador pode alterar papéis." });
+          }
+        }
+
+        // Validar e-mail se fornecido
+        let emailNormalizado = alvo.email;
+        if (request.body.email !== undefined) {
+          emailNormalizado = normalizarEmail(request.body.email);
+          if (!emailNormalizado) {
+            return await reply.code(400).send({ error: "E-mail inválido." });
+          }
+
+          // Se o e-mail normalizado é diferente do atual, verificar unicidade
+          if (emailNormalizado !== papelNormalizado(alvo.email)) {
+            const existingEmail = await app.db
+              .select()
+              .from(schema.usuarios)
+              .where(
+                and(
+                  sql`LOWER(${schema.usuarios.email}) = LOWER(${emailNormalizado})`,
+                  sql`${schema.usuarios.id} != ${request.params.id}`
+                )
+              )
+              .limit(1);
+
+            if (existingEmail.length > 0) {
+              return await reply.code(409).send({ error: "Este e-mail já está em uso." });
+            }
+          }
+        }
+
+        // Validar senha se fornecida
+        if (request.body.senha !== undefined) {
+          const erroSenha = validarSenhaNova(request.body.senha);
+          if (erroSenha) {
+            return await reply.code(400).send({ error: erroSenha });
+          }
+        }
+
         const updates: any = {};
         if (request.body.nome !== undefined) updates.nome = request.body.nome;
-        if (request.body.email !== undefined) updates.email = request.body.email;
-        if (request.body.role !== undefined) updates.role = request.body.role;
+        if (request.body.email !== undefined) updates.email = emailNormalizado;
+        if (roleNormalizado !== undefined) updates.role = roleNormalizado;
         if (request.body.senha !== undefined) {
           updates.senhaHash = await bcrypt.hash(request.body.senha, 10);
         }
+        updates.updatedAt = new Date();
 
         const [updated] = await app.db
           .update(schema.usuarios)
           .set(updates)
           .where(and(eq(schema.usuarios.id, request.params.id), eq(schema.usuarios.restauranteId, restauranteId)))
           .returning();
+
+        if (!updated) {
+          return await reply.code(404).send({ error: "Usuario not found" });
+        }
 
         app.logger.info({ usuarioId: updated.id }, "Usuario updated successfully");
 
@@ -270,7 +353,11 @@ export function registerUsuariosRoutes(app: App) {
           role: updated.role,
           createdAt: updated.createdAt.toISOString(),
         });
-      } catch (error) {
+      } catch (error: any) {
+        if (error.code === "23505" || error.cause?.code === "23505") {
+          app.logger.warn({ err: error }, "Email unique constraint violation");
+          return await reply.code(409).send({ error: "Este e-mail já está em uso." });
+        }
         app.logger.error({ err: error }, "Failed to update usuario");
         return await reply.code(500).send({ error: "Internal server error" });
       }
