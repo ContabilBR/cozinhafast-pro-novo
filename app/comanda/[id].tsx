@@ -20,7 +20,8 @@ import { apiGet, apiPost, apiDelete } from '@/utils/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { useColors } from '@/hooks/useColors';
 import { CancelarItemModal } from '@/components/CancelarItemModal';
-import { cancelarItem, permissaoCancelarItem, subtotalItensAtivos } from '@/utils/cancelamento';
+import { CancelarComandaModal } from '@/components/CancelarComandaModal';
+import { cancelarItem, cancelarComanda, permissaoCancelarItem, permissaoCancelarComanda, subtotalItensAtivos } from '@/utils/cancelamento';
 import { DescontoModal } from '@/components/DescontoModal';
 import { aplicarDesconto, removerDesconto, calcularTotalComDesconto, podeAbrirFluxoDesconto, exigeAutorizacaoGerente, MOTIVOS_DESCONTO } from '@/utils/desconto';
 
@@ -639,6 +640,53 @@ export default function ComandaDetailScreen() {
     />
   );
 
+  // Cancelar a comanda inteira: mesa aberta, com item ativo e nenhum entregue
+  const [cancelarComandaVisible, setCancelarComandaVisible] = useState(false);
+  const permissaoComanda = permissaoCancelarComanda(user?.role, pedidosEnviados);
+  const podeCancelarComanda = comanda?.status === 'aberta' && !!comanda?.mesa_id && permissaoComanda.pode;
+
+  const renderCancelarComanda = () =>
+    podeCancelarComanda ? (
+      <Pressable
+        onPress={() => setCancelarComandaVisible(true)}
+        accessibilityRole="button"
+        style={{
+          minHeight: 44,
+          marginTop: 8,
+          marginBottom: 8,
+          paddingVertical: 10,
+          paddingHorizontal: 16,
+          borderRadius: 12,
+          borderWidth: 1,
+          borderColor: '#dc2626',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        <Text style={{ color: '#dc2626', fontSize: 14, fontWeight: '600' }}>Cancelar comanda</Text>
+      </Pressable>
+    ) : null;
+
+  const modalCancelarComanda = (
+    <CancelarComandaModal
+      visible={cancelarComandaVisible}
+      temPerda={permissaoComanda.temPerda}
+      exigeAutorizacao={permissaoComanda.exigeAutorizacao}
+      onClose={() => setCancelarComandaVisible(false)}
+      onConfirm={async (motivo, detalhe, autorizacao) => {
+        if (!id) return;
+        await cancelarComanda(id, motivo, detalhe, autorizacao);
+        setCancelarComandaVisible(false);
+        if (router.canGoBack()) {
+          router.back();
+        } else {
+          router.replace('/(tabs)/(mesas)');
+        }
+        Alert.alert('Comanda cancelada');
+      }}
+    />
+  );
+
   const pratoCategories = useMemo(() => {
     const names = new Set<string>();
     pratos.forEach((p) => {
@@ -751,6 +799,7 @@ export default function ComandaDetailScreen() {
           onFechar={() => router.push({ pathname: '/comanda/fechar-conta', params: { id } })}
         />
         {modalCancelarItem}
+        {modalCancelarComanda}
         {modalDesconto}
 
         <ScrollView contentContainerStyle={mgStyles.scrollContent}>
@@ -828,6 +877,8 @@ export default function ComandaDetailScreen() {
             })
           )}
 
+          {renderCancelarComanda()}
+
           {/* Spacer for fixed footer */}
           <View style={{ height: footerHeight }} />
         </ScrollView>
@@ -873,6 +924,7 @@ export default function ComandaDetailScreen() {
         onFechar={() => router.push({ pathname: '/comanda/fechar-conta', params: { id } })}
       />
       {modalCancelarItem}
+      {modalCancelarComanda}
       {modalDesconto}
 
       {/* Tab bar */}
@@ -1098,6 +1150,7 @@ export default function ComandaDetailScreen() {
               </View>
             )}
             {botaoDesconto}
+            {renderCancelarComanda()}
 
           </ScrollView>
         )}

@@ -66,6 +66,30 @@ export function permissaoCancelarItem(role: string | null | undefined, status: s
   return { pode: true, aposInicio, exigeAutorizacao: aposInicio && !ehGestor(role) };
 }
 
+export interface PermissaoCancelarComanda {
+  /** true quando o botão "Cancelar comanda" deve aparecer */
+  pode: boolean;
+  /** true quando há item em preparo ou pronto (conta como perda) */
+  temPerda: boolean;
+  /** true quando um gerente precisa autorizar com e-mail e senha (garçom com item em preparo ou pronto) */
+  exigeAutorizacao: boolean;
+}
+
+/**
+ * Cancelamento da comanda inteira (PUT /api/comandas/:id/cancelar). O servidor é quem decide.
+ * Aparece com pelo menos um item ativo e nenhum item ativo entregue; cozinheiro não cancela.
+ */
+export function permissaoCancelarComanda(
+  role: string | null | undefined,
+  itens: Array<{ status?: string | null }>
+): PermissaoCancelarComanda {
+  const ativos = itens.filter((i) => itemConta(i.status));
+  const temPerda = ativos.some((i) => i.status === "em_preparo" || i.status === "pronto");
+  const temEntregue = ativos.some((i) => i.status === "entregue");
+  const pode = ehAtendimento(role) && ativos.length > 0 && !temEntregue;
+  return { pode, temPerda, exigeAutorizacao: pode && temPerda && !ehGestor(role) };
+}
+
 /** Item que conta como venda (não cancelado). */
 export function itemConta(status: string | null | undefined): boolean {
   return status !== "cancelado";
@@ -102,6 +126,21 @@ export interface RespostaCancelamento {
 export interface AutorizacaoCancelamento {
   email: string;
   senha: string;
+}
+
+/** Cancela a comanda inteira no servidor. Em caso de erro lança Error com a mensagem do servidor. */
+export function cancelarComanda(
+  comandaId: string,
+  motivo: MotivoCancelamento,
+  detalhe?: string | null,
+  autorizacao?: AutorizacaoCancelamento
+): Promise<unknown> {
+  const corpo: { motivo: MotivoCancelamento; detalhe?: string; autorizacao?: AutorizacaoCancelamento } = { motivo };
+  if (detalhe && detalhe.trim()) corpo.detalhe = detalhe.trim();
+  if (autorizacao && autorizacao.email.trim() && autorizacao.senha) {
+    corpo.autorizacao = { email: autorizacao.email.trim(), senha: autorizacao.senha };
+  }
+  return apiPut<unknown>(`/api/comandas/${comandaId}/cancelar`, corpo);
 }
 
 /** Cancela o item no servidor. Em caso de erro lança Error com a mensagem do servidor. */
