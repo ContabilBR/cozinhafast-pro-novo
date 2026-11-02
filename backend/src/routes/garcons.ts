@@ -8,6 +8,7 @@ import * as bcrypt from "bcrypt";
 import { requireAuth as customRequireAuth, requireRole, requireTenant } from "../utils/auth.js";
 import { resolveGarcomId } from "../utils/garcom.js";
 import { contaDoRestaurante } from "../utils/garcons-tenant.js";
+import { normalizarEmail, validarSenhaNova } from "../utils/credenciais.js";
 
 interface CreateGarconBody {
   name: string;
@@ -206,21 +207,42 @@ export function registerGarconRoutes(app: App) {
           return await reply.code(400).send({ error: "name, email, and password are required" });
         }
 
+        const emailNormalizado = normalizarEmail(request.body.email);
+        if (!emailNormalizado) {
+          return await reply.code(400).send({ error: "E-mail inválido." });
+        }
+
+        const erroSenha = validarSenhaNova(request.body.password);
+        if (erroSenha) {
+          return await reply.code(400).send({ error: erroSenha });
+        }
+
         const restauranteId = requireTenant(authUser);
         if (!restauranteId) {
           return await reply.code(404).send({ error: "Nenhum restaurante associado" });
         }
 
-        app.logger.info({ email: request.body.email, restauranteId }, "Creating new garcon");
+        app.logger.info({ email: emailNormalizado, restauranteId }, "Creating new garcon");
 
-        // Check if user already exists
-        const existing = await app.db
+        // Check if user already exists in userTable
+        const existingUser = await app.db
           .select()
           .from(userTable)
-          .where(eq(userTable.email, request.body.email))
+          .where(eq(userTable.email, emailNormalizado))
           .limit(1);
 
-        if (existing && existing.length > 0) {
+        if (existingUser && existingUser.length > 0) {
+          return await reply.code(409).send({ error: "Email already exists" });
+        }
+
+        // Check if user already exists in usuarios table
+        const existingUsuario = await app.db
+          .select()
+          .from(schema.usuarios)
+          .where(sql`LOWER(${schema.usuarios.email}) = LOWER(${emailNormalizado})`)
+          .limit(1);
+
+        if (existingUsuario && existingUsuario.length > 0) {
           return await reply.code(409).send({ error: "Email already exists" });
         }
 
@@ -232,7 +254,7 @@ export function registerGarconRoutes(app: App) {
         await app.db.insert(userTable).values({
           id: userId,
           name: request.body.name,
-          email: request.body.email,
+          email: emailNormalizado,
           emailVerified: false,
           role: "garcom",
           active: true,
@@ -255,25 +277,25 @@ export function registerGarconRoutes(app: App) {
         await app.db.insert(schema.usuarios).values({
           id: randomUUID(),
           nome: request.body.name,
-          email: request.body.email,
+          email: emailNormalizado,
           senhaHash: hashedPassword,
           role: "garcom",
           restauranteId,
           createdAt: now,
         });
 
-        app.logger.info({ userId, email: request.body.email }, "Garcon created successfully");
+        app.logger.info({ userId, email: emailNormalizado }, "Garcon created successfully");
 
         return await reply.code(201).send({
           id: userId,
           name: request.body.name,
-          email: request.body.email,
+          email: emailNormalizado,
           role: "garcom",
           active: true,
           created_at: now.toISOString(),
         });
       } catch (error) {
-        app.logger.error({ err: error, body: request.body }, "Failed to create garcon");
+        app.logger.error({ err: error }, "Failed to create garcon");
         return await reply.code(500).send({ error: "Internal server error" });
       }
     }
@@ -349,9 +371,17 @@ export function registerGarconRoutes(app: App) {
         }
         const emailAntigo = existing[0].email;
 
+        // Validar senha se fornecida
+        if (request.body.password && request.body.password.trim() !== "") {
+          const erroSenha = validarSenhaNova(request.body.password);
+          if (erroSenha) {
+            return await reply.code(400).send({ error: erroSenha });
+          }
+        }
+
         const updates: any = {};
         if (request.body.name !== undefined) updates.name = request.body.name;
-        if (request.body.email !== undefined) updates.email = request.body.email;
+        if (request.body.email !== undefined) updates.email = normalizarEmail(request.body.email);
         if (request.body.active !== undefined) updates.active = request.body.active;
         updates.updatedAt = new Date();
 
