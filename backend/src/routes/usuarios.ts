@@ -286,8 +286,20 @@ export function registerUsuariosRoutes(app: App) {
           if (ehAdministrador(alvo.role)) {
             return await reply.code(403).send({ error: "Somente o administrador pode alterar um administrador." });
           }
+
+          // Gerente: validação de mudança de papel
           if (roleNormalizado !== undefined && roleNormalizado !== alvoRoleNormalizado) {
-            return await reply.code(403).send({ error: "Somente o administrador pode alterar papéis." });
+            // Verifica se alvo é o próprio gerente que chama
+            const authUserEmail = normalizarEmail(authUser.email || "");
+            const alvoEmail = normalizarEmail(alvo.email || "");
+            if (authUser.id === alvo.id || authUserEmail === alvoEmail) {
+              return await reply.code(403).send({ error: "Você não pode alterar a sua própria função. Peça a um administrador." });
+            }
+
+            // Verifica se nova função é administrador
+            if (ehAdministrador(roleNormalizado)) {
+              return await reply.code(403).send({ error: "Somente o administrador pode atribuir a função de administrador." });
+            }
           }
         }
 
