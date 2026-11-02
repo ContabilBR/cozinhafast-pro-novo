@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from "react";
-import { BACKEND_URL, saveBearerToken, deleteBearerToken, getBearerToken, setMemoryToken } from "@/utils/api";
+import { Alert } from "react-native";
+import { BACKEND_URL, saveBearerToken, deleteBearerToken, getBearerToken, setMemoryToken, setSessionInvalidHandler } from "@/utils/api";
 
 export type User = {
   id: string;
@@ -32,6 +33,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     restoreSession();
   }, []);
 
+  // Sessão expirada durante o uso: mesma saída do signOut, com um aviso único.
+  useEffect(() => {
+    let avisou = false;
+    setSessionInvalidHandler(() => {
+      console.warn("[Auth] Session invalid — signing out");
+      setMemoryToken(null);
+      void deleteBearerToken();
+      setToken(null);
+      setUser(null);
+      if (!avisou) {
+        avisou = true;
+        Alert.alert("Sessão expirada. Entre novamente.");
+        setTimeout(() => {
+          avisou = false;
+        }, 3000);
+      }
+    });
+    return () => setSessionInvalidHandler(null);
+  }, []);
+
   const restoreSession = async () => {
     console.log("[Auth] Restoring session from storage");
     try {
@@ -43,28 +64,51 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       // Warm the in-memory cache immediately so any concurrent API calls work.
       setMemoryToken(stored);
-      console.log("[Auth] GET /api/me");
-      const response = await fetch(`${BACKEND_URL}/api/me`, {
-        headers: {
-          Authorization: `Bearer ${stored}`,
-          "Content-Type": "application/json",
-        },
-      });
-      if (!response.ok) {
-        console.warn("[Auth] /api/me returned", response.status, "— clearing token");
-        await deleteBearerToken();
-        setMemoryToken(null);
-        setIsLoading(false);
-        return;
+      // Até 3 tentativas (espera de 1s e 2s), cada uma com limite de 10s.
+      // Só 401/403 apaga o token; qualquer outra falha mantém o token guardado.
+      for (let tentativa = 1; tentativa <= 3; tentativa++) {
+        if (tentativa > 1) {
+          await new Promise((resolve) => setTimeout(resolve, (tentativa - 1) * 1000));
+        }
+        console.log("[Auth] GET /api/me, attempt", tentativa);
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 10000);
+        try {
+          const response = await fetch(`${BACKEND_URL}/api/me`, {
+            headers: {
+              Authorization: `Bearer ${stored}`,
+              "Content-Type": "application/json",
+            },
+            signal: controller.signal,
+          });
+          if (response.status === 401 || response.status === 403) {
+            console.warn("[Auth] /api/me returned", response.status, "— clearing token");
+            await deleteBearerToken();
+            setMemoryToken(null);
+            return;
+          }
+          if (!response.ok) {
+            console.warn("[Auth] /api/me failed: server error", response.status);
+            continue;
+          }
+          const me: User = await response.json();
+          if (!me || typeof me !== "object" || !me.id) {
+            console.warn("[Auth] /api/me failed: unexpected response");
+            continue;
+          }
+          console.log("[Auth] Session restored for:", me.email, "role:", me.role);
+          setToken(stored);
+          setUser(me);
+          return;
+        } catch (error: any) {
+          console.warn("[Auth] /api/me failed:", error?.name === "AbortError" ? "timeout" : "network or unexpected response");
+        } finally {
+          clearTimeout(timer);
+        }
       }
-      const me: User = await response.json();
-      console.log("[Auth] Session restored for:", me.email, "role:", me.role);
-      setToken(stored);
-      setUser(me);
-    } catch (error) {
-      console.error("[Auth] Failed to restore session:", error);
-      await deleteBearerToken();
-      setMemoryToken(null);
+      console.warn("[Auth] Could not restore session; token kept for next launch");
+    } catch (error: any) {
+      console.warn("[Auth] Failed to restore session:", error?.name ?? "unknown error");
     } finally {
       setIsLoading(false);
     }
