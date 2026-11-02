@@ -8,6 +8,7 @@ import {
   Modal,
   TextInput,
   ActivityIndicator,
+  Alert,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
@@ -173,6 +174,9 @@ export default function UsuariosScreen() {
 
   const role = authUser?.role ?? "";
   const canManage = role === "admin" || role === "administrador" || role === "gerente";
+  const roleNorm = String(role).trim().toLowerCase();
+  const souGerente = roleNorm === "gerente";
+  const rolesPermitidas = souGerente ? ROLES.filter((r) => r !== "administrador") : ROLES;
 
   const [users, setUsers] = useState<ApiUser[]>([]);
   const [loading, setLoading] = useState(true);
@@ -277,6 +281,8 @@ export default function UsuariosScreen() {
       setUsers((prev) => prev.filter((u) => u.id !== id));
     } catch (e: any) {
       console.error("[Usuarios] Delete error:", e);
+      const msg = e instanceof Error ? e.message.trim() : "";
+      Alert.alert("Erro", msg && !/^HTTP \d+$/.test(msg) ? msg : "Não foi possível excluir o usuário.");
     }
   };
 
@@ -452,6 +458,7 @@ export default function UsuariosScreen() {
             <View style={{ gap: 6 }}>
               <Text style={{ fontFamily: "Outfit_600SemiBold", fontSize: 14, color: COLORS.text }}>Função</Text>
               <AnimatedPressable
+                disabled={souGerente && !!editingUser}
                 onPress={() => {
                   console.log("[Usuarios] Role picker toggled");
                   setShowRolePicker((v) => !v);
@@ -463,9 +470,9 @@ export default function UsuariosScreen() {
                 </Text>
                 <ChevronDown size={16} color={COLORS.textSecondary} />
               </AnimatedPressable>
-              {showRolePicker && (
+              {showRolePicker && !(souGerente && !!editingUser) && (
                 <View style={{ backgroundColor: COLORS.surface, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border, overflow: "hidden" }}>
-                  {ROLES.map((r) => (
+                  {rolesPermitidas.map((r) => (
                     <AnimatedPressable
                       key={r}
                       onPress={() => {
