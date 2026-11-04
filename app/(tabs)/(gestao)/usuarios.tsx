@@ -14,6 +14,7 @@ import { useRouter } from "expo-router";
 import { useFocusEffect } from "@react-navigation/native";
 import { Ionicons } from "@expo/vector-icons";
 import { useColors } from "@/hooks/useColors";
+import { useTabBarInset } from "@/hooks/useTabBarInset";
 import { CardSkeleton } from "@/components/SkeletonLoader";
 import { AnimatedPressable } from "@/components/AnimatedPressable";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -59,6 +60,7 @@ function getRoleBadgeColor(role: string | undefined): { bg: string; text: string
 
 export default function GestaoUsuariosScreen() {
   const COLORS = useColors();
+  const tabBarInset = useTabBarInset();
   const router = useRouter();
   const { user: authUser } = useAuth();
   const souGerente = normRole(authUser?.role) === "gerente";
@@ -417,7 +419,7 @@ export default function GestaoUsuariosScreen() {
       ) : (
         <ScrollView
           style={{ flex: 1 }}
-          contentContainerStyle={{ padding: 12, paddingBottom: 120 }}
+          contentContainerStyle={{ padding: 12, paddingBottom: tabBarInset + 16 }}
           showsVerticalScrollIndicator={false}
         >
           {filteredUsuarios.length === 0 ? (

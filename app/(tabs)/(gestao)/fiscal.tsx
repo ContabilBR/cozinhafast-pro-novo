@@ -5,6 +5,7 @@ import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useColors } from "@/hooks/useColors";
+import { useTabBarInset } from "@/hooks/useTabBarInset";
 import { apiGet, apiPost, apiDelete } from "@/utils/api";
 
 const STATUS_CFG: Record<string, { label: string; bg: string; text: string; icon: string }> = {
@@ -26,6 +27,7 @@ interface ComandaHistorico { id: string; mesa_numero?: number; garcom_nome?: str
 
 export default function FiscalScreen() {
   const COLORS = useColors();
+  const tabBarInset = useTabBarInset();
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const [notas, setNotas] = useState<Nota[]>([]);
@@ -74,7 +76,7 @@ export default function FiscalScreen() {
         </Pressable>
       </View>
       {loading ? <View style={{ padding: 16 }}><ActivityIndicator size="large" color={COLORS.primary} /></View> : (
-        <FlatList data={notas} keyExtractor={(n) => n.id} contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
+        <FlatList data={notas} keyExtractor={(n) => n.id} contentContainerStyle={{ padding: 16, paddingBottom: tabBarInset + 16 }}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); fetchNotas(); }} tintColor={COLORS.primary} />}
           renderItem={({ item }) => { const s = STATUS_CFG[item.status] || STATUS_CFG.pendente; return (
             <View style={{ backgroundColor: COLORS.surface, borderRadius: 14, padding: 14, marginBottom: 10, borderWidth: 0.5, borderColor: COLORS.border }}>

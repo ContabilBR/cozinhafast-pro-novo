@@ -15,6 +15,7 @@ import { useRouter } from "expo-router";
 import { useFocusEffect } from "@react-navigation/native";
 import { Ionicons } from "@expo/vector-icons";
 import { useColors } from "@/hooks/useColors";
+import { useTabBarInset } from "@/hooks/useTabBarInset";
 import { AnimatedPressable } from "@/components/AnimatedPressable";
 import { CardSkeleton } from "@/components/SkeletonLoader";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -42,6 +43,7 @@ const MAX_MESAS_POR_LOTE = 100;
 
 export default function GestaoMesasScreen() {
   const COLORS = useColors();
+  const tabBarInset = useTabBarInset();
   const router = useRouter();
 
   const [mesas, setMesas] = useState<ApiMesa[]>([]);
@@ -513,7 +515,7 @@ export default function GestaoMesasScreen() {
       ) : (
         <ScrollView
           style={{ flex: 1 }}
-          contentContainerStyle={{ padding: 12, paddingBottom: 120 }}
+          contentContainerStyle={{ padding: 12, paddingBottom: tabBarInset + 16 }}
           showsVerticalScrollIndicator={false}
         >
           {filteredMesas.length === 0 ? (

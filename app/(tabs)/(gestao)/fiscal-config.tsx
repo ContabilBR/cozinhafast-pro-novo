@@ -15,6 +15,7 @@ import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useColors } from "@/hooks/useColors";
+import { useTabBarInset } from "@/hooks/useTabBarInset";
 import { apiGet, apiPut } from "@/utils/api";
 
 interface FiscalForm {
@@ -75,6 +76,7 @@ const OBRIGATORIOS: Array<keyof FiscalForm> = [
 
 export default function FiscalConfigScreen() {
   const COLORS = useColors();
+  const tabBarInset = useTabBarInset();
   const insets = useSafeAreaInsets();
   const router = useRouter();
 
@@ -286,7 +288,7 @@ export default function FiscalConfigScreen() {
         </View>
       </View>
 
-      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 120 }}>
+      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: tabBarInset + 16 }}>
         <View
           style={{
             backgroundColor: prontoParaEmitir ? "#D1FAE5" : "#FEF3C7",

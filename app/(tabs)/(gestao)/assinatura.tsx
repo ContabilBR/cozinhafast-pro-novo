@@ -5,6 +5,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { useColors } from "@/hooks/useColors";
+import { useTabBarInset } from "@/hooks/useTabBarInset";
 import { apiGet, apiPost } from "@/utils/api";
 import { formatCurrency } from "@/utils/helpers";
 
@@ -13,6 +14,7 @@ const PLANO_COLORS: Record<string, string> = { trial: "#6B7280", basico: "#3B82F
 
 export default function AssinaturaScreen() {
   const COLORS = useColors();
+  const tabBarInset = useTabBarInset();
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const [assinatura, setAssinatura] = useState<any>(null);
@@ -88,7 +90,7 @@ export default function AssinaturaScreen() {
         <Pressable onPress={() => router.back()} style={{ marginRight: 10 }}><Ionicons name="arrow-back" size={24} color={COLORS.text} /></Pressable>
         <Text style={{ fontSize: 22, fontWeight: "700", color: COLORS.text }}>Assinatura</Text>
       </View>
-      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 100 }}>
+      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: tabBarInset + 16 }}>
         <View style={{ backgroundColor: cor, borderRadius: 16, padding: 20, marginBottom: 16, alignItems: "center" }}>
           <Ionicons name={PLANO_ICONS[planoAtual] as any} size={40} color="white" />
           <Text style={{ fontSize: 24, fontWeight: "700", color: "white", marginTop: 8 }}>Plano {assinatura?.plano_detalhes?.nome || planoAtual}</Text>

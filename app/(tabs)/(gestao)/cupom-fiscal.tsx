@@ -16,6 +16,7 @@ import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useColors } from "@/hooks/useColors";
+import { useTabBarInset } from "@/hooks/useTabBarInset";
 import { apiGet, apiPost } from "@/utils/api";
 
 interface Pedido {
@@ -71,6 +72,7 @@ const MAX_POLLS = 5;
 
 export default function CupomFiscalScreen() {
   const COLORS = useColors();
+  const tabBarInset = useTabBarInset();
   const insets = useSafeAreaInsets();
   const router = useRouter();
 
@@ -272,7 +274,7 @@ export default function CupomFiscalScreen() {
           <FlatList
             data={comandas}
             keyExtractor={(c) => c.id}
-            contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
+            contentContainerStyle={{ padding: 16, paddingBottom: tabBarInset + 16 }}
             ListHeaderComponent={
               <Text style={{ fontSize: 14, color: COLORS.textSecondary, marginBottom: 12 }}>
                 Selecione a comanda para emitir o cupom:
@@ -329,7 +331,7 @@ export default function CupomFiscalScreen() {
 
       {/* ---------- Etapa 2: confirmar ---------- */}
       {etapa === "confirmar" && selecionada && (
-        <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 60 }}>
+        <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: tabBarInset + 16 }}>
           <View
             style={{
               backgroundColor: COLORS.surface,
@@ -424,7 +426,7 @@ export default function CupomFiscalScreen() {
 
       {/* ---------- Etapa 3: resultado ---------- */}
       {etapa === "resultado" && nota && (
-        <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 60 }}>
+        <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: tabBarInset + 16 }}>
           {(() => {
             const c = cores[nota.status] || cores.processando;
             return (

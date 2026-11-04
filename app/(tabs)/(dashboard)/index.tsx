@@ -12,6 +12,7 @@ import {
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
+import { useTabBarInset } from "@/hooks/useTabBarInset";
 import { useAuth } from "@/contexts/AuthContext";
 import { AnimatedPressable } from "@/components/AnimatedPressable";
 import { SkeletonLine } from "@/components/SkeletonLoader";
@@ -196,6 +197,7 @@ function formatYMD(date: Date): string {
 export default function DashboardScreen() {
   const COLORS = useColors();
   const insets = useSafeAreaInsets();
+  const tabBarInset = useTabBarInset();
   const router = useRouter();
   const { user } = useAuth();
   const userIsAdmin = isAdmin(user?.role);
@@ -442,7 +444,7 @@ export default function DashboardScreen() {
       </View>
 
       <ScrollView
-        contentContainerStyle={{ padding: 16, paddingBottom: 120, gap: 20 }}
+        contentContainerStyle={{ padding: 16, paddingBottom: tabBarInset + 16, gap: 20 }}
         contentInsetAdjustmentBehavior="automatic"
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={COLORS.primary} />

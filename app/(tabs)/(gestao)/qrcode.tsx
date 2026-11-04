@@ -5,6 +5,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { useColors } from "@/hooks/useColors";
+import { useTabBarInset } from "@/hooks/useTabBarInset";
 import { apiGet, apiPost } from "@/utils/api";
 
 interface MesaQR {
@@ -17,6 +18,7 @@ const temToken = (mesa: MesaQR) => typeof mesa.qr_token === "string" && /^[0-9a-
 
 export default function QRCodeScreen() {
   const COLORS = useColors();
+  const tabBarInset = useTabBarInset();
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const [mesas, setMesas] = useState<MesaQR[]>([]);
@@ -128,7 +130,7 @@ export default function QRCodeScreen() {
         </Pressable>
       </View>
       {loading ? <View style={{ padding: 16 }}><ActivityIndicator size="large" color={COLORS.primary} /></View> : (
-        <FlatList data={mesas} keyExtractor={(m) => m.id} numColumns={2} columnWrapperStyle={{ gap: 10 }} contentContainerStyle={{ padding: 16, paddingBottom: 100, gap: 10 }}
+        <FlatList data={mesas} keyExtractor={(m) => m.id} numColumns={2} columnWrapperStyle={{ gap: 10 }} contentContainerStyle={{ padding: 16, paddingBottom: tabBarInset + 16, gap: 10 }}
           renderItem={({ item }) => (
             <Pressable onPress={() => compartilharQR(item)} disabled={bloqueado} style={{ flex: 1, backgroundColor: COLORS.surface, borderRadius: 12, padding: 16, borderWidth: 0.5, borderColor: COLORS.surfaceSecondary, alignItems: "center", opacity: gerando !== null ? 0.5 : 1 }}>
               <Ionicons name="qr-code-outline" size={40} color={COLORS.primary} />
