@@ -1,6 +1,7 @@
 // force rebuild v3
 import React, { useState, useEffect } from "react";
-import { View, Text, ScrollView, Pressable, Alert, ActivityIndicator, TextInput } from "react-native";
+import { View, Text, ScrollView, Pressable, Alert, ActivityIndicator, TextInput, Platform } from "react-native";
+import * as Linking from "expo-linking";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -8,6 +9,7 @@ import { useColors } from "@/hooks/useColors";
 import { apiGet, apiPost } from "@/utils/api";
 import { formatCurrency } from "@/utils/helpers";
 import { CampoMoeda } from "@/components/CampoMoeda";
+import { salvarTransacaoPendente, limparTransacaoPendente } from "@/utils/terminalPendente";
 
 const FORMAS = [
   { key: "dinheiro", label: "Dinheiro", icon: "cash-outline" },
@@ -46,6 +48,55 @@ export default function PagamentoScreen() {
   }, [id, valorParam]);
 
   const restante = totalComanda - totalPago;
+
+  const [parcelas, setParcelas] = useState(1);
+  const [tipoParcelamento, setTipoParcelamento] = useState<"lojista" | "emissor">("lojista");
+  const [cobrando, setCobrando] = useState(false);
+  const podeMaquininha = Platform.OS === "android" && (forma === "pix" || forma === "cartao_credito" || forma === "cartao_debito");
+
+  const cobrarNaMaquininha = async () => {
+    const v = parseFloat(valor.replace(",", "."));
+    if (!v || v <= 0) return Alert.alert("Erro", "Informe o valor");
+    console.log("[PagamentoScreen] Cobrar na maquininha:", { forma, valor: v, parcelas, tipoParcelamento });
+    setCobrando(true);
+    let transacaoId: string | undefined;
+    try {
+      const body: any = { forma_pagamento: forma, valor: v };
+      if (forma === "cartao_credito") {
+        body.parcelas = parcelas;
+        if (parcelas > 1) body.tipo_parcelamento = tipoParcelamento;
+      }
+      const res: any = await apiPost("/api/comandas/" + id + "/terminal/transacoes", body);
+      transacaoId = res?.transacao?.id;
+      const t = res?.terminal;
+      if (!transacaoId || !t) throw new Error("Resposta inesperada do servidor.");
+      await salvarTransacaoPendente({ transacaoId, comandaId: String(id) });
+
+      const qs = new URLSearchParams();
+      qs.set("return_scheme", "cozinhafastpro");
+      qs.set("amount", String(t.amount_centavos));
+      qs.set("editable_amount", "0");
+      qs.set("transaction_type", String(t.transaction_type));
+      if (t.installment_type) qs.set("installment_type", String(t.installment_type));
+      if (t.installment_count) qs.set("installment_count", String(t.installment_count));
+      qs.set("order_id", String(t.order_id));
+      const url = "payment-app://pay?" + qs.toString();
+      console.log("[PagamentoScreen] Abrindo maquininha:", url);
+      try {
+        await Linking.openURL(url);
+      } catch (e) {
+        console.log("[PagamentoScreen] Stone não encontrada:", e);
+        await apiPost("/api/terminal/transacoes/" + transacaoId + "/sem-retorno", {}).catch(() => {});
+        await limparTransacaoPendente();
+        Alert.alert("Maquininha", "Aplicativo de pagamento da Stone não encontrado neste aparelho. Use o registro manual.");
+        return;
+      }
+      router.push({ pathname: "/comanda/aguardando-maquininha", params: { transacaoId, comandaId: String(id) } });
+    } catch (err: any) {
+      console.log("[PagamentoScreen] Erro ao iniciar cobrança:", err);
+      Alert.alert("Erro", err?.message || "Não foi possível iniciar a cobrança.");
+    } finally { setCobrando(false); }
+  };
 
   const submit = async () => {
     const v = parseFloat(valor.replace(",", "."));
@@ -120,6 +171,35 @@ export default function PagamentoScreen() {
                 <Text style={{ fontSize: 13, color: p.status === "confirmado" ? "#22C55E" : "#F59E0B", fontWeight: "500" }}>{formatCurrency(parseFloat(p.valor))} {p.status === "pendente" ? "(pendente)" : ""}</Text>
               </View>
             ))}
+          </View>
+        )}
+
+        {podeMaquininha && (
+          <View style={{ marginTop: 8, marginBottom: 8 }}>
+            {forma === "cartao_credito" && (
+              <>
+                <Text style={{ fontSize: 12, fontWeight: "600", color: COLORS.primary, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>Parcelas</Text>
+                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+                  {Array.from({ length: 12 }, (_, i) => i + 1).map(n => (
+                    <Pressable key={n} onPress={() => setParcelas(n)} style={{ width: 52, paddingVertical: 10, borderRadius: 10, alignItems: "center", backgroundColor: parcelas === n ? COLORS.primary : COLORS.surface, borderWidth: 0.5, borderColor: parcelas === n ? COLORS.primary : COLORS.surfaceSecondary }}>
+                      <Text style={{ fontSize: 14, fontWeight: "500", color: parcelas === n ? "white" : COLORS.text }}>{n}x</Text>
+                    </Pressable>
+                  ))}
+                </View>
+                {parcelas > 1 && (
+                  <View style={{ flexDirection: "row", gap: 8, marginBottom: 12 }}>
+                    {([["lojista", "Sem juros (lojista)"], ["emissor", "Com juros (emissor)"]] as const).map(([k, l]) => (
+                      <Pressable key={k} onPress={() => setTipoParcelamento(k)} style={{ flex: 1, padding: 12, borderRadius: 10, alignItems: "center", backgroundColor: tipoParcelamento === k ? COLORS.primary : COLORS.surface, borderWidth: 0.5, borderColor: tipoParcelamento === k ? COLORS.primary : COLORS.surfaceSecondary }}>
+                        <Text style={{ fontSize: 13, fontWeight: "500", color: tipoParcelamento === k ? "white" : COLORS.text }}>{l}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                )}
+              </>
+            )}
+            <Pressable onPress={cobrarNaMaquininha} disabled={cobrando || saving} style={{ backgroundColor: cobrando ? COLORS.textTertiary : COLORS.primary, borderRadius: 12, padding: 16, alignItems: "center" }}>
+              {cobrando ? <ActivityIndicator color="white" /> : <Text style={{ color: "white", fontSize: 16, fontWeight: "600" }}>Cobrar na maquininha</Text>}
+            </Pressable>
           </View>
         )}
 
