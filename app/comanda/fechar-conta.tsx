@@ -11,6 +11,7 @@ import { formatReceipt } from "@/utils/printer";
 import { useAuth } from "@/contexts/AuthContext";
 import { useReceiptPreview } from "@/components/ReceiptPreview";
 import { calcularTotalComDesconto } from "@/utils/desconto";
+import { CobrancaMaquininha } from "@/components/CobrancaMaquininha";
 
 const ETAPAS = ["resumo", "gorjeta", "divisao", "pagamento"] as const;
 type Etapa = typeof ETAPAS[number];
@@ -26,9 +27,9 @@ export default function FecharContaScreen() {
   const COLORS = useColors();
   const { previewReceipt, previewModal } = useReceiptPreview();
   const router = useRouter();
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, etapa: etapaParam } = useLocalSearchParams<{ id: string; etapa?: string }>();
   const insets = useSafeAreaInsets();
-  const [etapa, setEtapa] = useState<Etapa>("resumo");
+  const [etapa, setEtapa] = useState<Etapa>(etapaParam === "pagamento" ? "pagamento" : "resumo");
   const [comanda, setComanda] = useState<any>(null);
   const [pedidos, setPedidos] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -400,6 +401,15 @@ export default function FecharContaScreen() {
           </View>
           {forma === "dinheiro" && (<><Text style={labelStyle}>Troco para (R$)</Text><CampoMoeda value={trocoInput} onChangeText={setTrocoInput} placeholder="0,00" placeholderTextColor={COLORS.textTertiary} style={{ backgroundColor: COLORS.surface, borderRadius: 10, borderWidth: 0.5, borderColor: COLORS.surfaceSecondary, padding: 12, fontSize: 16, color: COLORS.text, marginBottom: 16 }} /></>)}
           {pagamentos.length > 0 && <View style={{ ...cardStyle, marginBottom: 16 }}><Text style={labelStyle}>Pagamentos registrados</Text>{pagamentos.map((p: any, i: number) => (<View key={p.id || i} style={{ flexDirection: "row", justifyContent: "space-between", paddingVertical: 4 }}><Text style={{ fontSize: 13, color: COLORS.textSecondary }}>{p.formaPagamento || p.forma_pagamento}</Text><Text style={{ fontSize: 13, color: p.status === "confirmado" ? "#22C55E" : "#F59E0B", fontWeight: "500" }}>{formatCurrency(parseFloat(p.valor))} {p.status === "pendente" ? "(pendente)" : "✓"}</Text></View>))}</View>}
+          <CobrancaMaquininha
+            comandaId={String(id)}
+            forma={forma}
+            obterValor={() => { const v = Math.round((dividir ? valorPessoaAtual : restante) * 100) / 100; return v >= 0.01 ? v : null; }}
+            gorjeta={gorjetaValue}
+            retorno="fechar-conta"
+            desabilitado={saving || restante <= 0}
+            onValorInvalido={() => Alert.alert("Erro", "Não há valor a cobrar")}
+          />
           <Pressable onPress={() => registrarPagamento(dividir ? valorPessoaAtual : restante)} disabled={saving || restante <= 0} style={{ ...btnPrimary, backgroundColor: saving || restante <= 0 ? COLORS.textTertiary : COLORS.primary }}>
             {saving ? <ActivityIndicator color="white" /> : <Text style={{ color: "white", fontSize: 16, fontWeight: "600" }}>{restante <= 0 ? "Tudo pago" : "Pagar " + formatCurrency(dividir ? valorPessoaAtual : restante)}</Text>}
           </Pressable>

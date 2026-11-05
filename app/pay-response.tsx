@@ -4,6 +4,7 @@ import { useRouter, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { lerTransacaoPendente, TransacaoPendente } from "@/utils/terminalPendente";
+import { voltarDaMaquininha } from "@/utils/cobrancaMaquininha";
 
 // Destino de cozinhafastpro://pay-response, para onde a Stone devolve o resultado.
 // Nesta etapa só exibe o que chegou, para diagnóstico.
@@ -22,6 +23,7 @@ export default function PayResponseScreen() {
 
   const voltar = () => {
     console.log("[PayResponse] Voltar à comanda pressed");
+    if (voltarDaMaquininha(pendente?.comandaId, pendente?.retorno)) return;
     if (pendente?.comandaId) router.replace({ pathname: "/comanda/[id]", params: { id: pendente.comandaId } });
     else router.replace("/(tabs)/(home)");
   };

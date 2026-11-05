@@ -5,12 +5,14 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { apiPost } from "@/utils/api";
 import { lerTransacaoPendente, limparTransacaoPendente } from "@/utils/terminalPendente";
+import { voltarDaMaquininha } from "@/utils/cobrancaMaquininha";
 
 export default function AguardandoMaquininhaScreen() {
   const COLORS = useColors();
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const params = useLocalSearchParams<{ transacaoId?: string; comandaId?: string }>();
+  const params = useLocalSearchParams<{ transacaoId?: string; comandaId?: string; retorno?: string }>();
+  const [retorno, setRetorno] = useState<string | undefined>(params.retorno);
   const [transacaoId, setTransacaoId] = useState<string | undefined>(params.transacaoId);
   const [comandaId, setComandaId] = useState<string | undefined>(params.comandaId);
   const [saving, setSaving] = useState(false);
@@ -23,6 +25,7 @@ export default function AguardandoMaquininhaScreen() {
         console.log("[AguardandoMaquininha] Transação pendente recuperada:", p);
         setTransacaoId(p.transacaoId);
         setComandaId(p.comandaId);
+        setRetorno(p.retorno);
       }
     });
   }, [transacaoId, comandaId]);
@@ -33,6 +36,7 @@ export default function AguardandoMaquininhaScreen() {
     try {
       if (transacaoId) await apiPost("/api/terminal/transacoes/" + transacaoId + "/sem-retorno", {});
       await limparTransacaoPendente();
+      if (voltarDaMaquininha(comandaId, retorno)) return;
       if (comandaId) router.replace({ pathname: "/comanda/pagamento", params: { id: comandaId } });
       else router.back();
     } catch (err: any) {

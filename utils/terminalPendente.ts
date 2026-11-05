@@ -2,7 +2,8 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const KEY = "cozinhafast_terminal_pendente";
 
-export type TransacaoPendente = { transacaoId: string; comandaId: string };
+export type RetornoCobranca = "fechar-conta";
+export type TransacaoPendente = { transacaoId: string; comandaId: string; retorno?: RetornoCobranca };
 
 export async function salvarTransacaoPendente(p: TransacaoPendente): Promise<void> {
   await AsyncStorage.setItem(KEY, JSON.stringify(p));
