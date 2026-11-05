@@ -159,3 +159,422 @@ export async function garantirColunasDeModoComanda(app: App): Promise<number> {
 
   return criadas;
 }
+
+/**
+ * Desconto/cortesia (etapa 1a).
+ *
+ * Cria, só se faltarem, sete colunas nas tabelas `comandas` e `comandas_historico`:
+ *  - desconto_valor numeric(10,2) NOT NULL DEFAULT 0
+ *  - desconto_tipo text NULL
+ *  - desconto_motivo text NULL
+ *  - desconto_motivo_detalhe text NULL
+ *  - desconto_por_id text NULL
+ *  - desconto_por_nome text NULL
+ *  - desconto_em timestamp with time zone NULL
+ * Idempotente: confere o information_schema antes e usa IF NOT EXISTS, então convive com
+ * colunas já criadas à mão no banco e com uma eventual migração do Drizzle.
+ * Devolve quantas colunas foram criadas (0 quando o banco já estava em dia).
+ */
+const COLUNAS_DESCONTO: Array<[coluna: string, tipo: string]> = [
+  ["desconto_valor", "numeric(10,2) NOT NULL DEFAULT 0"],
+  ["desconto_tipo", "text"],
+  ["desconto_motivo", "text"],
+  ["desconto_motivo_detalhe", "text"],
+  ["desconto_por_id", "text"],
+  ["desconto_por_nome", "text"],
+  ["desconto_em", "timestamp with time zone"],
+];
+
+const TABELAS_DESCONTO = ["comandas", "comandas_historico"] as const;
+
+export async function garantirColunasContinuasDeDesconto(app: App): Promise<number> {
+  const db = app.db as any;
+  let criadas = 0;
+
+  try {
+    const nomes = COLUNAS_DESCONTO.map(([coluna]) => coluna);
+    let existentes: any[] = [];
+
+    try {
+      const result = await db.execute(
+        sql`SELECT table_name, column_name
+            FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name IN ('comandas', 'comandas_historico')
+              AND column_name IN (${sql.join(nomes.map((n) => sql`${n}`), sql`, `)})`
+      );
+      existentes = linhasDe(result);
+    } catch (queryErr) {
+      app.logger.warn({ err: queryErr }, "Failed to query information_schema for discount columns - proceeding anyway");
+      // Continue without checking existing columns - ALTER TABLE will use IF NOT EXISTS
+    }
+
+    const jaExiste = new Set(existentes.map((r: any) => `${r.table_name}.${r.column_name}`));
+
+    for (const tabela of TABELAS_DESCONTO) {
+      for (const [coluna, tipo] of COLUNAS_DESCONTO) {
+        if (jaExiste.has(`${tabela}.${coluna}`)) continue;
+        try {
+          await db.execute(sql.raw(`ALTER TABLE "${tabela}" ADD COLUMN IF NOT EXISTS "${coluna}" ${tipo}`));
+          criadas++;
+        } catch (err) {
+          // Não derruba o backend: o erro aparece no log e as demais colunas seguem
+          app.logger.error({ err, tabela, coluna }, "Failed to add missing discount column at startup");
+        }
+      }
+    }
+
+    if (criadas > 0) {
+      app.logger.warn({ criadas }, "Missing discount columns were created at startup");
+    } else {
+      app.logger.debug("Discount columns already present");
+    }
+  } catch (err) {
+    app.logger.error({ err }, "Failed to check discount columns at startup");
+  }
+
+  return criadas;
+}
+
+/**
+ * Backfill qrToken for existing mesas that have NULL qr_token.
+ * Single atomic SQL operation: generates 32-char hex tokens (UUID without hyphens).
+ * Idempotent - already-filled mesas are never changed.
+ * Does not throw; logs outcome and continues startup.
+ */
+export async function backfillQrTokens(app: App): Promise<void> {
+  const db = app.db as any;
+
+  try {
+    const result = await db.execute(
+      sql`WITH preenchidas AS (
+            UPDATE mesas
+            SET qr_token = replace(gen_random_uuid()::text, '-', '')
+            WHERE qr_token IS NULL
+            RETURNING 1
+          )
+          SELECT count(*)::int AS quantidade FROM preenchidas`
+    );
+
+    const rows = Array.isArray(result) ? result : (result as any)?.rows || [];
+    const quantidade = rows[0]?.quantidade ?? 0;
+
+    if (quantidade > 0) {
+      app.logger.info({ quantidade }, "QR tokens backfilled for mesas");
+    } else {
+      app.logger.debug("No mesas needed qr_token backfill");
+    }
+  } catch (err) {
+    // Extract safe SQLSTATE if available
+    const sqlstate = (err as any)?.cause?.code || (err as any)?.code || "UNKNOWN";
+    app.logger.warn({ codigo: sqlstate, mensagem: "Falha ao preencher tokens das mesas" }, "Backfill QR tokens");
+    // Do not throw - continue startup
+  }
+}
+
+/**
+ * Reservations table (ETAPA 1 - Sistema de Reservas).
+ *
+ * Ensures the reservas table structure is complete and consistent:
+ *  - Creates reserva_status enum type if missing (confirmada, sentada, cancelada, nao_compareceu)
+ *  - Creates reservas table if missing
+ *  - Ensures all CHECK constraints exist (numero_pessoas and duracao)
+ *  - Ensures all indices exist with exact names from migrations
+ * Idempotent: checks catalog before creating; uses IF NOT EXISTS for all DDL.
+ * Does not throw; logs outcome and continues startup.
+ */
+export async function garantirTabelaReservas(app: App): Promise<void> {
+  const db = app.db as any;
+
+  try {
+    // 1) Check if enum type exists (using pg_type catalog; no IF NOT EXISTS in Postgres)
+    let tipoExiste = false;
+    try {
+      const tipoResult = await db.execute(
+        sql`SELECT 1 FROM pg_type WHERE typname = 'reserva_status' AND typnamespace = (SELECT oid FROM pg_namespace WHERE nspname = current_schema())`
+      );
+      const tipoRows = Array.isArray(tipoResult) ? tipoResult : (tipoResult as any)?.rows || [];
+      tipoExiste = tipoRows.length > 0;
+    } catch (e) {
+      app.logger.warn({ err: e }, "Could not check if reserva_status enum exists; will attempt to create");
+    }
+
+    // Create enum if missing
+    if (!tipoExiste) {
+      try {
+        await db.execute(
+          sql.raw(`CREATE TYPE reserva_status AS ENUM ('confirmada', 'sentada', 'cancelada', 'nao_compareceu')`)
+        );
+        app.logger.info("Created reserva_status enum type");
+      } catch (err) {
+        // May already exist if created between check and create; log and continue
+        app.logger.debug({ err }, "Enum creation failed (may already exist)");
+      }
+    }
+
+    // 2) Check if reservas table exists
+    let tabelaExiste = false;
+    try {
+      const tabelaResult = await db.execute(
+        sql`SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'reservas'`
+      );
+      const tabelaRows = Array.isArray(tabelaResult) ? tabelaResult : (tabelaResult as any)?.rows || [];
+      tabelaExiste = tabelaRows.length > 0;
+    } catch (e) {
+      app.logger.warn({ err: e }, "Could not check if reservas table exists");
+    }
+
+    // Create table if missing
+    if (!tabelaExiste) {
+      try {
+        await db.execute(
+          sql.raw(`
+            CREATE TABLE reservas (
+              id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+              restaurante_id text NOT NULL,
+              mesa_id uuid,
+              nome_pessoa text NOT NULL,
+              telefone text,
+              data_hora timestamp with time zone NOT NULL,
+              numero_pessoas integer NOT NULL,
+              observacao text,
+              status reserva_status NOT NULL DEFAULT 'confirmada',
+              duracao integer NOT NULL DEFAULT 120,
+              comanda_id uuid,
+              criado_por text NOT NULL,
+              created_at timestamp with time zone NOT NULL DEFAULT now(),
+              updated_at timestamp with time zone NOT NULL DEFAULT now(),
+              CONSTRAINT fk_reservas_restaurante FOREIGN KEY (restaurante_id) REFERENCES restaurante(id) ON DELETE RESTRICT,
+              CONSTRAINT fk_reservas_mesa FOREIGN KEY (mesa_id) REFERENCES mesas(id) ON DELETE RESTRICT,
+              CONSTRAINT fk_reservas_comanda FOREIGN KEY (comanda_id) REFERENCES comandas(id) ON DELETE RESTRICT,
+              CONSTRAINT ck_reservas_numero_pessoas CHECK (numero_pessoas >= 1 AND numero_pessoas <= 50),
+              CONSTRAINT ck_reservas_duracao_positiva CHECK (duracao > 0)
+            )
+          `)
+        );
+        app.logger.info("Created reservas table");
+
+        // Create indices for the new table
+        try {
+          await db.execute(
+            sql.raw(`CREATE INDEX IF NOT EXISTS idx_reservas_restaurante_data_hora ON reservas(restaurante_id, data_hora)`)
+          );
+          app.logger.debug("Created index idx_reservas_restaurante_data_hora");
+        } catch (err) {
+          app.logger.warn({ err }, "Could not create idx_reservas_restaurante_data_hora");
+        }
+
+        try {
+          await db.execute(
+            sql.raw(`CREATE INDEX IF NOT EXISTS idx_reservas_mesa_data_hora ON reservas(mesa_id, data_hora)`)
+          );
+          app.logger.debug("Created index idx_reservas_mesa_data_hora");
+        } catch (err) {
+          app.logger.warn({ err }, "Could not create idx_reservas_mesa_data_hora");
+        }
+      } catch (err) {
+        // May have been created concurrently; log and continue
+        app.logger.debug({ err }, "Table creation failed (may already exist)");
+      }
+    } else {
+      // Table exists; ensure constraints and indices are present
+      try {
+        // Check and create CHECK constraints if missing
+        const constraintsResult = await db.execute(
+          sql`SELECT conname FROM pg_constraint WHERE conrelid = 'reservas'::regclass AND conname IN ('ck_reservas_numero_pessoas', 'ck_reservas_duracao_positiva')`
+        );
+        const constraintRows = Array.isArray(constraintsResult) ? constraintsResult : (constraintsResult as any)?.rows || [];
+        const existingConstraints = new Set(constraintRows.map((r: any) => r.conname));
+
+        if (!existingConstraints.has('ck_reservas_numero_pessoas')) {
+          try {
+            await db.execute(
+              sql.raw(`ALTER TABLE reservas ADD CONSTRAINT ck_reservas_numero_pessoas CHECK (numero_pessoas >= 1 AND numero_pessoas <= 50)`)
+            );
+            app.logger.info("Added CHECK constraint ck_reservas_numero_pessoas");
+          } catch (err) {
+            app.logger.warn({ err }, "Could not add ck_reservas_numero_pessoas (may exist or rows violate)");
+          }
+        }
+
+        if (!existingConstraints.has('ck_reservas_duracao_positiva')) {
+          try {
+            await db.execute(
+              sql.raw(`ALTER TABLE reservas ADD CONSTRAINT ck_reservas_duracao_positiva CHECK (duracao > 0)`)
+            );
+            app.logger.info("Added CHECK constraint ck_reservas_duracao_positiva");
+          } catch (err) {
+            app.logger.warn({ err }, "Could not add ck_reservas_duracao_positiva (may exist or rows violate)");
+          }
+        }
+      } catch (err) {
+        app.logger.debug({ err }, "Could not check/add CHECK constraints");
+      }
+
+      // Ensure indices exist with exact names from migrations
+      try {
+        const indicesResult = await db.execute(
+          sql`SELECT indexname FROM pg_indexes WHERE tablename = 'reservas' AND indexname IN ('idx_reservas_restaurante_data_hora', 'idx_reservas_mesa_data_hora')`
+        );
+        const indexRows = Array.isArray(indicesResult) ? indicesResult : (indicesResult as any)?.rows || [];
+        const existingIndices = new Set(indexRows.map((r: any) => r.indexname));
+
+        if (!existingIndices.has('idx_reservas_restaurante_data_hora')) {
+          try {
+            await db.execute(
+              sql.raw(`CREATE INDEX IF NOT EXISTS idx_reservas_restaurante_data_hora ON reservas(restaurante_id, data_hora)`)
+            );
+            app.logger.info("Created index idx_reservas_restaurante_data_hora");
+          } catch (err) {
+            app.logger.warn({ err }, "Could not create idx_reservas_restaurante_data_hora");
+          }
+        }
+
+        if (!existingIndices.has('idx_reservas_mesa_data_hora')) {
+          try {
+            await db.execute(
+              sql.raw(`CREATE INDEX IF NOT EXISTS idx_reservas_mesa_data_hora ON reservas(mesa_id, data_hora)`)
+            );
+            app.logger.info("Created index idx_reservas_mesa_data_hora");
+          } catch (err) {
+            app.logger.warn({ err }, "Could not create idx_reservas_mesa_data_hora");
+          }
+        }
+      } catch (err) {
+        app.logger.debug({ err }, "Could not check/add indices");
+      }
+
+      // Ensure grupo_id column exists
+      try {
+        const grupoIdResult = await db.execute(
+          sql`SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'reservas' AND column_name = 'grupo_id'`
+        );
+        const grupoIdRows = Array.isArray(grupoIdResult) ? grupoIdResult : (grupoIdResult as any)?.rows || [];
+
+        if (grupoIdRows.length === 0) {
+          try {
+            await db.execute(
+              sql.raw(`ALTER TABLE reservas ADD COLUMN IF NOT EXISTS grupo_id uuid`)
+            );
+            app.logger.info("Added column grupo_id to reservas");
+          } catch (err) {
+            app.logger.warn({ err }, "Could not add grupo_id column");
+          }
+        }
+      } catch (err) {
+        app.logger.debug({ err }, "Could not check grupo_id column");
+      }
+
+      // Ensure grupo_id index exists
+      try {
+        const grupoIdIndexResult = await db.execute(
+          sql`SELECT indexname FROM pg_indexes WHERE tablename = 'reservas' AND indexname = 'idx_reservas_restaurante_grupo_id'`
+        );
+        const indexRows = Array.isArray(grupoIdIndexResult) ? grupoIdIndexResult : (grupoIdIndexResult as any)?.rows || [];
+
+        if (indexRows.length === 0) {
+          try {
+            await db.execute(
+              sql.raw(`CREATE INDEX IF NOT EXISTS idx_reservas_restaurante_grupo_id ON reservas (restaurante_id, grupo_id)`)
+            );
+            app.logger.info("Created index idx_reservas_restaurante_grupo_id");
+          } catch (err) {
+            app.logger.warn({ err }, "Could not create idx_reservas_restaurante_grupo_id");
+          }
+        }
+      } catch (err) {
+        app.logger.debug({ err }, "Could not check grupo_id index");
+      }
+    }
+
+    app.logger.debug("Reservas table structure verified");
+  } catch (err) {
+    // Extract safe SQLSTATE if available
+    const sqlstate = (err as any)?.cause?.code || (err as any)?.code || "UNKNOWN";
+    app.logger.warn(
+      { codigo: sqlstate, mensagem: "Falha ao garantir tabela de reservas" },
+      "Ensure reservas table"
+    );
+    // Do not throw - continue startup
+  }
+}
+
+/**
+ * Garante a tabela de transações de terminal de cartão (maquininha), usada pela integração
+ * com a Stone por Deeplink e por outros terminais. Cada tentativa de cobrança no terminal é
+ * registrada aqui antes de abrir o terminal, porque o resultado volta depois.
+ *
+ * Mesma estrutura da migração 20261105190046_transacoes_terminal (mesmos nomes de constraints
+ * e de índices), então as duas podem rodar em qualquer ordem: tudo usa IF NOT EXISTS.
+ * Os comandos rodam numa única transação (tudo ou nada). Nas inicializações normais, com a
+ * tabela já criada, só faz uma consulta de leitura. Não lança erro: se falhar, registra o
+ * código SQLSTATE e a subida continua.
+ */
+export async function garantirTabelaTransacoesTerminal(app: App): Promise<void> {
+  const db = app.db as any;
+
+  try {
+    const existente = await db.execute(
+      sql`SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'transacoes_terminal'`
+    );
+    if (linhasDe(existente).length > 0) {
+      app.logger.debug("Transacoes_terminal table structure verified");
+      return;
+    }
+
+    const comandos: string[] = [
+      `CREATE TABLE IF NOT EXISTS "transacoes_terminal" (
+        "id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+        "order_id" bigserial NOT NULL,
+        "restaurante_id" text NOT NULL,
+        "comanda_id" uuid NOT NULL,
+        "pagamento_id" uuid,
+        "provedor" text DEFAULT 'stone_deeplink' NOT NULL,
+        "tipo_transacao" text NOT NULL,
+        "tipo_parcelamento" text,
+        "parcelas" integer,
+        "valor" numeric(10, 2) NOT NULL,
+        "status" text DEFAULT 'iniciada' NOT NULL,
+        "atk" text,
+        "itk" text,
+        "retorno_bruto" text,
+        "retorno_em" timestamp with time zone,
+        "iniciada_por_id" text,
+        "iniciada_por_nome" text,
+        "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+        "updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+        CONSTRAINT "ck_transacoes_terminal_status" CHECK (status IN ('iniciada', 'confirmada', 'recusada', 'cancelada', 'sem_retorno')),
+        CONSTRAINT "ck_transacoes_terminal_valor_positivo" CHECK (valor > 0),
+        CONSTRAINT "ck_transacoes_terminal_parcelas" CHECK (parcelas IS NULL OR parcelas >= 1)
+      )`,
+      `DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conname = 'transacoes_terminal_restaurante_id_restaurante_id_fk'
+          AND conrelid = 'transacoes_terminal'::regclass
+        ) THEN
+          ALTER TABLE "transacoes_terminal" ADD CONSTRAINT "transacoes_terminal_restaurante_id_restaurante_id_fk" FOREIGN KEY ("restaurante_id") REFERENCES "restaurante"("id") ON DELETE restrict ON UPDATE no action;
+        END IF;
+      END $$`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS "transacoes_terminal_order_id_uq" ON "transacoes_terminal" USING btree ("order_id")`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS "transacoes_terminal_restaurante_atk_uq" ON "transacoes_terminal" USING btree ("restaurante_id","atk") WHERE atk IS NOT NULL`,
+      `CREATE INDEX IF NOT EXISTS "idx_transacoes_terminal_restaurante_comanda" ON "transacoes_terminal" USING btree ("restaurante_id","comanda_id")`,
+      `CREATE INDEX IF NOT EXISTS "idx_transacoes_terminal_restaurante_status_created_at" ON "transacoes_terminal" USING btree ("restaurante_id","status","created_at")`,
+    ];
+
+    await db.transaction(async (tx: any) => {
+      for (const comando of comandos) {
+        await tx.execute(sql.raw(comando));
+      }
+    });
+    app.logger.info("Created transacoes_terminal table");
+  } catch (err) {
+    const sqlstate = (err as any)?.cause?.code || (err as any)?.code || "UNKNOWN";
+    app.logger.warn(
+      { codigo: sqlstate, mensagem: "Falha ao garantir tabela de transações de terminal" },
+      "Ensure transacoes_terminal table"
+    );
+    // Não lança: a subida continua
+  }
+}
