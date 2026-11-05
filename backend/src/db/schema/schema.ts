@@ -5,12 +5,16 @@ import {
   timestamp,
   boolean,
   integer,
+  bigserial,
   numeric,
   jsonb,
   pgEnum,
   unique,
   index,
+  uniqueIndex,
+  check,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { user } from "./auth-schema.js";
 
 // Enums
@@ -35,6 +39,7 @@ export const regimeTributarioEnum = pgEnum("regime_tributario", ["simples_nacion
 export const planoEnum = pgEnum("plano", ["trial", "basico", "profissional", "enterprise"]);
 export const assinaturaStatusEnum = pgEnum("assinatura_status", ["trial", "ativa", "inadimplente", "cancelada", "expirada"]);
 export const modoComandaEnum = pgEnum("modo_comanda", ["mesa", "individual"]);
+export const reservaStatusEnum = pgEnum("reserva_status", ["confirmada", "sentada", "cancelada", "nao_compareceu"]);
 
 // Restaurante (Restaurant information) - Define early since many tables reference it
 export const restaurante = pgTable("restaurante", {
@@ -81,10 +86,12 @@ export const mesas = pgTable("mesas", {
   numero: integer("numero").notNull(),
   status: mesaStatusEnum("status").default("disponivel").notNull(),
   capacidade: integer("capacidade").default(4).notNull(),
+  qrToken: text("qr_token"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   restauranteId: text("restaurante_id").notNull().references(() => restaurante.id, { onDelete: "restrict" }),
 }, (table) => ({
   unqNumeroRestaurante: unique().on(table.numero, table.restauranteId),
+  qrTokenUnique: uniqueIndex("mesas_qr_token_uq").on(table.qrToken),
 }));
 
 // Categorias
@@ -126,7 +133,9 @@ export const pratos = pgTable("pratos", {
   cstIcms: text("cst_icms"),
   aliquotaIcms: numeric("aliquota_icms", { precision: 5, scale: 2 }),
   restauranteId: text("restaurante_id").notNull().references(() => restaurante.id, { onDelete: "restrict" }),
-});
+}, (table) => ({
+  idxRestauranteId: index("idx_pratos_restaurante_id").on(table.restauranteId),
+}));
 
 // Comandas (Orders/Bills)
 export const comandas = pgTable("comandas", {
@@ -139,12 +148,23 @@ export const comandas = pgTable("comandas", {
   total: numeric("total", { precision: 10, scale: 2 }).default("0").notNull(),
   subtotal: numeric("subtotal", { precision: 10, scale: 2 }).default("0").notNull(),
   gorjeta: numeric("gorjeta", { precision: 10, scale: 2 }).default("0").notNull(),
+  descontoValor: numeric("desconto_valor", { precision: 10, scale: 2 }).default("0").notNull(),
+  descontoTipo: text("desconto_tipo"),
+  descontoMotivo: text("desconto_motivo"),
+  descontoMotivoDetalhe: text("desconto_motivo_detalhe"),
+  descontoPorId: text("desconto_por_id"),
+  descontoPorNome: text("desconto_por_nome"),
+  descontoAplicadoPorNome: text("desconto_aplicado_por_nome"),
+  descontoEm: timestamp("desconto_em", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   closedAt: timestamp("closed_at", { withTimezone: true }),
   restauranteId: text("restaurante_id").notNull().references(() => restaurante.id, { onDelete: "restrict" }),
   // Nome da comanda (modo individual). Nulo no modo "mesa".
   rotulo: text("rotulo"),
-});
+}, (table) => ({
+  idxRestauranteIdStatusClosedAt: index("idx_comandas_restaurante_id_status_closed_at").on(table.restauranteId, table.status, table.closedAt),
+  idxRestauranteIdCreatedAt: index("idx_comandas_restaurante_id_created_at").on(table.restauranteId, table.createdAt),
+}));
 
 // Pedidos (Order Items)
 export const pedidos = pgTable("pedidos", {
@@ -168,7 +188,10 @@ export const pedidos = pgTable("pedidos", {
   canceladoAposInicio: boolean("cancelado_apos_inicio"),
   iniciadoEm: timestamp("iniciado_em", { withTimezone: true }),
   prontoEm: timestamp("pronto_em", { withTimezone: true }),
-});
+}, (table) => ({
+  idxRestauranteIdComandaId: index("idx_pedidos_restaurante_id_comanda_id").on(table.restauranteId, table.comandaId),
+  idxComandaId: index("idx_pedidos_comanda_id").on(table.comandaId),
+}));
 
 // Pagamentos (Payments)
 export const pagamentos = pgTable("pagamentos", {
@@ -185,7 +208,9 @@ export const pagamentos = pgTable("pagamentos", {
   confirmadoEm: timestamp("confirmado_em", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   restauranteId: text("restaurante_id").notNull().references(() => restaurante.id, { onDelete: "restrict" }),
-});
+}, (table) => ({
+  idxComandaId: index("idx_pagamentos_comanda_id").on(table.comandaId),
+}));
 
 // Profiles for users
 export const profiles = pgTable("profiles", {
@@ -243,6 +268,14 @@ export const comandasHistorico = pgTable("comandas_historico", {
   total: numeric("total", { precision: 10, scale: 2 }).default("0").notNull(),
   subtotal: numeric("subtotal", { precision: 10, scale: 2 }).default("0").notNull(),
   gorjeta: numeric("gorjeta", { precision: 10, scale: 2 }).default("0").notNull(),
+  descontoValor: numeric("desconto_valor", { precision: 10, scale: 2 }).default("0").notNull(),
+  descontoTipo: text("desconto_tipo"),
+  descontoMotivo: text("desconto_motivo"),
+  descontoMotivoDetalhe: text("desconto_motivo_detalhe"),
+  descontoPorId: text("desconto_por_id"),
+  descontoPorNome: text("desconto_por_nome"),
+  descontoAplicadoPorNome: text("desconto_aplicado_por_nome"),
+  descontoEm: timestamp("desconto_em", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   closedAt: timestamp("closed_at", { withTimezone: true }),
   archivedAt: timestamp("archived_at", { withTimezone: true }).defaultNow().notNull(),
@@ -252,7 +285,9 @@ export const comandasHistorico = pgTable("comandas_historico", {
   restauranteId: text("restaurante_id").notNull().references(() => restaurante.id, { onDelete: "restrict" }),
   // Nome da comanda (modo individual). Nulo no modo "mesa".
   rotulo: text("rotulo"),
-});
+}, (table) => ({
+  idxRestauranteIdStatusClosedAt: index("idx_comandas_historico_restaurante_id_status_closed_at").on(table.restauranteId, table.status, table.closedAt),
+}));
 
 // Pedidos Historico (Archived Order Items)
 export const pedidosHistorico = pgTable("pedidos_historico", {
@@ -276,7 +311,9 @@ export const pedidosHistorico = pgTable("pedidos_historico", {
   canceladoAposInicio: boolean("cancelado_apos_inicio"),
   iniciadoEm: timestamp("iniciado_em", { withTimezone: true }),
   prontoEm: timestamp("pronto_em", { withTimezone: true }),
-});
+}, (table) => ({
+  idxRestauranteIdComandaId: index("idx_pedidos_historico_restaurante_id_comanda_id").on(table.restauranteId, table.comandaId),
+}));
 
 // Pagamentos Historico (Archived Payments)
 export const pagamentosHistorico = pgTable("pagamentos_historico", {
@@ -293,6 +330,57 @@ export const pagamentosHistorico = pgTable("pagamentos_historico", {
   archivedAt: timestamp("archived_at", { withTimezone: true }).defaultNow().notNull(),
   restauranteId: text("restaurante_id").notNull().references(() => restaurante.id, { onDelete: "restrict" }),
 });
+
+// Transações de terminal de cartão (maquininha). Cada tentativa de cobrança no terminal (Stone por
+// Deeplink, Cielo LIO etc.) vira uma linha aqui ANTES de abrir o terminal, porque o resultado volta
+// depois (o app não fica esperando). Quando a transação é confirmada, a rota cria o pagamento normal
+// em `pagamentos` (forma de cartão, referencia = ATK) e preenche pagamento_id; o fechamento
+// automático da comanda continua funcionando como hoje.
+//
+// SEM chave estrangeira para comandas nem pagamentos, de propósito: no fechamento a comanda e os
+// pagamentos são arquivados em *_historico e apagados, e o ATK precisa continuar disponível para
+// cancelar ou reimprimir depois. Por isso comanda_id e pagamento_id são só uuids de referência.
+//
+// status: iniciada (terminal aberto, sem retorno), confirmada (aprovada), recusada (negada ou
+// abortada no terminal), cancelada (desfeita depois pelo cancelamento do terminal), sem_retorno
+// (passou do prazo sem retorno: conferir no terminal ou extrato antes de cobrar de novo).
+export const transacoesTerminal = pgTable("transacoes_terminal", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  // Número enviado ao terminal como order_id. Os ids do sistema são UUID e a Stone espera um
+  // inteiro de até 64 bits, então a tabela tem o próprio contador.
+  orderId: bigserial("order_id", { mode: "number" }).notNull(),
+  restauranteId: text("restaurante_id").notNull().references(() => restaurante.id, { onDelete: "restrict" }),
+  comandaId: uuid("comanda_id").notNull(),
+  pagamentoId: uuid("pagamento_id"),
+  provedor: text("provedor").default("stone_deeplink").notNull(),
+  // Tipo enviado ao terminal: debit, credit, voucher, pix ou instant_payment (QR code)
+  tipoTransacao: text("tipo_transacao").notNull(),
+  // merchant (sem juros), issuer (com juros) ou none (à vista). Nulo quando não se aplica.
+  tipoParcelamento: text("tipo_parcelamento"),
+  parcelas: integer("parcelas"),
+  // Valor em reais (o envio ao terminal converte para centavos)
+  valor: numeric("valor", { precision: 10, scale: 2 }).notNull(),
+  status: text("status").default("iniciada").notNull(),
+  // ATK: código da transação na Stone. É a chave de cancelamento, captura e reimpressão.
+  atk: text("atk"),
+  itk: text("itk"),
+  // Retorno recebido do terminal, sem interpretação, para diagnóstico
+  retornoBruto: text("retorno_bruto"),
+  retornoEm: timestamp("retorno_em", { withTimezone: true }),
+  iniciadaPorId: text("iniciada_por_id"),
+  iniciadaPorNome: text("iniciada_por_nome"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  orderIdUnique: uniqueIndex("transacoes_terminal_order_id_uq").on(table.orderId),
+  // O mesmo ATK não pode ser registrado duas vezes no restaurante (retorno entregue em duplicidade)
+  atkUnique: uniqueIndex("transacoes_terminal_restaurante_atk_uq").on(table.restauranteId, table.atk).where(sql`atk IS NOT NULL`),
+  idxRestauranteComanda: index("idx_transacoes_terminal_restaurante_comanda").on(table.restauranteId, table.comandaId),
+  idxRestauranteStatusCreatedAt: index("idx_transacoes_terminal_restaurante_status_created_at").on(table.restauranteId, table.status, table.createdAt),
+  ckStatus: check("ck_transacoes_terminal_status", sql`status IN ('iniciada', 'confirmada', 'recusada', 'cancelada', 'sem_retorno')`),
+  ckValorPositivo: check("ck_transacoes_terminal_valor_positivo", sql`valor > 0`),
+  ckParcelas: check("ck_transacoes_terminal_parcelas", sql`parcelas IS NULL OR parcelas >= 1`),
+}));
 
 export const notasFiscais = pgTable("notas_fiscais", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -382,4 +470,31 @@ export const entregas = pgTable("entregas", {
   entregueEm: timestamp("entregue_em", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   restauranteId: text("restaurante_id").notNull().references(() => restaurante.id, { onDelete: "restrict" }),
-});
+}, (table) => ({
+  idxRestauranteIdComandaId: index("idx_entregas_restaurante_id_comanda_id").on(table.restauranteId, table.comandaId),
+}));
+
+// Reservas (Table Reservations)
+export const reservas = pgTable("reservas", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  restauranteId: text("restaurante_id").notNull().references(() => restaurante.id, { onDelete: "restrict" }),
+  mesaId: uuid("mesa_id").references(() => mesas.id, { onDelete: "restrict" }),
+  grupoId: uuid("grupo_id"),
+  nomePessoa: text("nome_pessoa").notNull(),
+  telefone: text("telefone"),
+  dataHora: timestamp("data_hora", { withTimezone: true }).notNull(),
+  numeroPessoas: integer("numero_pessoas").notNull(),
+  observacao: text("observacao"),
+  status: reservaStatusEnum("status").default("confirmada").notNull(),
+  duracao: integer("duracao").default(120).notNull(),
+  comandaId: uuid("comanda_id").references(() => comandas.id, { onDelete: "restrict" }),
+  criadoPor: text("criado_por").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  idxRestauranteDataHora: index("idx_reservas_restaurante_data_hora").on(table.restauranteId, table.dataHora),
+  idxMesaDataHora: index("idx_reservas_mesa_data_hora").on(table.mesaId, table.dataHora),
+  idxRestauranteGrupoId: index("idx_reservas_restaurante_grupo_id").on(table.restauranteId, table.grupoId),
+  ckNumeroPessoas: check("ck_reservas_numero_pessoas", sql`numero_pessoas >= 1 AND numero_pessoas <= 50`),
+  ckDuracaoPositiva: check("ck_reservas_duracao_positiva", sql`duracao > 0`),
+}));
