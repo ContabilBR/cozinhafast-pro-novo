@@ -498,3 +498,83 @@ export async function garantirTabelaReservas(app: App): Promise<void> {
     // Do not throw - continue startup
   }
 }
+
+/**
+ * Garante a tabela de transações de terminal de cartão (maquininha), usada pela integração
+ * com a Stone por Deeplink e por outros terminais. Cada tentativa de cobrança no terminal é
+ * registrada aqui antes de abrir o terminal, porque o resultado volta depois.
+ *
+ * Mesma estrutura da migração 20261105190046_transacoes_terminal (mesmos nomes de constraints
+ * e de índices), então as duas podem rodar em qualquer ordem: tudo usa IF NOT EXISTS.
+ * Os comandos rodam numa única transação (tudo ou nada). Nas inicializações normais, com a
+ * tabela já criada, só faz uma consulta de leitura. Não lança erro: se falhar, registra o
+ * código SQLSTATE e a subida continua.
+ */
+export async function garantirTabelaTransacoesTerminal(app: App): Promise<void> {
+  const db = app.db as any;
+
+  try {
+    const existente = await db.execute(
+      sql`SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'transacoes_terminal'`
+    );
+    if (linhasDe(existente).length > 0) {
+      app.logger.debug("Transacoes_terminal table structure verified");
+      return;
+    }
+
+    const comandos: string[] = [
+      `CREATE TABLE IF NOT EXISTS "transacoes_terminal" (
+        "id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+        "order_id" bigserial NOT NULL,
+        "restaurante_id" text NOT NULL,
+        "comanda_id" uuid NOT NULL,
+        "pagamento_id" uuid,
+        "provedor" text DEFAULT 'stone_deeplink' NOT NULL,
+        "tipo_transacao" text NOT NULL,
+        "tipo_parcelamento" text,
+        "parcelas" integer,
+        "valor" numeric(10, 2) NOT NULL,
+        "status" text DEFAULT 'iniciada' NOT NULL,
+        "atk" text,
+        "itk" text,
+        "retorno_bruto" text,
+        "retorno_em" timestamp with time zone,
+        "iniciada_por_id" text,
+        "iniciada_por_nome" text,
+        "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+        "updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+        CONSTRAINT "ck_transacoes_terminal_status" CHECK (status IN ('iniciada', 'confirmada', 'recusada', 'cancelada', 'sem_retorno')),
+        CONSTRAINT "ck_transacoes_terminal_valor_positivo" CHECK (valor > 0),
+        CONSTRAINT "ck_transacoes_terminal_parcelas" CHECK (parcelas IS NULL OR parcelas >= 1)
+      )`,
+      `DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conname = 'transacoes_terminal_restaurante_id_restaurante_id_fk'
+          AND conrelid = 'transacoes_terminal'::regclass
+        ) THEN
+          ALTER TABLE "transacoes_terminal" ADD CONSTRAINT "transacoes_terminal_restaurante_id_restaurante_id_fk" FOREIGN KEY ("restaurante_id") REFERENCES "restaurante"("id") ON DELETE restrict ON UPDATE no action;
+        END IF;
+      END $$`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS "transacoes_terminal_order_id_uq" ON "transacoes_terminal" USING btree ("order_id")`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS "transacoes_terminal_restaurante_atk_uq" ON "transacoes_terminal" USING btree ("restaurante_id","atk") WHERE atk IS NOT NULL`,
+      `CREATE INDEX IF NOT EXISTS "idx_transacoes_terminal_restaurante_comanda" ON "transacoes_terminal" USING btree ("restaurante_id","comanda_id")`,
+      `CREATE INDEX IF NOT EXISTS "idx_transacoes_terminal_restaurante_status_created_at" ON "transacoes_terminal" USING btree ("restaurante_id","status","created_at")`,
+    ];
+
+    await db.transaction(async (tx: any) => {
+      for (const comando of comandos) {
+        await tx.execute(sql.raw(comando));
+      }
+    });
+    app.logger.info("Created transacoes_terminal table");
+  } catch (err) {
+    const sqlstate = (err as any)?.cause?.code || (err as any)?.code || "UNKNOWN";
+    app.logger.warn(
+      { codigo: sqlstate, mensagem: "Falha ao garantir tabela de transações de terminal" },
+      "Ensure transacoes_terminal table"
+    );
+    // Não lança: a subida continua
+  }
+}
