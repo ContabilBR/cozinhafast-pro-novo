@@ -5,6 +5,7 @@ import {
   timestamp,
   boolean,
   integer,
+  bigserial,
   numeric,
   jsonb,
   pgEnum,
@@ -329,6 +330,57 @@ export const pagamentosHistorico = pgTable("pagamentos_historico", {
   archivedAt: timestamp("archived_at", { withTimezone: true }).defaultNow().notNull(),
   restauranteId: text("restaurante_id").notNull().references(() => restaurante.id, { onDelete: "restrict" }),
 });
+
+// Transações de terminal de cartão (maquininha). Cada tentativa de cobrança no terminal (Stone por
+// Deeplink, Cielo LIO etc.) vira uma linha aqui ANTES de abrir o terminal, porque o resultado volta
+// depois (o app não fica esperando). Quando a transação é confirmada, a rota cria o pagamento normal
+// em `pagamentos` (forma de cartão, referencia = ATK) e preenche pagamento_id; o fechamento
+// automático da comanda continua funcionando como hoje.
+//
+// SEM chave estrangeira para comandas nem pagamentos, de propósito: no fechamento a comanda e os
+// pagamentos são arquivados em *_historico e apagados, e o ATK precisa continuar disponível para
+// cancelar ou reimprimir depois. Por isso comanda_id e pagamento_id são só uuids de referência.
+//
+// status: iniciada (terminal aberto, sem retorno), confirmada (aprovada), recusada (negada ou
+// abortada no terminal), cancelada (desfeita depois pelo cancelamento do terminal), sem_retorno
+// (passou do prazo sem retorno: conferir no terminal ou extrato antes de cobrar de novo).
+export const transacoesTerminal = pgTable("transacoes_terminal", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  // Número enviado ao terminal como order_id. Os ids do sistema são UUID e a Stone espera um
+  // inteiro de até 64 bits, então a tabela tem o próprio contador.
+  orderId: bigserial("order_id", { mode: "number" }).notNull(),
+  restauranteId: text("restaurante_id").notNull().references(() => restaurante.id, { onDelete: "restrict" }),
+  comandaId: uuid("comanda_id").notNull(),
+  pagamentoId: uuid("pagamento_id"),
+  provedor: text("provedor").default("stone_deeplink").notNull(),
+  // Tipo enviado ao terminal: debit, credit, voucher, pix ou instant_payment (QR code)
+  tipoTransacao: text("tipo_transacao").notNull(),
+  // merchant (sem juros), issuer (com juros) ou none (à vista). Nulo quando não se aplica.
+  tipoParcelamento: text("tipo_parcelamento"),
+  parcelas: integer("parcelas"),
+  // Valor em reais (o envio ao terminal converte para centavos)
+  valor: numeric("valor", { precision: 10, scale: 2 }).notNull(),
+  status: text("status").default("iniciada").notNull(),
+  // ATK: código da transação na Stone. É a chave de cancelamento, captura e reimpressão.
+  atk: text("atk"),
+  itk: text("itk"),
+  // Retorno recebido do terminal, sem interpretação, para diagnóstico
+  retornoBruto: text("retorno_bruto"),
+  retornoEm: timestamp("retorno_em", { withTimezone: true }),
+  iniciadaPorId: text("iniciada_por_id"),
+  iniciadaPorNome: text("iniciada_por_nome"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  orderIdUnique: uniqueIndex("transacoes_terminal_order_id_uq").on(table.orderId),
+  // O mesmo ATK não pode ser registrado duas vezes no restaurante (retorno entregue em duplicidade)
+  atkUnique: uniqueIndex("transacoes_terminal_restaurante_atk_uq").on(table.restauranteId, table.atk).where(sql`atk IS NOT NULL`),
+  idxRestauranteComanda: index("idx_transacoes_terminal_restaurante_comanda").on(table.restauranteId, table.comandaId),
+  idxRestauranteStatusCreatedAt: index("idx_transacoes_terminal_restaurante_status_created_at").on(table.restauranteId, table.status, table.createdAt),
+  ckStatus: check("ck_transacoes_terminal_status", sql`status IN ('iniciada', 'confirmada', 'recusada', 'cancelada', 'sem_retorno')`),
+  ckValorPositivo: check("ck_transacoes_terminal_valor_positivo", sql`valor > 0`),
+  ckParcelas: check("ck_transacoes_terminal_parcelas", sql`parcelas IS NULL OR parcelas >= 1`),
+}));
 
 export const notasFiscais = pgTable("notas_fiscais", {
   id: uuid("id").primaryKey().defaultRandom(),
