@@ -26,6 +26,7 @@ import { registerCardapioPublicoRoutes } from './routes/cardapio-publico.js';
 import { registerEstoqueRoutes } from './routes/estoque.js';
 import { registerSuperAdminRoutes } from './routes/superadmin.js';
 import { registerReservasRoutes } from './routes/reservas.js';
+import { registerTransacoesTerminalRoutes } from './routes/transacoes-terminal.js';
 import { registerRenovacaoDeImagens } from './utils/imagem-assinada.js';
 import { seedDatabase } from './db/seed.js';
 import { enableSelectRetry } from './db/withRetry.js';
@@ -179,6 +180,7 @@ registerCardapioPublicoRoutes(app);
 registerEstoqueRoutes(app);
 registerSuperAdminRoutes(app);
 registerReservasRoutes(app);
+registerTransacoesTerminalRoutes(app);
 
 // Seed database on startup (only if not in production and explicitly enabled)
 if (process.env.NODE_ENV !== 'production' && process.env.SEED_ENABLED === 'true') {
