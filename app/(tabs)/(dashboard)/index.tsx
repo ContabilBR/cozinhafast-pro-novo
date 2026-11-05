@@ -6,19 +6,23 @@ import {
   RefreshControl,
   Animated,
   Platform,
+  useWindowDimensions,
   Alert,
   ActivityIndicator,
 } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
+import { useTabBarInset } from "@/hooks/useTabBarInset";
 import { useAuth } from "@/contexts/AuthContext";
 import { AnimatedPressable } from "@/components/AnimatedPressable";
 import { SkeletonLine } from "@/components/SkeletonLoader";
 import { apiGet } from "@/utils/api";
 import { setMesaHistoricoId } from "@/utils/mesaHistoricoStore";
 import { formatCurrency, isAdmin } from "@/utils/helpers";
-import { TrendingUp, ShoppingBag, Grid3x3, Clock, RefreshCw, ChevronRight, DollarSign, ChefHat } from "lucide-react-native";
+import { hojeBrasilia } from "@/utils/exportacao/periodo";
+import { contarReservas } from "@/utils/reservasGrupo";
+import { TrendingUp, ShoppingBag, Grid3x3, Clock, RefreshCw, ChevronRight, DollarSign, ChefHat, CalendarDays } from "lucide-react-native";
 import { useRealtime, type RealtimeStatus } from "@/hooks/useRealtime";
 import { Ionicons } from "@expo/vector-icons";
 import DateTimePicker from "@react-native-community/datetimepicker";
@@ -64,18 +68,26 @@ const COMANDA_STATUS_COLORS: Record<string, string> = {
   cancelada: "#EF4444",
 };
 
+const CARD_GAP = 12;
+const TABLET_MIN_WIDTH = 768;
+
 function StatCard({
+  width,
   title,
   value,
-  color,
-  icon,
+  detail,
+  alertDetail,
+  icon: Icon,
   loading,
   onPress,
 }: {
+  width: number;
   title: string;
   value: string;
-  color: string;
-  icon: React.ReactNode;
+  detail?: string;
+  /** trecho final do detalhe, em vermelho (ex.: pedidos atrasados) */
+  alertDetail?: string;
+  icon: React.ComponentType<{ size?: number; color?: string }>;
   loading: boolean;
   onPress?: () => void;
 }) {
@@ -87,70 +99,69 @@ function StatCard({
           width: 40,
           height: 40,
           borderRadius: 12,
-          backgroundColor: color + "18",
+          backgroundColor: COLORS.primaryMuted,
           alignItems: "center",
           justifyContent: "center",
         }}
       >
-        {icon}
+        <Icon size={20} color={COLORS.primary} />
       </View>
       {loading ? (
         <>
           <SkeletonLine width="70%" height={22} />
           <SkeletonLine width="50%" height={13} />
+          <View style={{ minHeight: 28 }} />
         </>
       ) : (
         <>
-          <Text style={{ fontFamily: "Outfit_700Bold", fontSize: 22, color: COLORS.text, letterSpacing: -0.3 }}>
+          <Text
+            numberOfLines={1}
+            adjustsFontSizeToFit
+            minimumFontScale={0.6}
+            style={{ fontFamily: "Outfit_700Bold", fontSize: 22, color: COLORS.text, letterSpacing: -0.3 }}
+          >
             {value}
           </Text>
-          <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 12, color: COLORS.textSecondary }}>
+          <Text numberOfLines={1} style={{ fontFamily: "Outfit_400Regular", fontSize: 12, color: COLORS.textSecondary }}>
             {title}
           </Text>
+          <View style={{ minHeight: 28, paddingRight: onPress ? 20 : 0 }}>
+            <Text numberOfLines={2} style={{ fontFamily: "Outfit_400Regular", fontSize: 11, color: COLORS.textSecondary }}>
+              {detail ?? ""}
+              {alertDetail ? (
+                <Text style={{ fontFamily: "Outfit_600SemiBold", color: COLORS.danger }}>{alertDetail}</Text>
+              ) : null}
+            </Text>
+          </View>
         </>
       )}
       {onPress && (
-        <View style={{ position: "absolute", bottom: 10, right: 10 }}>
+        <View style={{ position: "absolute", bottom: 12, right: 12 }}>
           <ChevronRight size={14} color={COLORS.textSecondary} />
         </View>
       )}
     </>
   );
 
+  const style = {
+    width,
+    backgroundColor: COLORS.surface,
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    gap: 6,
+  } as const;
+
   if (onPress) {
     return (
-      <AnimatedPressable
-        onPress={onPress}
-        style={{
-          flex: 1,
-          backgroundColor: COLORS.surface,
-          borderRadius: 16,
-          padding: 16,
-          borderWidth: 1,
-          borderColor: COLORS.border,
-          gap: 8,
-        }}
-      >
+      <AnimatedPressable onPress={onPress} style={style}>
         {cardContent}
       </AnimatedPressable>
     );
   }
 
-  return (
-    <View
-      style={{
-        flex: 1,
-        backgroundColor: COLORS.surface,
-        borderRadius: 16,
-        padding: 16,
-        borderWidth: 1,
-        borderColor: COLORS.border,
-        gap: 8,
-      }}
-    >
-      {cardContent}
-    </View>
-  );
+  return <View style={style}>{cardContent}</View>;
 }
 
 const EMPTY_RESUMO: RelatorioResumo = {
@@ -187,12 +198,18 @@ function formatYMD(date: Date): string {
 export default function DashboardScreen() {
   const COLORS = useColors();
   const insets = useSafeAreaInsets();
+  const tabBarInset = useTabBarInset();
+  const { width: windowWidth } = useWindowDimensions();
+  const [gridWidth, setGridWidth] = useState(0);
+  const gridColumns = windowWidth >= TABLET_MIN_WIDTH ? 3 : 2;
+  const cardWidth = Math.floor((gridWidth - CARD_GAP * (gridColumns - 1)) / gridColumns);
   const router = useRouter();
   const { user } = useAuth();
   const userIsAdmin = isAdmin(user?.role);
 
   const [resumo, setResumo] = useState<RelatorioResumo>(EMPTY_RESUMO);
   const [tables, setTables] = useState<ApiMesa[]>([]);
+  const [reservasHoje, setReservasHoje] = useState<{ total: number; aguardando: number } | null>(null);
   const [recentComandas, setRecentComandas] = useState<ApiComanda[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -222,7 +239,7 @@ export default function DashboardScreen() {
     }
 
     try {
-      const [resumoRes, tablesRes, comandasRes] = await Promise.all([
+      const [resumoRes, tablesRes, comandasRes, reservasRes] = await Promise.all([
         apiGet<any>(resumoUrl).catch((e) => {
           console.error("[Dashboard] relatorios/resumo error:", e instanceof Error ? e.message : String(e));
           return null;
@@ -235,7 +252,19 @@ export default function DashboardScreen() {
           console.error("[Dashboard] comandas error:", e instanceof Error ? e.message : String(e));
           return null;
         }),
+        apiGet<any>(`/api/reservas?data=${hojeBrasilia()}`).catch((e) => {
+          console.error("[Dashboard] reservas error:", e instanceof Error ? e.message : String(e));
+          return null;
+        }),
       ]);
+
+      // Reservas de hoje (independe do filtro de período); null esconde o cartão
+      if (reservasRes) {
+        const lista: { status: string }[] = Array.isArray(reservasRes) ? reservasRes : reservasRes.reservas || [];
+        setReservasHoje(contarReservas(lista));
+      } else {
+        setReservasHoje(null);
+      }
 
       // Unwrap resumo — handle both direct object and nested
       if (resumoRes && typeof resumoRes === "object") {
@@ -420,7 +449,7 @@ export default function DashboardScreen() {
       </View>
 
       <ScrollView
-        contentContainerStyle={{ padding: 16, paddingBottom: 120, gap: 20 }}
+        contentContainerStyle={{ padding: 16, paddingBottom: tabBarInset + 16, gap: 20 }}
         contentInsetAdjustmentBehavior="automatic"
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={COLORS.primary} />
@@ -471,118 +500,82 @@ export default function DashboardScreen() {
             </View>
           )}
 
-          {/* Row 1: Mesas */}
-          <View style={{ flexDirection: "row", gap: 12 }}>
-            <StatCard
-              title="Total de Mesas"
-              value={totalMesasStr}
-              color="#3B82F6"
-              icon={<Grid3x3 size={20} color="#3B82F6" />}
-              loading={loading}
-            />
-            <StatCard
-              title="Mesas Ocupadas"
-              value={mesasOcupadasStr}
-              color="#E8521A"
-              icon={<Grid3x3 size={20} color="#E8521A" />}
-              loading={loading}
-            />
-          </View>
-
-          {/* Row 2: Comandas / Pedidos */}
-          <View style={{ flexDirection: "row", gap: 12 }}>
-            <StatCard
-              title="Comandas Abertas"
-              value={comandasAbertasStr}
-              color={COLORS.primary}
-              icon={<ShoppingBag size={20} color={COLORS.primary} />}
-              loading={loading}
-              onPress={() => {
-                console.log("[Dashboard] Comandas Abertas card pressed");
-                router.push("/(tabs)/(comandas)");
-              }}
-            />
-            {/* Card Na Cozinha */}
-            <AnimatedPressable
-              onPress={() => {
-                console.log("[Dashboard] Na Cozinha card pressed");
-                router.push("/fila-cozinha");
-              }}
-              style={{
-                flex: 1,
-                backgroundColor: COLORS.surface,
-                borderRadius: 16,
-                padding: 16,
-                borderWidth: 1,
-                borderColor: COLORS.border,
-                gap: 8,
-              }}
-            >
-              <View
-                style={{
-                  width: 40,
-                  height: 40,
-                  borderRadius: 12,
-                  backgroundColor: COLORS.warning + "18",
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-              >
-                <Clock size={20} color={COLORS.warning} />
-              </View>
-              {loading ? (
-                <>
-                  <SkeletonLine width="70%" height={22} />
-                  <SkeletonLine width="50%" height={13} />
-                </>
-              ) : (
-                <>
-                  <Text style={{ fontFamily: "Outfit_700Bold", fontSize: 22, color: COLORS.text, letterSpacing: -0.3 }}>
-                    {String((resumo.pedidos_pendentes ?? 0) + (resumo.pedidos_em_preparo ?? 0))}
-                  </Text>
-                  <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 12, color: COLORS.textSecondary }}>
-                    Na Cozinha
-                  </Text>
-                  <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 11, color: COLORS.textSecondary }}>
-                    {resumo.pedidos_pendentes ?? 0} aguardando · {resumo.pedidos_em_preparo ?? 0} em preparo
-                  </Text>
-                  {(resumo.pedidos_atrasados ?? 0) > 0 && (
-                    <Text style={{ fontFamily: "Outfit_600SemiBold", fontSize: 11, color: "#EF4444" }}>
-                      {resumo.pedidos_atrasados} atrasado{(resumo.pedidos_atrasados ?? 0) > 1 ? "s" : ""}
-                    </Text>
-                  )}
-                </>
-              )}
-              <View style={{ position: "absolute", bottom: 10, right: 10 }}>
-                <ChevronRight size={14} color={COLORS.textSecondary} />
-              </View>
-            </AnimatedPressable>
-          </View>
-
-          {/* Row 3: Receita no Período */}
-          <View style={{ flexDirection: "row", gap: 12 }}>
-            <StatCard
-              title={periodoCardTitle}
-              value={receitaPeriodoStr}
-              color={COLORS.success}
-              icon={<DollarSign size={20} color={COLORS.success} />}
-              loading={loading}
-              onPress={() => {
-                console.log("[Dashboard] Receita no Período card pressed");
-                router.push("/(tabs)/(relatorios)");
-              }}
-            />
-          </View>
-
-          {/* Row 4: Ticket médio */}
-          <View style={{ flexDirection: "row", gap: 12 }}>
-            <StatCard
-              title="Ticket Médio"
-              value={avgTicketStr}
-              color="#0EA5E9"
-              icon={<DollarSign size={20} color="#0EA5E9" />}
-              loading={loading}
-            />
+          {/* Cards de resumo: grade uniforme (2 colunas no celular, 3 no tablet) */}
+          <View
+            onLayout={(e) => setGridWidth(e.nativeEvent.layout.width)}
+            style={{ flexDirection: "row", flexWrap: "wrap", gap: CARD_GAP }}
+          >
+            {gridWidth > 0 && (
+              <>
+                <StatCard
+                  width={cardWidth}
+                  title="Mesas ocupadas"
+                  value={`${mesasOcupadasStr} de ${totalMesasStr}`}
+                  icon={Grid3x3}
+                  loading={loading}
+                />
+                <StatCard
+                  width={cardWidth}
+                  title="Comandas abertas"
+                  value={comandasAbertasStr}
+                  icon={ShoppingBag}
+                  loading={loading}
+                  onPress={() => {
+                    console.log("[Dashboard] Comandas Abertas card pressed");
+                    router.push("/(tabs)/(comandas)");
+                  }}
+                />
+                <StatCard
+                  width={cardWidth}
+                  title="Na cozinha"
+                  value={String((resumo.pedidos_pendentes ?? 0) + (resumo.pedidos_em_preparo ?? 0))}
+                  detail={`${resumo.pedidos_pendentes ?? 0} aguardando · ${resumo.pedidos_em_preparo ?? 0} em preparo`}
+                  alertDetail={
+                    (resumo.pedidos_atrasados ?? 0) > 0
+                      ? ` · ${resumo.pedidos_atrasados} atrasado${(resumo.pedidos_atrasados ?? 0) > 1 ? "s" : ""}`
+                      : undefined
+                  }
+                  icon={Clock}
+                  loading={loading}
+                  onPress={() => {
+                    console.log("[Dashboard] Na Cozinha card pressed");
+                    router.push("/fila-cozinha");
+                  }}
+                />
+                <StatCard
+                  width={cardWidth}
+                  title={periodo === "hoje" ? "Faturamento de hoje" : `Faturamento · ${periodoCardTitle}`}
+                  value={receitaPeriodoStr}
+                  icon={DollarSign}
+                  loading={loading}
+                  onPress={() => {
+                    console.log("[Dashboard] Receita no Período card pressed");
+                    router.push((Platform.OS === "ios" ? "/relatorio-detalhe" : "/(tabs)/(relatorios)") as any);
+                  }}
+                />
+                <StatCard
+                  width={cardWidth}
+                  title="Ticket médio"
+                  value={avgTicketStr}
+                  icon={DollarSign}
+                  loading={loading}
+                />
+                {(loading || reservasHoje) && (
+                  <StatCard
+                    width={cardWidth}
+                    title="Reservas hoje"
+                    value={String(reservasHoje?.total ?? 0)}
+                    detail={`${reservasHoje?.aguardando ?? 0} aguardando`}
+                    icon={CalendarDays}
+                    loading={loading}
+                    onPress={() => {
+                      console.log("[Dashboard] Reservas hoje card pressed");
+                      router.push("/reservas");
+                    }}
+                  />
+                )}
+              </>
+            )}
           </View>
         </Animated.View>
 
@@ -673,7 +666,7 @@ export default function DashboardScreen() {
                   style={{
                     fontFamily: "Outfit_700Bold",
                     fontSize: 20,
-                    color: COMANDA_STATUS_COLORS[status],
+                    color: status === "cancelada" ? COLORS.danger : status === "aberta" ? COLORS.primary : COLORS.text,
                   }}
                 >
                   {loading ? "—" : ordersByStatus[status]}
@@ -737,7 +730,7 @@ export default function DashboardScreen() {
             <AnimatedPressable
               onPress={() => {
                 console.log("[Dashboard] View all comandas pressed");
-                router.push("/(tabs)/(relatorios)");
+                router.push((Platform.OS === "ios" ? "/relatorio-detalhe" : "/(tabs)/(relatorios)") as any);
               }}
               style={{ flexDirection: "row", alignItems: "center", gap: 2 }}
             >

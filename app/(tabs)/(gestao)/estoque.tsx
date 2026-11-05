@@ -5,6 +5,7 @@ import { useRouter } from "expo-router";
 import { useFocusEffect } from "@react-navigation/native";
 import { Ionicons } from "@expo/vector-icons";
 import { useColors } from "@/hooks/useColors";
+import { useTabBarInset } from "@/hooks/useTabBarInset";
 import { AnimatedPressable } from "@/components/AnimatedPressable";
 import { apiGet, apiPost, apiPut, apiDelete } from "@/utils/api";
 import { CampoMoeda } from "@/components/CampoMoeda";
@@ -24,6 +25,7 @@ interface Insumo {
 
 export default function EstoqueScreen() {
   const COLORS = useColors();
+  const tabBarInset = useTabBarInset();
   const router = useRouter();
 
   const [insumos, setInsumos] = useState<Insumo[]>([]);
@@ -170,7 +172,7 @@ export default function EstoqueScreen() {
       </View>
 
       {loading ? <ActivityIndicator size="large" color={COLORS.primary} style={{ marginTop: 40 }} /> : (
-        <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 100, gap: 10 }}>
+        <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: tabBarInset + 16, gap: 10 }}>
           {filtered.length === 0 && (
             <View style={{ alignItems: "center", paddingTop: 40 }}>
               <Ionicons name="cube-outline" size={48} color={COLORS.textSecondary} />

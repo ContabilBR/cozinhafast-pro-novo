@@ -333,7 +333,7 @@ export function registerFiscalNfceRoutes(app: App) {
           await db
             .update(schema.notasFiscais)
             .set(updateData)
-            .where(eq(schema.notasFiscais.id, notaFiscal.id));
+            .where(and(eq(schema.notasFiscais.id, notaFiscal.id), eq(schema.notasFiscais.restauranteId, restauranteId)));
 
           const qrCodeBase64 = await gerarQrCodeBase64(updateData.qrcodeUrl);
 
@@ -355,7 +355,7 @@ export function registerFiscalNfceRoutes(app: App) {
           await db
             .update(schema.notasFiscais)
             .set({ status: "erro", mensagemSefaz: String(focusErr.message).slice(0, 500) })
-            .where(eq(schema.notasFiscais.id, notaFiscal.id));
+            .where(and(eq(schema.notasFiscais.id, notaFiscal.id), eq(schema.notasFiscais.restauranteId, restauranteId)));
 
           app.logger.error({ err: focusErr, notaId: notaFiscal.id, ref }, "Erro Focus NFe na NFC-e");
           return await reply.code(502).send({
@@ -427,7 +427,7 @@ export function registerFiscalNfceRoutes(app: App) {
             await db
               .update(schema.notasFiscais)
               .set(updateData)
-              .where(eq(schema.notasFiscais.id, nota.id));
+              .where(and(eq(schema.notasFiscais.id, nota.id), eq(schema.notasFiscais.restauranteId, restauranteId)));
 
             nota = { ...nota, ...updateData };
             app.logger.info({ ref, status: updateData.status }, "NFC-e atualizada via consulta");

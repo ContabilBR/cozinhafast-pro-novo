@@ -13,17 +13,19 @@ import { StatusBar } from "expo-status-bar";
 import { useAuth } from "@/contexts/AuthContext";
 import { AnimatedPressable } from "@/components/AnimatedPressable";
 import { TEST_MODE, TEST_ADMIN_EMAIL, TEST_ADMIN_PASSWORD } from "@/constants/testMode";
+import { COLORS } from "@/constants/Colors";
 import { ChefHat, Mail, Lock, Eye, EyeOff } from "lucide-react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-const PRIMARY = "#e94560";
-const BG = "#1a1a2e";
-const CARD = "#16213e";
-const BORDER = "rgba(255,255,255,0.10)";
-const TEXT = "#ffffff";
-const TEXT_SECONDARY = "rgba(255,255,255,0.55)";
-const TEXT_TERTIARY = "rgba(255,255,255,0.30)";
-const INPUT_BG = "rgba(255,255,255,0.06)";
+const PRIMARY = COLORS.primary;
+const BG = COLORS.background;
+const CARD = COLORS.surface;
+const BORDER = COLORS.border;
+const TEXT = COLORS.text;
+const TEXT_SECONDARY = COLORS.textSecondary;
+const TEXT_TERTIARY = COLORS.textTertiary;
+const INPUT_BG = COLORS.surfaceSecondary;
+const ERROR = COLORS.danger;
 
 const DEMO_CREDENTIALS = [
   { role: "Garçom", email: "garcom@cozinhafast.com" },
@@ -131,7 +133,7 @@ export default function AuthScreen() {
   if (isLoading) {
     return (
       <View style={{ flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: BG }}>
-        <StatusBar style="light" />
+        <StatusBar style="dark" />
         <ActivityIndicator color={PRIMARY} size="large" />
       </View>
     );
@@ -139,7 +141,7 @@ export default function AuthScreen() {
 
   return (
     <View style={{ flex: 1, backgroundColor: BG }}>
-      <StatusBar style="light" />
+      <StatusBar style="dark" />
       <ScrollView
         style={{ flex: 1 }}
         contentContainerStyle={{ paddingTop: insets.top + 20, paddingBottom: insets.bottom + 40, paddingHorizontal: 24 }}
@@ -319,7 +321,7 @@ export default function AuthScreen() {
 
             {/* Error */}
             {!!error && (
-              <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 13, color: "#ff6b6b" }}>
+              <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 13, color: ERROR }}>
                 {error}
               </Text>
             )}
@@ -361,7 +363,7 @@ export default function AuthScreen() {
               style={{
                 fontFamily: "Outfit_600SemiBold",
                 fontSize: 11,
-                color: "rgba(255,255,255,0.35)",
+                color: TEXT_SECONDARY,
                 textTransform: "uppercase",
                 letterSpacing: 1.2,
               }}
@@ -373,7 +375,7 @@ export default function AuthScreen() {
               disabled={submitting}
               style={{
                 borderWidth: 1,
-                borderColor: "rgba(255,255,255,0.18)",
+                borderColor: BORDER,
                 borderRadius: 12,
                 height: 46,
                 paddingHorizontal: 20,
@@ -386,7 +388,7 @@ export default function AuthScreen() {
                 style={{
                   fontFamily: "Outfit_600SemiBold",
                   fontSize: 14,
-                  color: "rgba(255,255,255,0.55)",
+                  color: TEXT_SECONDARY,
                 }}
               >
                 Entrar como Admin Geral (teste)

@@ -99,17 +99,24 @@ export default function DivisaoScreen() {
               <View key={i} style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 10, borderBottomWidth: i < divisao.divisao.length - 1 ? 0.5 : 0, borderBottomColor: COLORS.surfaceSecondary }}>
                 <View>
                   <Text style={{ fontSize: 15, fontWeight: "500", color: COLORS.text }}>{d.nome || "Pessoa " + (d.pessoa || i + 1)}</Text>
+                  {d.desconto_proporcional > 0 && <Text style={{ fontSize: 12, color: COLORS.danger }}>Desconto: - {formatCurrency(d.desconto_proporcional)}</Text>}
                   {d.gorjeta_proporcional > 0 && <Text style={{ fontSize: 12, color: COLORS.textSecondary }}>inclui gorjeta {formatCurrency(d.gorjeta_proporcional)}</Text>}
                 </View>
-                <Pressable onPress={() => irParaPagamento(d.total_a_pagar || d.valor)} style={{ backgroundColor: COLORS.primary, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8, flexDirection: "row", alignItems: "center", gap: 6 }}>
-                  <Text style={{ color: "white", fontSize: 14, fontWeight: "600" }}>{formatCurrency(d.total_a_pagar || d.valor)}</Text>
+                <Pressable onPress={() => irParaPagamento(d.total_a_pagar ?? d.valor)} style={{ backgroundColor: COLORS.primary, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8, flexDirection: "row", alignItems: "center", gap: 6 }}>
+                  <Text style={{ color: "white", fontSize: 14, fontWeight: "600" }}>{formatCurrency(d.total_a_pagar ?? d.valor)}</Text>
                   <Ionicons name="arrow-forward" size={14} color="white" />
                 </Pressable>
               </View>
             ))}
-            {divisao.gorjeta > 0 && (
+            {divisao.desconto_valor > 0 && (
+              <View style={{ flexDirection: "row", justifyContent: "space-between", marginTop: 8 }}>
+                <Text style={{ fontSize: 13, color: COLORS.danger }}>Desconto</Text>
+                <Text style={{ fontSize: 13, color: COLORS.danger }}>- {formatCurrency(divisao.desconto_valor)}</Text>
+              </View>
+            )}
+            {(divisao.gorjeta > 0 || divisao.desconto_valor > 0) && (
               <View style={{ flexDirection: "row", justifyContent: "space-between", marginTop: 8, paddingTop: 8, borderTopWidth: 0.5, borderTopColor: COLORS.surfaceSecondary }}>
-                <Text style={{ fontSize: 13, color: COLORS.textSecondary }}>Total com gorjeta</Text>
+                <Text style={{ fontSize: 13, color: COLORS.textSecondary }}>{divisao.gorjeta > 0 ? "Total com gorjeta" : "Total"}</Text>
                 <Text style={{ fontSize: 13, fontWeight: "500", color: COLORS.text }}>{formatCurrency(divisao.total_com_gorjeta)}</Text>
               </View>
             )}

@@ -16,6 +16,7 @@ import { useRouter } from 'expo-router';
 import { CheckCircle, Pencil, Trash2 } from 'lucide-react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useColors } from '@/hooks/useColors';
+import { useTabBarInset } from "@/hooks/useTabBarInset";
 import useModoComanda from '@/hooks/useModoComanda';
 import { useAuth } from '@/contexts/AuthContext';
 import { isAdmin } from '@/utils/helpers';
@@ -36,6 +37,7 @@ const EMPTY_FORM: RestauranteData = { nome: '', filial: '', endereco: '', cnpj: 
 
 export default function RestauranteScreen() {
   const COLORS = useColors();
+  const tabBarInset = useTabBarInset();
   const router = useRouter();
 
   const [mode, setMode] = useState<Mode>('empty');
@@ -408,7 +410,7 @@ export default function RestauranteScreen() {
       >
         <ScrollView
           style={s.scroll}
-          contentContainerStyle={s.scrollContent}
+          contentContainerStyle={[s.scrollContent, { paddingBottom: tabBarInset + 16 }]}
           keyboardShouldPersistTaps="handled"
         >
           {/* ── VIEW MODE ─────────────────────────────────────────────────── */}

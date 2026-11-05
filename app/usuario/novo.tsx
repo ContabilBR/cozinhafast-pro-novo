@@ -16,6 +16,7 @@ import { useColors } from "@/hooks/useColors";
 import { PasswordInput } from "@/components/PasswordInput";
 import { AnimatedPressable } from "@/components/AnimatedPressable";
 import { UserRole } from "@/types";
+import { useAuth } from "@/contexts/AuthContext";
 import { apiPost } from "@/utils/api";
 import { getRoleLabel } from "@/utils/helpers";
 import { ChevronDown } from "lucide-react-native";
@@ -35,6 +36,10 @@ function FormField({ label, children }: { label: string; children: React.ReactNo
 export default function NovoUsuarioScreen() {
   const COLORS = useColors();
   const router = useRouter();
+  const { user: authUser } = useAuth();
+  const authRole = String(authUser?.role ?? "").trim().toLowerCase();
+  const souGerente = authRole === "gerente";
+  const rolesPermitidas = souGerente ? ROLES.filter((r) => r !== "administrador") : ROLES;
 
   const [nome, setNome] = useState("");
   const [email, setEmail] = useState("");
@@ -199,7 +204,7 @@ export default function NovoUsuarioScreen() {
             </AnimatedPressable>
             {showRolePicker && (
               <View style={{ backgroundColor: COLORS.surface, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border, overflow: "hidden" }}>
-                {ROLES.map((r) => (
+                {rolesPermitidas.map((r) => (
                   <AnimatedPressable
                     key={r}
                     onPress={() => { console.log("[NovoUsuario] Função selecionada:", r); setRole(r); setShowRolePicker(false); }}

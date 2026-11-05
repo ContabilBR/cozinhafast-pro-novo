@@ -709,7 +709,7 @@ export function registerDeliveryRoutes(app: App) {
           updateData.entregueEm = new Date();
         }
 
-        await db.update(schema.entregas).set(updateData).where(eq(schema.entregas.id, request.params.id));
+        await db.update(schema.entregas).set(updateData).where(and(eq(schema.entregas.id, request.params.id), eq(schema.entregas.restauranteId, restauranteId)));
         const [entregaAtualizada] = await db.select().from(schema.entregas).where(eq(schema.entregas.id, request.params.id));
 
         // Publicar evento realtime
@@ -879,25 +879,26 @@ export function registerDeliveryRoutes(app: App) {
                 motivoCancelamentoDetalhe: detalhe || null,
                 canceladoAposInicio: aposInicio,
               })
-              .where(eq(schema.pedidos.id, item.id));
+              .where(and(eq(schema.pedidos.id, item.id), eq(schema.pedidos.restauranteId, restauranteId)));
           }
 
           // 9) Marcar entrega como cancelada
           await tx.update(schema.entregas)
             .set({ status: "cancelada" as any })
-            .where(eq(schema.entregas.id, entregaId));
+            .where(and(eq(schema.entregas.id, entregaId), eq(schema.entregas.restauranteId, restauranteId)));
 
           // 10) Marcar comanda como cancelada e zerar totais
           await tx.update(schema.comandas)
             .set({ status: "cancelada" as any, subtotal: "0.00", total: "0.00" })
-            .where(eq(schema.comandas.id, comanda.id));
+            .where(and(eq(schema.comandas.id, comanda.id), eq(schema.comandas.restauranteId, restauranteId)));
 
           // 11) Cancelar pagamento pendente (se houver)
           await tx.update(schema.pagamentos)
             .set({ status: "cancelado" as any })
             .where(and(
               eq(schema.pagamentos.comandaId, comanda.id),
-              eq(schema.pagamentos.status, "pendente" as any)
+              eq(schema.pagamentos.status, "pendente" as any),
+              eq(schema.pagamentos.restauranteId, restauranteId)
             ));
 
           // 12) Registrar estorno manual nos pagamentos confirmados (se houver)
@@ -925,7 +926,7 @@ export function registerDeliveryRoutes(app: App) {
 
               await tx.update(schema.pagamentos)
                 .set({ status: "cancelado" as any, referencia: refFinal })
-                .where(eq(schema.pagamentos.id, pag.id));
+                .where(and(eq(schema.pagamentos.id, pag.id), eq(schema.pagamentos.restauranteId, restauranteId)));
             }
 
             app.logger.info({
@@ -1072,7 +1073,7 @@ export function registerDeliveryRoutes(app: App) {
                 confirmadoEm: new Date(),
                 referencia: troco !== null && troco > 0 ? `Troco: R$ ${troco.toFixed(2)}` : null,
               })
-              .where(eq(schema.pagamentos.id, pagPendente.id));
+              .where(and(eq(schema.pagamentos.id, pagPendente.id), eq(schema.pagamentos.restauranteId, restauranteId)));
           } else {
             // Verificar se já está pago
             const [pagConfirmado] = await tx.select()
@@ -1094,14 +1095,15 @@ export function registerDeliveryRoutes(app: App) {
           // 6) Marcar entrega como entregue
           await tx.update(schema.entregas)
             .set({ status: "entregue" as any, entregueEm: new Date() })
-            .where(eq(schema.entregas.id, request.params.id));
+            .where(and(eq(schema.entregas.id, request.params.id), eq(schema.entregas.restauranteId, restauranteId)));
 
           // 7) Marcar itens ativos como entregues
           await tx.update(schema.pedidos)
             .set({ status: "entregue" as any })
             .where(and(
               eq(schema.pedidos.comandaId, comanda.id),
-              sql`${schema.pedidos.status} <> 'cancelado'`
+              sql`${schema.pedidos.status} <> 'cancelado'`,
+              eq(schema.pedidos.restauranteId, restauranteId)
             ));
 
           // 8) Fechar comanda
@@ -1113,7 +1115,7 @@ export function registerDeliveryRoutes(app: App) {
               total: totalDue.toFixed(2),
               gorjeta: "0.00",
             })
-            .where(eq(schema.comandas.id, comanda.id));
+            .where(and(eq(schema.comandas.id, comanda.id), eq(schema.comandas.restauranteId, restauranteId)));
 
           return { ok: true, comandaId: comanda.id, clienteNome: entrega.clienteNome };
         });

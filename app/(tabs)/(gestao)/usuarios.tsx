@@ -7,15 +7,18 @@ import {
   TouchableOpacity,
   TextInput,
   Pressable,
+  Alert,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { useFocusEffect } from "@react-navigation/native";
 import { Ionicons } from "@expo/vector-icons";
 import { useColors } from "@/hooks/useColors";
+import { useTabBarInset } from "@/hooks/useTabBarInset";
 import { CardSkeleton } from "@/components/SkeletonLoader";
 import { AnimatedPressable } from "@/components/AnimatedPressable";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { useAuth } from "@/contexts/AuthContext";
 import { apiGet, apiDelete } from "@/utils/api";
 import { getInitials, getRoleLabel } from "@/utils/helpers";
 import { Users, Search } from "lucide-react-native";
@@ -30,6 +33,13 @@ interface ApiUsuario {
 
 function getDisplayName(u: ApiUsuario): string {
   return u.name || u.nome || "";
+}
+
+const normRole = (r: unknown) => String(r ?? "").trim().toLowerCase();
+
+function msgErro(e: unknown): string {
+  const m = e instanceof Error ? e.message.trim() : "";
+  return m && !/^HTTP \d+$/.test(m) ? m : "";
 }
 
 function getRoleBadgeColor(role: string | undefined): { bg: string; text: string } {
@@ -50,7 +60,11 @@ function getRoleBadgeColor(role: string | undefined): { bg: string; text: string
 
 export default function GestaoUsuariosScreen() {
   const COLORS = useColors();
+  const tabBarInset = useTabBarInset();
   const router = useRouter();
+  const { user: authUser } = useAuth();
+  const souGerente = normRole(authUser?.role) === "gerente";
+  const somenteConsulta = (u: ApiUsuario) => souGerente && ["administrador", "admin"].includes(normRole(u.role));
 
   const [usuarios, setUsuarios] = useState<ApiUsuario[]>([]);
   const [loading, setLoading] = useState(true);
@@ -120,6 +134,7 @@ export default function GestaoUsuariosScreen() {
           setUsuarios((prev) => prev.filter((u) => u.id !== id));
         } catch (e: unknown) {
           console.error("[GestaoUsuarios] Erro ao excluir:", e);
+          Alert.alert("Erro", msgErro(e) || "Não foi possível excluir o usuário.");
         }
       },
     });
@@ -149,18 +164,28 @@ export default function GestaoUsuariosScreen() {
   const doDelete = async (ids: string[]) => {
     console.log("[GestaoUsuarios] Excluir em lote:", ids);
     setDeleting(true);
+    let falhas = 0;
+    let motivo = "";
     for (const id of ids) {
       try {
         await apiDelete(`/api/usuarios/${id}`);
         console.log("[GestaoUsuarios] Usuário excluído:", id);
       } catch (e: unknown) {
         console.error("[GestaoUsuarios] Erro ao excluir", id, ":", e);
+        falhas++;
+        if (!motivo) motivo = msgErro(e);
       }
     }
     setSelected(new Set());
     setSelectMode(false);
     setDeleting(false);
     await fetchUsuarios();
+    if (falhas > 0) {
+      Alert.alert(
+        "Erro",
+        `${falhas} ${falhas === 1 ? "usuário não foi excluído" : "usuários não foram excluídos"}.${motivo ? `\n\n${motivo}` : ""}`
+      );
+    }
   };
 
   const confirmBulkDelete = () => {
@@ -394,7 +419,7 @@ export default function GestaoUsuariosScreen() {
       ) : (
         <ScrollView
           style={{ flex: 1 }}
-          contentContainerStyle={{ padding: 12, paddingBottom: 120 }}
+          contentContainerStyle={{ padding: 12, paddingBottom: tabBarInset + 16 }}
           showsVerticalScrollIndicator={false}
         >
           {filteredUsuarios.length === 0 ? (
@@ -451,6 +476,7 @@ export default function GestaoUsuariosScreen() {
                   }}
                 >
                   <TouchableOpacity
+                    disabled={somenteConsulta(item)}
                     onPress={() => {
                       if (selectMode) {
                         console.log("[GestaoUsuarios] Checkbox toggle (select mode):", item.id);
@@ -470,6 +496,7 @@ export default function GestaoUsuariosScreen() {
                       alignItems: "center",
                       justifyContent: "center",
                       marginRight: 10,
+                      opacity: somenteConsulta(item) ? 0.35 : 1,
                     }}
                   >
                     {isSelected && <Ionicons name="checkmark" size={14} color="#fff" />}
@@ -520,6 +547,7 @@ export default function GestaoUsuariosScreen() {
                   </View>
                   {!selectMode && (
                     <View onStartShouldSetResponder={() => true} style={{ gap: 6 }}>
+                      {!somenteConsulta(item) && (<>
                       <TouchableOpacity
                         onPress={() => {
                           console.log("[GestaoUsuarios] Editar pressionado:", item.id);
@@ -556,6 +584,7 @@ export default function GestaoUsuariosScreen() {
                         <Ionicons name="trash" size={14} color="#fff" />
                         <Text style={{ color: "#fff", fontWeight: "600", fontSize: 13 }}>Excluir</Text>
                       </TouchableOpacity>
+                      </>)}
                     </View>
                   )}
                 </Pressable>

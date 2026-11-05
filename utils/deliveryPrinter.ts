@@ -1,7 +1,4 @@
-import { printBluetooth } from "./printer";
-import * as Print from "expo-print";
-import * as FileSystem from "expo-file-system/legacy";
-import * as Sharing from "expo-sharing";
+import { printBluetooth, RECEIPT_COLUMNS } from "./printer";
 import { Platform } from "react-native";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -48,7 +45,7 @@ export interface EtiquetaParams {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-const W = 32;
+const W = RECEIPT_COLUMNS;
 
 function removeAcentos(text: string): string {
   return text
@@ -266,43 +263,21 @@ export function formatEtiquetaLacre(params: EtiquetaParams): string {
 
 // ─── imprimirViaDelivery ──────────────────────────────────────────────────────
 
+/** Direct printing is reserved for the seal label. Delivery slips use the preview. */
 export async function imprimirViaDelivery(texto: string): Promise<"bluetooth" | "fallback" | "erro"> {
-  console.log("[deliveryPrinter] imprimirViaDelivery called, platform:", Platform.OS);
   try {
-    if (Platform.OS !== "web") {
-      console.log("[deliveryPrinter] Attempting Bluetooth print");
-      const ok = await printBluetooth(texto);
-      if (ok) {
-        console.log("[deliveryPrinter] Bluetooth print succeeded");
-        return "bluetooth";
-      }
-      console.log("[deliveryPrinter] Bluetooth print failed, falling back to PDF");
-
-      // Native fallback: PDF file + sharing
-      const escaped = texto
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;");
-      const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"/></head><body style="font-family:monospace;font-size:13px;line-height:1.4;white-space:pre;width:280px;background:#fff;color:#000;padding:8px;margin:0;">${escaped}</body></html>`;
-      const { uri: tempUri } = await Print.printToFileAsync({ html, base64: false });
-      console.log("[deliveryPrinter] PDF generated at:", tempUri);
-      const dest = (FileSystem.cacheDirectory ?? "") + "via_delivery_" + Date.now() + ".pdf";
-      await FileSystem.copyAsync({ from: tempUri, to: dest });
-      await Sharing.shareAsync(dest, { mimeType: "application/pdf", dialogTitle: "Via de entrega" });
-      console.log("[deliveryPrinter] PDF shared successfully");
-      return "fallback";
-    } else {
-      // Web: use browser print dialog directly
-      console.log("[deliveryPrinter] Web platform — using browser print dialog");
-      const escaped = texto
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;");
-      const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"/></head><body style="font-family:monospace;font-size:13px;line-height:1.4;white-space:pre;width:280px;background:#fff;color:#000;padding:8px;margin:0;">${escaped}</body></html>`;
-      await Print.printAsync({ html });
-      console.log("[deliveryPrinter] Browser print dialog opened");
+    if (Platform.OS === "web") {
+      const { printReceiptTextOnDevice } = await import("./receiptPdf");
+      await printReceiptTextOnDevice(texto);
       return "fallback";
     }
+    if (await printBluetooth(texto)) return "bluetooth";
+    const { generateReceiptPdf, releaseReceiptPdf, shareReceiptPdf } = await import("./receiptPdf");
+    const pdf = await generateReceiptPdf(texto);
+    try {
+      await shareReceiptPdf(pdf);
+      return "fallback";
+    } finally { await releaseReceiptPdf(pdf).catch(() => {}); }
   } catch (err) {
     console.error("[deliveryPrinter] imprimirViaDelivery error:", err);
     return "erro";

@@ -1,5 +1,5 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import * as schema from "../db/schema/schema.js";
 import type { App } from "../index.js";
 import { requireAuth as customRequireAuth, requireTenant, requireRole } from "../utils/auth.js";
@@ -38,6 +38,12 @@ interface UpdateRestauranteBody {
 const REGIMES_VALIDOS = ["simples_nacional", "simples_excesso", "regime_normal", "mei"];
 
 const MODOS_COMANDA = ["mesa", "individual"] as const;
+
+// O resultado de tx.execute vem como array ou como { rows }, conforme o driver
+function linhasDe(resultado: any): any[] {
+  if (Array.isArray(resultado)) return resultado;
+  return resultado?.rows ?? [];
+}
 
 const UFS_VALIDAS = [
   "AC","AL","AP","AM","BA","CE","DF","ES","GO","MA","MT","MS","MG",
@@ -407,47 +413,60 @@ export function registerRestauranteRoutes(app: App) {
           return await reply.code(400).send({ error: "modo_comanda invalido. Valores aceitos: " + MODOS_COMANDA.join(", ") });
         }
 
-        const atual = await app.db
-          .select({ modoComanda: schema.restaurante.modoComanda })
-          .from(schema.restaurante)
-          .where(eq(schema.restaurante.id, tenantId))
-          .limit(1);
+        // Tudo dentro de UMA transação, com a linha do restaurante travada (FOR UPDATE). As aberturas de
+        // comanda em andamento (FOR SHARE em services/abrir-comanda.ts) terminam antes da contagem, e as
+        // novas esperam a troca terminar. Sem a trava, uma abertura entre a contagem e a gravação passaria
+        // e deixaria no modo individual uma comanda sem nome. Esta rota nunca trava mesas (só lê comandas).
+        const resultado = await (app.db as any).transaction(async (tx: any) => {
+          const travado = linhasDe(
+            await tx.execute(sql`SELECT modo_comanda FROM restaurante WHERE id = ${tenantId} FOR UPDATE`)
+          );
+          if (travado.length === 0) return { tipo: "nao_encontrado" as const };
 
-        if (atual.length === 0) {
+          const modoAtual = String(travado[0].modo_comanda);
+
+          // Mesmo modo: nada a fazer
+          if (modoAtual === novoModo) return { tipo: "igual" as const };
+
+          // Comandas de delivery não entram na conta: só as de mesa travam a troca
+          const abertas = await tx
+            .select({ id: schema.comandas.id })
+            .from(schema.comandas)
+            .where(
+              and(
+                eq(schema.comandas.restauranteId, tenantId),
+                eq(schema.comandas.status, "aberta" as any),
+                eq(schema.comandas.tipo, "mesa" as any)
+              )
+            )
+            .limit(1);
+
+          if (abertas.length > 0) return { tipo: "comandas_abertas" as const };
+
+          await tx
+            .update(schema.restaurante)
+            .set({ modoComanda: novoModo as any, updatedAt: new Date() })
+            .where(eq(schema.restaurante.id, tenantId));
+
+          return { tipo: "trocado" as const, de: modoAtual };
+        });
+
+        if (resultado.tipo === "nao_encontrado") {
           return await reply.code(404).send({ error: "Nenhum dado cadastrado" });
         }
 
-        // Mesmo modo: nada a fazer
-        if (atual[0].modoComanda === novoModo) {
+        if (resultado.tipo === "igual") {
           return await reply.code(200).send({ modo_comanda: novoModo });
         }
 
-        // Comandas de delivery não entram na conta: só as de mesa travam a troca
-        const abertas = await app.db
-          .select({ id: schema.comandas.id })
-          .from(schema.comandas)
-          .where(
-            and(
-              eq(schema.comandas.restauranteId, tenantId),
-              eq(schema.comandas.status, "aberta" as any),
-              eq(schema.comandas.tipo, "mesa" as any)
-            )
-          )
-          .limit(1);
-
-        if (abertas.length > 0) {
+        if (resultado.tipo === "comandas_abertas") {
           app.logger.warn({ tenantId }, "Cannot change modo_comanda with open mesa comandas");
           return await reply
             .code(409)
             .send({ error: "Feche ou cancele as comandas abertas antes de mudar o modo de comanda." });
         }
 
-        await app.db
-          .update(schema.restaurante)
-          .set({ modoComanda: novoModo as any, updatedAt: new Date() })
-          .where(eq(schema.restaurante.id, tenantId));
-
-        app.logger.info({ tenantId, de: atual[0].modoComanda, para: novoModo }, "modo_comanda changed");
+        app.logger.info({ tenantId, de: resultado.de, para: novoModo }, "modo_comanda changed");
 
         return await reply.code(200).send({ modo_comanda: novoModo });
       } catch (error) {

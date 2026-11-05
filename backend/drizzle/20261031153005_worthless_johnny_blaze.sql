@@ -1,0 +1,2 @@
+ALTER TABLE "reservas" ADD CONSTRAINT "ck_reservas_numero_pessoas" CHECK (numero_pessoas >= 1 AND numero_pessoas <= 50);--> statement-breakpoint
+ALTER TABLE "reservas" ADD CONSTRAINT "ck_reservas_duracao_positiva" CHECK (duracao > 0);

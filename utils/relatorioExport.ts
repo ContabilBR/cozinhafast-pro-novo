@@ -2,6 +2,7 @@ import * as XLSX from "xlsx";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
 import { formatCurrency } from "@/utils/helpers";
+import { appendDetailedReportSheets } from "@/utils/relatorioDetalhadoExcel";
 
 export interface RelatorioResumo {
   total_revenue?: number;
@@ -46,7 +47,8 @@ function formatPct(n: number, total: number): string {
 export async function exportarRelatorioExcel(
   resumo: RelatorioResumo,
   periodoLabel: string,
-  mesas: MesaResumoExport[] = []
+  mesas: MesaResumoExport[] = [],
+  detalhes?: { periodo: string; role?: string }
 ): Promise<void> {
   const status = resumo.orders_by_status || {};
   const pedidosNoPeriodo = (status.aberta ?? 0) + (status.fechada ?? 0) + (status.cancelada ?? 0);
@@ -109,6 +111,10 @@ export async function exportarRelatorioExcel(
   const wsMesas = XLSX.utils.aoa_to_sheet(linhasMesas);
   wsMesas["!cols"] = [{ wch: 12 }, { wch: 16 }, { wch: 18 }, { wch: 60 }];
   XLSX.utils.book_append_sheet(wb, wsMesas, "Por Mesa");
+
+  if (detalhes && (detalhes.role === "gerente" || detalhes.role === "administrador")) {
+    await appendDetailedReportSheets(wb, detalhes.periodo);
+  }
 
   // XLSX.write com type "array" devolve um ArrayBuffer — não é indexável direto,
   // precisa ser envolvido num Uint8Array antes de percorrer byte a byte.

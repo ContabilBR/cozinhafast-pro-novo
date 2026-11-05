@@ -7,7 +7,7 @@ import { realtimeHub } from "../realtime/hub.js";
 import { cancelarPedido, MOTIVOS_CANCELAMENTO, ROLES_ATENDIMENTO } from "../services/cancelamento-pedido.js";
 import { liberarMesaSeVazia } from "../services/liberar-mesa.js";
 import { lancarItens } from "../services/lancamento-pedidos.js";
-import { subtotalDaComanda, totalDelivery } from "../services/total-comanda.js";
+import { subtotalDaComanda, totalDelivery, calcularTotalComandaMesa, calcularTotalComandaMesaComDesconto } from "../services/total-comanda.js";
 import { avaliarTransicao, validarEdicao } from "../services/transicao-pedidos.js";
 
 // Recalcula e grava o subtotal e o total da comanda depois de mexer num item (item cancelado fica
@@ -15,26 +15,37 @@ import { avaliarTransicao, validarEdicao } from "../services/transicao-pedidos.j
 // pendente acompanha o novo total); mesa = subtotal + gorjeta. `executor` é o banco ou uma transação.
 async function regravarTotaisDaComanda(
   executor: any,
-  comanda: { id: string; tipo: string | null; gorjeta: string | null }
-): Promise<void> {
+  comanda: { id: string; tipo: string | null; gorjeta: string | null; descontoValor?: string | null; descontoTipo?: string | null },
+  restauranteId: string
+): Promise<{ descontoEfetivo?: number }> {
   const subtotal = await subtotalDaComanda(executor, comanda.id);
   let total: number;
+  let descontoEfetivo: number | undefined;
   if (comanda.tipo === "delivery") {
     total = await totalDelivery(executor, comanda.id);
   } else {
-    total = subtotal + parseFloat(String(comanda.gorjeta || "0"));
+    const gorjeta = parseFloat(String(comanda.gorjeta || "0"));
+    const result = calcularTotalComandaMesaComDesconto(subtotal, gorjeta, comanda.descontoTipo, comanda.descontoValor);
+    total = result.total;
+    descontoEfetivo = result.descontoEfetivo;
   }
   await executor
     .update(schema.comandas)
-    .set({ subtotal: subtotal.toString(), total: total.toFixed(2) })
-    .where(eq(schema.comandas.id, comanda.id));
+    .set({
+      subtotal: subtotal.toString(),
+      total: total.toFixed(2),
+      ...(descontoEfetivo !== undefined && { descontoValor: descontoEfetivo.toFixed(2) })
+    })
+    .where(and(eq(schema.comandas.id, comanda.id), eq(schema.comandas.restauranteId, restauranteId)));
 
   if (comanda.tipo === "delivery") {
     await executor
       .update(schema.pagamentos)
       .set({ valor: total.toFixed(2) })
-      .where(and(eq(schema.pagamentos.comandaId, comanda.id), eq(schema.pagamentos.status, "pendente" as any)));
+      .where(and(eq(schema.pagamentos.comandaId, comanda.id), eq(schema.pagamentos.status, "pendente" as any), eq(schema.pagamentos.restauranteId, restauranteId)));
   }
+
+  return { descontoEfetivo };
 }
 
 interface CreatePedidoBody {
@@ -656,12 +667,12 @@ export function registerOrderItemRoutes(app: App) {
   );
 
   // PUT /api/pedidos/:id/cancelar - Cancela um item (item cancelado não é venda)
-  app.fastify.put<{ Params: { id: string }; Body: { motivo: string; detalhe?: string } }>(
+  app.fastify.put<{ Params: { id: string }; Body: { motivo: string; detalhe?: string; quantidade?: number; autorizacao?: any } }>(
     "/api/pedidos/:id/cancelar",
     {
       schema: {
         description:
-          "Cancela um item de uma comanda aberta. Item cancelado não conta como venda. Itens pendentes podem ser cancelados por garçom, gerente ou administrador; itens já em preparo ou prontos, só por gerente ou administrador (ficam marcados como perda). Item entregue não pode ser cancelado.",
+          "Cancela um item de uma comanda aberta. Item cancelado não conta como venda. Itens pendentes podem ser cancelados por garçom, gerente ou administrador; itens em preparo ou prontos, gerente e administrador cancelam direto, garçom precisa de autorização do gerente (email e senha). Suporta cancelamento parcial via campo 'quantidade'. Item entregue não pode ser cancelado.",
         tags: ["pedidos"],
         params: {
           type: "object",
@@ -674,6 +685,8 @@ export function registerOrderItemRoutes(app: App) {
           properties: {
             motivo: { type: "string", enum: [...MOTIVOS_CANCELAMENTO] },
             detalhe: { type: "string", maxLength: 300 },
+            quantidade: { type: "integer", minimum: 1, maximum: 99 },
+            autorizacao: { type: "object" },
           },
         },
         response: {
@@ -682,22 +695,28 @@ export function registerOrderItemRoutes(app: App) {
             properties: {
               success: { type: "boolean" },
               id: { type: "string" },
+              id_cancelado: { type: "string" },
               comanda_id: { type: "string" },
               status: { type: "string" },
               cancelado_apos_inicio: { type: "boolean" },
               subtotal_comanda: { type: "number" },
               total_comanda: { type: "number" },
+              parcial: { type: "boolean" },
+              quantidade_cancelada: { type: "number" },
+              quantidade_restante: { type: "number" },
+              autorizado_por_nome: { type: ["string", "null"] },
             },
           },
           400: { type: "object", properties: { error: { type: "string" } } },
           403: { type: "object", properties: { error: { type: "string" } } },
           404: { type: "object", properties: { error: { type: "string" } } },
           409: { type: "object", properties: { error: { type: "string" } } },
+          429: { type: "object", properties: { error: { type: "string" } } },
         },
       },
     },
     async (
-      request: FastifyRequest<{ Params: { id: string }; Body: { motivo: string; detalhe?: string } }>,
+      request: FastifyRequest<{ Params: { id: string }; Body: { motivo: string; detalhe?: string; quantidade?: number; autorizacao?: any } }>,
       reply: FastifyReply
     ) => {
       const session = await customRequireAuth(app, request, reply);
@@ -717,12 +736,38 @@ export function registerOrderItemRoutes(app: App) {
           return await reply.code(400).send({ error: "Informe o detalhe do motivo quando o motivo for 'outro'." });
         }
 
+        // Import manager authorization validation
+        const { validarAutorizacaoGerente } = await import("../services/autorizacao-gerente.js");
+
+        app.logger.info({ pedidoId: request.params.id, userRole: session.role, quantidade: request.body.quantidade, temAutorizacao: !!request.body.autorizacao }, "Canceling pedido");
+
+        let autorizadorGerente: { id: string; nome: string; role: string } | undefined = undefined;
+
+        // Se garçom está tentando cancelar e enviou autorizacao, validar
+        if (session.role?.toLowerCase() === "garcom" && request.body.autorizacao) {
+          const authResult = await validarAutorizacaoGerente(app.db, restauranteId, session.id, session.email ?? "", request.body.autorizacao);
+          if (authResult.valida === false) {
+            const motivoInvalido = authResult.motivo;
+            if (motivoInvalido === "limite_de_tentativas") {
+              app.logger.warn({ sessionId: session.id, restauranteId }, "Manager auth rate limit exceeded");
+              return await reply.code(429).send({ error: "Muitas tentativas. Tente novamente em 15 minutos." });
+            } else {
+              app.logger.warn({ sessionId: session.id, restauranteId }, "Manager auth failed");
+              return await reply.code(403).send({ error: "Autorização inválida" });
+            }
+          }
+          autorizadorGerente = { id: authResult.id, nome: authResult.nome, role: authResult.role };
+          app.logger.info({ managerId: authResult.id, managerName: authResult.nome }, "Manager authorization validated");
+        }
+
         const resultado = await cancelarPedido(app, {
           restauranteId,
           pedidoId: request.params.id,
           motivo: request.body.motivo as any,
           detalhe,
           canceladoPor: { id: session.id, nome: session.name, role: session.role },
+          quantidade: request.body.quantidade,
+          autorizadorGerente,
         });
 
         if (resultado.tipo !== "cancelado") {
@@ -736,9 +781,17 @@ export function registerOrderItemRoutes(app: App) {
             case "ja_entregue":
               return await reply.code(409).send({ error: "Item já entregue não pode ser cancelado. Cortesia e estorno ainda não estão disponíveis." });
             case "requer_gestor":
-              return await reply.code(403).send({ error: "Só gerente ou administrador pode cancelar um item que já está em preparo ou pronto." });
+              return await reply.code(403).send({ error: "Item em preparo ou pronto: o gerente precisa autorizar o cancelamento com e-mail e senha." });
+            case "quantidade_invalida":
+              if (resultado.quantidadeMaxima === 1) {
+                return await reply.code(400).send({ error: "Este item tem apenas 1 unidade." });
+              } else {
+                return await reply.code(400).send({ error: `A quantidade a cancelar deve ser de 1 a ${resultado.quantidadeMaxima}.` });
+              }
           }
         }
+
+        app.logger.info({ pedidoId: resultado.pedidoId, parcial: resultado.parcial, quantidadeCancelada: resultado.quantidadeCancelada }, "Pedido canceled successfully");
 
         // Publicar delivery.pronto se aplicável (após sucesso da transação)
         if (resultado.tipo === "cancelado") {
@@ -791,11 +844,16 @@ export function registerOrderItemRoutes(app: App) {
         return await reply.code(200).send({
           success: true,
           id: resultado.pedidoId,
+          id_cancelado: resultado.pedidoCanceladoId,
           comanda_id: resultado.comandaId,
           status: "cancelado",
           cancelado_apos_inicio: resultado.canceladoAposInicio,
           subtotal_comanda: resultado.subtotalComanda,
           total_comanda: resultado.totalComanda,
+          parcial: resultado.parcial,
+          quantidade_cancelada: resultado.quantidadeCancelada,
+          quantidade_restante: resultado.quantidadeRestante,
+          autorizado_por_nome: resultado.autorizadoPorNome,
         });
       } catch (error) {
         app.logger.error({ err: error }, "Failed to cancel pedido");
@@ -910,6 +968,8 @@ export function registerOrderItemRoutes(app: App) {
               tipo: schema.comandas.tipo,
               status: schema.comandas.status,
               gorjeta: schema.comandas.gorjeta,
+              descontoValor: schema.comandas.descontoValor,
+              descontoTipo: schema.comandas.descontoTipo,
             })
             .from(schema.comandas)
             .where(and(eq(schema.comandas.id, pedido.comandaId), eq(schema.comandas.restauranteId, restauranteIdAtual)))
@@ -932,7 +992,7 @@ export function registerOrderItemRoutes(app: App) {
 
           if (!atualizados.length) return { tipo: "item_mudou" as const };
 
-          await regravarTotaisDaComanda(tx, comandaTravada);
+          await regravarTotaisDaComanda(tx, comandaTravada, restauranteIdAtual);
           return { tipo: "ok" as const, pedido: atualizados[0] };
         });
 
@@ -1109,18 +1169,35 @@ export function registerOrderItemRoutes(app: App) {
         const subtotalValue = subtotalResult[0]?.subtotal || "0";
         const subtotal = parseFloat(String(subtotalValue));
 
-        const gorjetaResult = await app.db
-          .select({ gorjeta: schema.comandas.gorjeta })
+        const comandaResult = await app.db
+          .select({
+            gorjeta: schema.comandas.gorjeta,
+            tipo: schema.comandas.tipo,
+            descontoValor: schema.comandas.descontoValor,
+            descontoTipo: schema.comandas.descontoTipo,
+          })
           .from(schema.comandas)
           .where(eq(schema.comandas.id, pedido.comandaId));
 
-        const gorjetaValue = gorjetaResult[0]?.gorjeta || "0";
-        const gorjeta = parseFloat(String(gorjetaValue));
-        const newTotal = (subtotal + gorjeta).toFixed(2);
+        const gorjeta = parseFloat(String(comandaResult[0]?.gorjeta || "0"));
+        let newTotal: string;
+        let descontoEfetivo: number | undefined;
+
+        if (comandaResult[0]?.tipo === "delivery") {
+          newTotal = subtotal.toFixed(2);
+        } else {
+          const result = calcularTotalComandaMesaComDesconto(subtotal, gorjeta, comandaResult[0]?.descontoTipo, comandaResult[0]?.descontoValor);
+          newTotal = result.total.toFixed(2);
+          descontoEfetivo = result.descontoEfetivo;
+        }
 
         await app.db
           .update(schema.comandas)
-          .set({ subtotal: subtotal.toString(), total: newTotal })
+          .set({
+            subtotal: subtotal.toString(),
+            total: newTotal,
+            ...(descontoEfetivo !== undefined && { descontoValor: descontoEfetivo.toFixed(2) })
+          })
           .where(eq(schema.comandas.id, pedido.comandaId));
 
         const remainingPedidos = await app.db
@@ -1142,6 +1219,14 @@ export function registerOrderItemRoutes(app: App) {
               closedAt: schema.comandas.closedAt,
               mesaNumero: schema.comandas.mesaNumero,
               rotulo: schema.comandas.rotulo,
+              descontoValor: schema.comandas.descontoValor,
+              descontoTipo: schema.comandas.descontoTipo,
+              descontoMotivo: schema.comandas.descontoMotivo,
+              descontoMotivoDetalhe: schema.comandas.descontoMotivoDetalhe,
+              descontoPorId: schema.comandas.descontoPorId,
+              descontoPorNome: schema.comandas.descontoPorNome,
+              descontoAplicadoPorNome: schema.comandas.descontoAplicadoPorNome,
+              descontoEm: schema.comandas.descontoEm,
             })
             .from(schema.comandas)
             .where(eq(schema.comandas.id, pedido.comandaId));
@@ -1160,6 +1245,14 @@ export function registerOrderItemRoutes(app: App) {
                 garcomId: comanda.garcomId,
                 status: comanda.status,
                 total: comanda.total as any,
+                descontoValor: descontoEfetivo !== undefined ? descontoEfetivo.toString() : (comanda.descontoValor ?? null),
+                descontoTipo: comanda.descontoTipo ?? null,
+                descontoMotivo: comanda.descontoMotivo ?? null,
+                descontoMotivoDetalhe: comanda.descontoMotivoDetalhe ?? null,
+                descontoPorId: comanda.descontoPorId ?? null,
+                descontoPorNome: comanda.descontoPorNome ?? null,
+                descontoAplicadoPorNome: comanda.descontoAplicadoPorNome ?? null,
+                descontoEm: comanda.descontoEm ?? null,
                 createdAt: comanda.createdAt,
                 closedAt: comanda.closedAt,
                 archivedAt: new Date(),
@@ -1180,7 +1273,7 @@ export function registerOrderItemRoutes(app: App) {
                 restauranteId,
               });
 
-              await tx.delete(schema.comandas).where(eq(schema.comandas.id, pedido.comandaId));
+              await tx.delete(schema.comandas).where(and(eq(schema.comandas.id, pedido.comandaId), eq(schema.comandas.restauranteId, restauranteId)));
 
               await liberarMesaSeVazia(tx, comanda.mesaId, restauranteId);
             });

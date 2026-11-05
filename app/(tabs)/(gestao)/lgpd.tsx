@@ -4,12 +4,14 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { useColors } from "@/hooks/useColors";
+import { useTabBarInset } from "@/hooks/useTabBarInset";
 import { apiGet, apiDelete } from "@/utils/api";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
 
 export default function LgpdScreen() {
   const COLORS = useColors();
+  const tabBarInset = useTabBarInset();
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const [exporting, setExporting] = useState(false);
@@ -51,7 +53,7 @@ export default function LgpdScreen() {
           <Text style={{ fontSize: 13, color: COLORS.textSecondary, marginTop: 2 }}>LGPD — seus direitos</Text>
         </View>
       </View>
-      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 100 }}>
+      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: tabBarInset + 16 }}>
         <View style={cardStyle}>
           <Ionicons name="shield-checkmark-outline" size={32} color={COLORS.primary} />
           <Text style={{ fontSize: 16, fontWeight: "600", color: COLORS.text, marginTop: 8 }}>Seus direitos</Text>

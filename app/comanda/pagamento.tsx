@@ -53,15 +53,28 @@ export default function PagamentoScreen() {
     console.log("[PagamentoScreen] Registering payment:", { forma, valor: v, comanda: id });
     setSaving(true);
     try {
-      const res = await apiPost("/api/comandas/" + id + "/pagamentos", {
+      const res: any = await apiPost("/api/comandas/" + id + "/pagamentos", {
         forma_pagamento: forma, valor: v, troco: forma === "dinheiro" ? parseFloat(troco.replace(",", ".")) || 0 : 0,
       });
       console.log("[PagamentoScreen] Payment registered:", res);
-      Alert.alert("Pagamento registrado", formatCurrency(v) + " em " + FORMAS.find(f => f.key === forma)?.label);
-      router.back();
+      const formaLabel = FORMAS.find(f => f.key === forma)?.label;
+      if (res?.comanda_fechada) {
+        // O servidor fechou a comanda junto com o pagamento que quitou a conta: a mesa já foi liberada
+        Alert.alert("Conta paga e encerrada", formatCurrency(v) + " em " + formaLabel + ". A mesa foi liberada.", [{ text: "OK", onPress: () => router.dismissAll() }]);
+      } else if (res?.aguardando_itens) {
+        Alert.alert("Pagamento registrado", formatCurrency(v) + " em " + formaLabel + ". A conta está paga, mas ainda há item pendente ou em preparo na cozinha. A comanda continua aberta: a gerência pode cancelar o item e fechar a conta.", [{ text: "OK", onPress: () => router.back() }]);
+      } else {
+        Alert.alert("Pagamento registrado", formatCurrency(v) + " em " + formaLabel);
+        router.back();
+      }
     } catch (err: any) {
       console.log("[PagamentoScreen] Error registering payment:", err);
-      Alert.alert("Erro", err?.message || "Erro ao registrar pagamento");
+      if (err?.status === 409) {
+        // Comanda já encerrada (por exemplo, toque duplo): não há mais o que pagar aqui
+        Alert.alert("Comanda encerrada", err?.message || "Esta comanda já foi encerrada.", [{ text: "OK", onPress: () => router.dismissAll() }]);
+      } else {
+        Alert.alert("Erro", err?.message || "Erro ao registrar pagamento");
+      }
     } finally { setSaving(false); }
   };
 

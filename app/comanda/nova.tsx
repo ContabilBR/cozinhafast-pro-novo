@@ -12,6 +12,7 @@ import {
   ImageSourcePropType,
   Platform,
   UIManager,
+  KeyboardAvoidingView,
 } from "react-native";
 import { Image } from "expo-image";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -113,6 +114,7 @@ function PratoCard({
   onIncrement,
   onDecrement,
   onObservacaoChange,
+  onFocusObservacao,
   index,
 }: {
   prato: ApiPrato;
@@ -121,6 +123,7 @@ function PratoCard({
   onIncrement: () => void;
   onDecrement: () => void;
   onObservacaoChange: (text: string) => void;
+  onFocusObservacao?: () => void;
   index: number;
 }) {
   const COLORS = useColors();
@@ -344,6 +347,7 @@ function PratoCard({
               setPendingObservacao(text);
             }
           }}
+          onFocus={onFocusObservacao}
           placeholder="Observação (ex: sem cebola)"
           placeholderTextColor={COLORS.textTertiary}
           style={{
@@ -450,6 +454,7 @@ export default function NovaComandaScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [activeTab, setActiveTab] = useState<"cardapio" | "pedido">("cardapio");
   const [showSuccess, setShowSuccess] = useState(false);
+  const pratosListRef = useRef<FlatList<ApiPrato>>(null);
   const successOpacity = useRef(new Animated.Value(0)).current;
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<string>("Todos");
@@ -624,6 +629,7 @@ export default function NovaComandaScreen() {
       style={{ flex: 1, backgroundColor: COLORS.background }}
       edges={["top", "left", "right"]}
     >
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
       {/* ── Success Modal ── */}
       <Modal visible={showSuccess} transparent animationType="none" statusBarTranslucent>
         <Animated.View
@@ -693,13 +699,19 @@ export default function NovaComandaScreen() {
         <AnimatedPressable
           onPress={() => {
             console.log("[Comanda] Botão Voltar pressionado");
-            router.back();
+            if (router.canGoBack()) {
+              router.back();
+            } else {
+              router.replace("/(tabs)/(mesas)");
+            }
           }}
+          hitSlop={10}
           style={{
             flexDirection: "row",
             alignItems: "center",
             padding: 8,
             gap: 4,
+            zIndex: 10,
           }}
         >
           <ArrowLeft size={20} color={COLORS.primary} />
@@ -716,29 +728,26 @@ export default function NovaComandaScreen() {
 
         <Text
           style={{
-            position: "absolute",
-            left: 0,
-            right: 0,
+            flex: 1,
+            minWidth: 0,
             textAlign: "center",
             fontFamily: "Outfit_700Bold",
             fontSize: 16,
             color: COLORS.text,
             letterSpacing: -0.2,
-            height: 56,
-            lineHeight: 56,
           }}
           numberOfLines={1}
-          pointerEvents="none"
+          ellipsizeMode="tail"
         >
           {titleText}
         </Text>
 
         {/* Cart badge */}
-        {cartCount > 0 && (
+        {cartCount > 0 ? (
           <View
             style={{
-              position: "absolute",
-              right: 16,
+              flexShrink: 0,
+              marginRight: 8,
               backgroundColor: COLORS.primary,
               borderRadius: 14,
               paddingHorizontal: 10,
@@ -759,6 +768,8 @@ export default function NovaComandaScreen() {
               {cartCount}
             </Text>
           </View>
+        ) : (
+          <View style={{ width: 80 }} />
         )}
       </View>
 
@@ -1018,12 +1029,8 @@ export default function NovaComandaScreen() {
               </Text>
             </View>
           ) : (
-            <FlatList
-              data={filteredPratos}
-              keyExtractor={(item) => item.id}
-              contentContainerStyle={{ paddingTop: 12, paddingBottom: 160 }}
-              ListHeaderComponent={
-                <View>
+            <View style={{ flex: 1 }}>
+                <View style={{ paddingTop: 12, flexShrink: 0 }}>
                   {/* Search field */}
                   <View
                     style={{
@@ -1065,6 +1072,8 @@ export default function NovaComandaScreen() {
                   <ScrollView
                     horizontal
                     showsHorizontalScrollIndicator={false}
+                    keyboardShouldPersistTaps="handled"
+                    style={{ flexGrow: 0 }}
                     contentContainerStyle={{
                       paddingHorizontal: 16,
                       paddingBottom: 10,
@@ -1109,7 +1118,14 @@ export default function NovaComandaScreen() {
                     })}
                   </ScrollView>
                 </View>
-              }
+            <FlatList
+              ref={pratosListRef}
+              style={{ flex: 1 }}
+              onScrollToIndexFailed={() => {}}
+              data={filteredPratos}
+              keyExtractor={(item) => item.id}
+              contentContainerStyle={{ paddingBottom: 160 }}
+              keyboardShouldPersistTaps="handled"
               renderItem={({ item, index }) => {
                 const cartItem = cart.find((c) => c.id === item.id);
                 return (
@@ -1120,6 +1136,12 @@ export default function NovaComandaScreen() {
                     onIncrement={() => incrementItem(item.id)}
                     onDecrement={() => decrementItem(item.id)}
                     onObservacaoChange={(text) => setObservacao(item.id, text)}
+                    onFocusObservacao={() => {
+                      // Espera o teclado abrir e leva o prato para a parte visível da lista
+                      setTimeout(() => {
+                        pratosListRef.current?.scrollToIndex({ index, viewPosition: 0.1, animated: true });
+                      }, 250);
+                    }}
                     index={index}
                   />
                 );
@@ -1157,6 +1179,7 @@ export default function NovaComandaScreen() {
                 </View>
               }
             />
+            </View>
           )
         ) : (
           // ── Meu Pedido Tab ──
@@ -1370,6 +1393,7 @@ export default function NovaComandaScreen() {
           )}
         </AnimatedPressable>
       </View>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }

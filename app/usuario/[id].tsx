@@ -17,6 +17,7 @@ import { useColors } from "@/hooks/useColors";
 import { PasswordInput } from "@/components/PasswordInput";
 import { AnimatedPressable } from "@/components/AnimatedPressable";
 import { UserRole } from "@/types";
+import { useAuth } from "@/contexts/AuthContext";
 import { apiGet, apiPut, apiDelete } from "@/utils/api";
 import { getRoleLabel } from "@/utils/helpers";
 import { ChevronDown } from "lucide-react-native";
@@ -37,6 +38,7 @@ export default function EditarUsuarioScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const COLORS = useColors();
   const router = useRouter();
+  const { user: authUser } = useAuth();
 
   const [nome, setNome] = useState("");
   const [email, setEmail] = useState("");
@@ -48,10 +50,11 @@ export default function EditarUsuarioScreen() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    console.log("[EditarUsuario] GET /api/usuarios/" + id);
-    apiGet<any>(`/api/usuarios/${id}`)
+    console.log("[EditarUsuario] GET /api/usuarios (procurando " + id + ")");
+    apiGet<any>("/api/usuarios")
       .then((res) => {
-        const u = res.usuario || res.user || res;
+        const lista: any[] = Array.isArray(res) ? res : (res?.data || res?.usuarios || res?.users || []);
+        const u = lista.find((x) => String(x.id) === String(id));
         if (u && u.id) {
           console.log("[EditarUsuario] Usuário carregado:", u.name ?? u.nome);
           setNome(u.name ?? u.nome ?? "");
@@ -106,7 +109,8 @@ export default function EditarUsuarioScreen() {
               router.back();
             } catch (e: any) {
               console.error("[EditarUsuario] Erro ao excluir:", e);
-              Alert.alert("Erro", "Não foi possível excluir o usuário.");
+              const msg = e instanceof Error ? e.message.trim() : "";
+              Alert.alert("Erro", msg && !/^HTTP \d+$/.test(msg) ? msg : "Não foi possível excluir o usuário.");
             }
           },
         },
@@ -126,6 +130,16 @@ export default function EditarUsuarioScreen() {
   };
 
   const roleLabel = getRoleLabel(role);
+  const normRole = (r: unknown) => String(r ?? "").trim().toLowerCase();
+  const souGerente = normRole(authUser?.role) === "gerente";
+  const alvoAdmin = ["administrador", "admin"].includes(normRole(role));
+  const somenteLeitura = souGerente && alvoAdmin;
+  const normEmail = (e: unknown) => String(e ?? "").trim().toLowerCase();
+  const ehEuMesmo =
+    (!!id && !!authUser?.id && String(id) === String(authUser.id)) ||
+    (!!normEmail(email) && normEmail(email) === normEmail(authUser?.email));
+  const seletorTravado = souGerente && ehEuMesmo;
+  const rolesPermitidas = souGerente ? ROLES.filter((r) => r !== "administrador") : ROLES;
 
   if (loading) {
     return (
@@ -187,8 +201,17 @@ export default function EditarUsuarioScreen() {
           contentContainerStyle={{ padding: 20, paddingBottom: 48, gap: 16 }}
           keyboardShouldPersistTaps="handled"
         >
+          {somenteLeitura ? (
+            <View style={{ backgroundColor: COLORS.primaryMuted, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border, padding: 12 }}>
+              <Text style={{ fontFamily: "Outfit_600SemiBold", fontSize: 14, color: COLORS.text }}>
+                Somente o administrador pode alterar um administrador.
+              </Text>
+            </View>
+          ) : null}
+
           <FormField label="Nome *">
             <TextInput
+              editable={!somenteLeitura}
               value={nome}
               onChangeText={setNome}
               placeholder="Nome completo"
@@ -202,6 +225,7 @@ export default function EditarUsuarioScreen() {
 
           <FormField label="E-mail">
             <TextInput
+              editable={!somenteLeitura}
               value={email}
               onChangeText={setEmail}
               placeholder="email@exemplo.com"
@@ -215,6 +239,7 @@ export default function EditarUsuarioScreen() {
 
           <FormField label="Nova senha (opcional)">
             <PasswordInput
+              editable={!somenteLeitura}
               value={senha}
               onChangeText={setSenha}
               placeholder="Deixe em branco para manter"
@@ -228,15 +253,16 @@ export default function EditarUsuarioScreen() {
 
           <FormField label="Função">
             <AnimatedPressable
+              disabled={seletorTravado}
               onPress={() => { console.log("[EditarUsuario] Seletor de função alternado"); setShowRolePicker((v) => !v); }}
               style={[inputStyle, { flexDirection: "row", justifyContent: "space-between", alignItems: "center" }]}
             >
               <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 15, color: COLORS.text }}>{roleLabel}</Text>
               <ChevronDown size={16} color={COLORS.textSecondary} />
             </AnimatedPressable>
-            {showRolePicker && (
+            {showRolePicker && !seletorTravado && (
               <View style={{ backgroundColor: COLORS.surface, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border, overflow: "hidden" }}>
-                {ROLES.map((r) => (
+                {rolesPermitidas.map((r) => (
                   <AnimatedPressable
                     key={r}
                     onPress={() => { console.log("[EditarUsuario] Função selecionada:", r); setRole(r); setShowRolePicker(false); }}
@@ -253,6 +279,7 @@ export default function EditarUsuarioScreen() {
             <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 13, color: COLORS.danger, textAlign: "center" }}>{error}</Text>
           ) : null}
 
+          {!somenteLeitura && (<>
           <AnimatedPressable
             onPress={() => { console.log("[EditarUsuario] Salvar alterações pressionado"); handleSave(); }}
             disabled={submitting}
@@ -271,6 +298,7 @@ export default function EditarUsuarioScreen() {
           >
             <Text style={{ fontFamily: "Outfit_600SemiBold", fontSize: 16, color: COLORS.danger }}>Excluir usuário</Text>
           </AnimatedPressable>
+          </>)}
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>

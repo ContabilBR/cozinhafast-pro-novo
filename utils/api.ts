@@ -64,6 +64,35 @@ export const deleteBearerToken = async (): Promise<void> => {
   }
 };
 
+const REQUEST_TIMEOUT_MS = 30000;
+const MENSAGENS_SESSAO_INVALIDA = [
+  "unauthorized",
+  "não autenticado",
+  "invalid or expired token",
+  "invalid token",
+  "token required",
+];
+const SESSAO_INVALIDA_JANELA_MS = 3000;
+
+let _tratadorSessaoInvalida: (() => void) | null = null;
+let _ultimaSessaoInvalida = 0;
+
+/** Registra (ou remove, com null) o tratador chamado quando o servidor recusa o token atual. */
+export const setSessionInvalidHandler = (handler: (() => void) | null): void => {
+  _tratadorSessaoInvalida = handler;
+};
+
+const notificarSessaoInvalida = (): void => {
+  const agora = Date.now();
+  if (!_tratadorSessaoInvalida || agora - _ultimaSessaoInvalida < SESSAO_INVALIDA_JANELA_MS) return;
+  _ultimaSessaoInvalida = agora;
+  try {
+    _tratadorSessaoInvalida();
+  } catch (error) {
+    console.error("[API] Session invalid handler failed");
+  }
+};
+
 export const apiRequest = async <T = any>(
   path: string,
   options?: RequestInit
@@ -84,8 +113,43 @@ export const apiRequest = async <T = any>(
 
   console.log(`[API] ${options?.method ?? "GET"} ${path}${token ? "" : " (unauthenticated)"}`);
 
-  const response = await fetch(url, { ...options, headers });
-if (!response.ok) {
+  const method = (options?.method ?? "GET").toUpperCase();
+
+  // Limite de 30s por chamada, combinado com o sinal de cancelamento de quem chamou (sem substituí-lo).
+  const controller = new AbortController();
+  let estourouTempo = false;
+  const timer = setTimeout(() => {
+    estourouTempo = true;
+    controller.abort();
+  }, REQUEST_TIMEOUT_MS);
+  const sinalExterno = options?.signal ?? null;
+  const aoCancelarExterno = () => controller.abort();
+  if (sinalExterno) {
+    if (sinalExterno.aborted) controller.abort();
+    else sinalExterno.addEventListener("abort", aoCancelarExterno);
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(url, { ...options, headers, signal: controller.signal });
+  } catch (error: any) {
+    clearTimeout(timer);
+    sinalExterno?.removeEventListener("abort", aoCancelarExterno);
+    // Cancelado por quem chamou: mantém o comportamento original.
+    if (sinalExterno?.aborted && !estourouTempo) throw error;
+    console.error(`[API] Network error on ${method} ${path}:`, estourouTempo ? "timeout" : "connection");
+    const netErr: any = new Error(
+      method === "GET"
+        ? "Sem conexão com o servidor. Verifique a internet e tente novamente."
+        : "A conexão falhou ou demorou demais. Confira se a ação foi registrada antes de tentar de novo."
+    );
+    netErr.rede = true;
+    throw netErr;
+  }
+  clearTimeout(timer);
+  sinalExterno?.removeEventListener("abort", aoCancelarExterno);
+
+  if (!response.ok) {
     const text = await response.text();
     let message = text;
     let body: any = null;
@@ -100,6 +164,14 @@ if (!response.ok) {
     const err: any = new Error(message || `HTTP ${response.status}`);
     err.status = response.status;
     err.body = body;
+    if (
+      response.status === 401 &&
+      MENSAGENS_SESSAO_INVALIDA.includes(String(message ?? "").trim().toLowerCase()) &&
+      token &&
+      token === _memoryToken
+    ) {
+      notificarSessaoInvalida();
+    }
     throw err;
   }
 
