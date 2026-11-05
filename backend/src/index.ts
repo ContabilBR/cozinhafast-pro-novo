@@ -29,7 +29,7 @@ import { registerReservasRoutes } from './routes/reservas.js';
 import { registerRenovacaoDeImagens } from './utils/imagem-assinada.js';
 import { seedDatabase } from './db/seed.js';
 import { enableSelectRetry } from './db/withRetry.js';
-import { garantirColunasDeCancelamento, garantirColunasDeModoComanda, garantirColunasContinuasDeDesconto, backfillQrTokens, garantirTabelaReservas } from './db/ensure-schema.js';
+import { garantirColunasDeCancelamento, garantirColunasDeModoComanda, garantirColunasContinuasDeDesconto, backfillQrTokens, garantirTabelaReservas, garantirTabelaTransacoesTerminal } from './db/ensure-schema.js';
 import { garantirRestauranteIdTexto } from './db/ensure-restaurante-id.js';
 
 // Combine schemas
@@ -96,6 +96,14 @@ try {
   await garantirTabelaReservas(app);
 } catch (error) {
   app.logger.error({ err: error }, 'Failed to ensure reservas table');
+  // Don't exit - this is not critical
+}
+
+// Garante a tabela de transações de terminal de cartão (maquininha)
+try {
+  await garantirTabelaTransacoesTerminal(app);
+} catch (error) {
+  app.logger.error({ err: error }, 'Failed to ensure transacoes_terminal table');
   // Don't exit - this is not critical
 }
 
