@@ -2,6 +2,7 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import { sql } from "drizzle-orm";
 import type { App } from "../index.js";
 import { requireAuth as customRequireAuth, requireRole, requireTenant } from "../utils/auth.js";
+import { obterFusoRestaurante, diaLocalDeInstante, fusoSql } from "../utils/fuso.js";
 
 export function registerComandasDiaRoutes(app: App) {
   // GET /api/comandas-dia - List comandas (mesa) by day
@@ -94,6 +95,7 @@ export function registerComandasDiaRoutes(app: App) {
       if (!(await requireRole(authUser, ["administrador", "gerente", "admin"], reply))) return;
 
       const tenantId = requireTenant(authUser);
+      const fuso = await obterFusoRestaurante(app, tenantId);
 
       try {
         app.logger.info(
@@ -101,7 +103,7 @@ export function registerComandasDiaRoutes(app: App) {
           "Fetching comandas by day"
         );
 
-        // Parse date parameter (YYYY-MM-DD), default to today in São Paulo timezone
+        // Parse date parameter (YYYY-MM-DD), default to today in the restaurant timezone
         let targetDate: string;
         if (request.query.data) {
           const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
@@ -120,19 +122,9 @@ export function registerComandasDiaRoutes(app: App) {
           }
           targetDate = request.query.data;
         } else {
-          // Get today in São Paulo timezone
-          const now = new Date();
-          const spFormatter = new Intl.DateTimeFormat("pt-BR", {
-            year: "numeric",
-            month: "2-digit",
-            day: "2-digit",
-            timeZone: "America/Sao_Paulo",
-          });
-          const parts = spFormatter.formatToParts(now);
-          const year = parts.find((p) => p.type === "year")?.value;
-          const month = parts.find((p) => p.type === "month")?.value;
-          const day = parts.find((p) => p.type === "day")?.value;
-          targetDate = `${year}-${month}-${day}`;
+          // Get today in the restaurant timezone
+          const hoje = diaLocalDeInstante(new Date(), fuso);
+          targetDate = `${String(hoje.ano).padStart(4, "0")}-${String(hoje.mes0 + 1).padStart(2, "0")}-${String(hoje.dia).padStart(2, "0")}`;
         }
 
         // Parse limit and offset
@@ -154,7 +146,7 @@ export function registerComandasDiaRoutes(app: App) {
         }
 
         // Query union of live (viva, tipo='mesa', NOT in historico) and archived (historico) comandas
-        // Filter by date of creation (created_at AT TIME ZONE 'America/Sao_Paulo')::date = targetDate
+        // Filter by date of creation (created_at AT TIME ZONE <restaurant timezone>)::date = targetDate
         const unionQuery = sql`
           WITH filtered_comandas AS (
             -- Live comandas (tipo = 'mesa', not archived)
@@ -174,7 +166,7 @@ export function registerComandasDiaRoutes(app: App) {
             WHERE
               c.restaurante_id = ${tenantId}
               AND c.tipo = 'mesa'
-              AND (c.created_at AT TIME ZONE 'America/Sao_Paulo')::date = ${targetDate}::date
+              AND (c.created_at AT TIME ZONE ${fusoSql(fuso)})::date = ${targetDate}::date
               AND NOT EXISTS (
                 SELECT 1 FROM comandas_historico ch
                 WHERE ch.id = c.id AND ch.restaurante_id = ${tenantId}
@@ -196,7 +188,7 @@ export function registerComandasDiaRoutes(app: App) {
             FROM comandas_historico ch
             WHERE
               ch.restaurante_id = ${tenantId}
-              AND (ch.created_at AT TIME ZONE 'America/Sao_Paulo')::date = ${targetDate}::date
+              AND (ch.created_at AT TIME ZONE ${fusoSql(fuso)})::date = ${targetDate}::date
           ),
           paginated AS (
             SELECT * FROM filtered_comandas
@@ -261,7 +253,7 @@ export function registerComandasDiaRoutes(app: App) {
             WHERE
               c.restaurante_id = ${tenantId}
               AND c.tipo = 'mesa'
-              AND (c.created_at AT TIME ZONE 'America/Sao_Paulo')::date = ${targetDate}::date
+              AND (c.created_at AT TIME ZONE ${fusoSql(fuso)})::date = ${targetDate}::date
               AND NOT EXISTS (
                 SELECT 1 FROM comandas_historico ch
                 WHERE ch.id = c.id AND ch.restaurante_id = ${tenantId}
@@ -270,7 +262,7 @@ export function registerComandasDiaRoutes(app: App) {
             SELECT ch.id FROM comandas_historico ch
             WHERE
               ch.restaurante_id = ${tenantId}
-              AND (ch.created_at AT TIME ZONE 'America/Sao_Paulo')::date = ${targetDate}::date
+              AND (ch.created_at AT TIME ZONE ${fusoSql(fuso)})::date = ${targetDate}::date
           ) AS all_comandas
         `;
 
@@ -289,7 +281,7 @@ export function registerComandasDiaRoutes(app: App) {
             WHERE
               c.restaurante_id = ${tenantId}
               AND c.tipo = 'mesa'
-              AND (c.created_at AT TIME ZONE 'America/Sao_Paulo')::date = ${targetDate}::date
+              AND (c.created_at AT TIME ZONE ${fusoSql(fuso)})::date = ${targetDate}::date
               AND NOT EXISTS (
                 SELECT 1 FROM comandas_historico ch
                 WHERE ch.id = c.id AND ch.restaurante_id = ${tenantId}
@@ -298,7 +290,7 @@ export function registerComandasDiaRoutes(app: App) {
             SELECT ch.status, ch.total FROM comandas_historico ch
             WHERE
               ch.restaurante_id = ${tenantId}
-              AND (ch.created_at AT TIME ZONE 'America/Sao_Paulo')::date = ${targetDate}::date
+              AND (ch.created_at AT TIME ZONE ${fusoSql(fuso)})::date = ${targetDate}::date
           ) AS all_comandas
         `;
 

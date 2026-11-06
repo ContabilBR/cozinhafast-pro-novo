@@ -5,25 +5,12 @@ import * as schema from "../db/schema/schema.js";
 import type { App } from "../index.js";
 import { requireAuth as customRequireAuth, requireTenant } from "../utils/auth.js";
 import { sentarReserva } from "../services/sentar-reserva.js";
+import { obterFusoRestaurante, inicioDoDiaLocal, diaLocalDeInstante } from "../utils/fuso.js";
 
 const PAPEIS_GERENCIAM_RESERVAS = ["administrador", "admin", "gerente", "manager", "superadmin", "super_admin"];
 const PAPEIS_CRIAM_EDITAM = ["garcom", "garçom", ...PAPEIS_GERENCIAM_RESERVAS];
 const PAPEIS_PODEM_LISTAR_SENTAR = ["garcom", "garçom", ...PAPEIS_GERENCIAM_RESERVAS];
 const DURACAO_PADRAO_RESERVA_MIN = 120;
-
-// Fuso horário do Brasil
-const FUSO_HORAS = -3;
-const MS_HORA = 60 * 60 * 1000;
-
-function inicioDoDiaLocal(ano: number, mes0: number, dia: number): Date {
-  return new Date(Date.UTC(ano, mes0, dia) - FUSO_HORAS * MS_HORA);
-}
-
-function diaLocalDeInstante(instante: Date): { ano: number; mes0: number; dia: number } {
-  const ms = instante.getTime() + FUSO_HORAS * MS_HORA;
-  const d = new Date(ms);
-  return { ano: d.getUTCFullYear(), mes0: d.getUTCMonth(), dia: d.getUTCDate() };
-}
 
 function horarioEhValido(dataHora: Date): boolean {
   const agora = new Date();
@@ -90,7 +77,7 @@ export function registerReservasRoutes(app: App) {
         querystring: {
           type: "object",
           properties: {
-            data: { type: "string", description: "YYYY-MM-DD format, defaults to today in Brasília timezone" },
+            data: { type: "string", description: "YYYY-MM-DD format, defaults to today in the restaurant timezone" },
             status: { type: "string", enum: ["confirmada", "sentada", "cancelada", "nao_compareceu"] },
           },
         },
@@ -138,10 +125,11 @@ export function registerReservasRoutes(app: App) {
 
       try {
         const restauranteId = requireTenant(authUser);
+        const fuso = await obterFusoRestaurante(app, restauranteId);
         const queryData = request.query.data;
         const queryStatus = request.query.status;
 
-        // Parse and validate the date in Brasília timezone
+        // Parse and validate the date in the restaurant timezone
         let inicioData: Date;
         let fimData: Date;
 
@@ -163,15 +151,15 @@ export function registerReservasRoutes(app: App) {
             return await reply.code(400).send({ error: "Data inválida." });
           }
 
-          // Parse directly: início = midnight Brasília = 3:00 UTC
-          inicioData = new Date(Date.UTC(year, month - 1, day, 3, 0, 0));
-          fimData = new Date(inicioData.getTime() + 24 * 60 * 60 * 1000);
+          // início = meia-noite local do restaurante; fim = meia-noite do dia seguinte
+          inicioData = inicioDoDiaLocal(year, month - 1, day, fuso);
+          fimData = inicioDoDiaLocal(year, month - 1, day + 1, fuso);
         } else {
-          // Default to today in Brasília timezone
+          // Default to today in the restaurant timezone
           const agora = new Date();
-          const { ano, mes0, dia } = diaLocalDeInstante(agora);
-          inicioData = inicioDoDiaLocal(ano, mes0, dia);
-          fimData = inicioDoDiaLocal(ano, mes0, dia + 1);
+          const { ano, mes0, dia } = diaLocalDeInstante(agora, fuso);
+          inicioData = inicioDoDiaLocal(ano, mes0, dia, fuso);
+          fimData = inicioDoDiaLocal(ano, mes0, dia + 1, fuso);
         }
 
         app.logger.info(

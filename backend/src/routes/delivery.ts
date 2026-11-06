@@ -4,6 +4,7 @@ import type { App } from "../index.js";
 import { requireAuth as customRequireAuth, requireTenant, requireRole } from "../utils/auth.js";
 import * as schema from "../db/schema/schema.js";
 import { realtimeHub } from "../realtime/hub.js";
+import { obterFusoRestaurante } from "../utils/fuso.js";
 import { totalDelivery, subtotalDaComanda } from "../services/total-comanda.js";
 
 // Normaliza formas curtas enviadas pelo frontend para os valores aceitos pelo banco
@@ -905,6 +906,7 @@ export function registerDeliveryRoutes(app: App) {
           const { confirmar_estorno, forma_devolucao, detalhe_devolucao, observacao_estorno } = (request as any).body;
           if (pagsConfirmados.length > 0 && confirmar_estorno) {
             const agora12 = new Date();
+            const fusoEstorno = await obterFusoRestaurante(app, restauranteId);
             const autorNome = (authUser as any).name || (authUser as any).nome || "Desconhecido";
             const autorRole = authUser.role || "";
             const FORMA_LABEL: Record<string, string> = {
@@ -917,7 +919,7 @@ export function registerDeliveryRoutes(app: App) {
               const refEstorno = [
                 `ESTORNO MANUAL — R$ ${valorStr} via ${formaLabel}`,
                 observacao_estorno ? `Obs: ${observacao_estorno}` : null,
-                `Autorizado por: ${autorNome} (${autorRole}) em ${agora12.toLocaleString("pt-BR")}`,
+                `Autorizado por: ${autorNome} (${autorRole}) em ${agora12.toLocaleString("pt-BR", { timeZone: fusoEstorno })}`,
               ].filter(Boolean).join(" | ");
 
               const refFinal = pag.referencia
