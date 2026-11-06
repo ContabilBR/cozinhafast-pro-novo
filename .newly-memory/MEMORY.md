@@ -2,3 +2,4 @@
 - [Estado do CMV teórico](cmv-teorico-estado.md): backend criado com defeitos, correção pendente; tela não iniciada.
 - [Estado das reservas](reservas-estado.md): backend gerado com defeitos conhecidos; correção pendente; app não iniciado.
 - [Verificação de reservas pendente](reservas-verificacao-pendente.md): aguardando aviso de que o login da dev funciona
+- [Estado do fuso horário](fuso-horario-estado.md): etapas 1 e 2a no dev sem aplicar; 2b em diante pendentes
