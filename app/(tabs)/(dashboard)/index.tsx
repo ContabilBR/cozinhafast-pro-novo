@@ -351,20 +351,26 @@ export default function DashboardScreen() {
     }
   };
 
-  const handleDatePickerChange = (_event: any, selectedDate?: Date) => {
-    if (!selectedDate) {
+  const handleDatePickerChange = (event: any, selectedDate?: Date) => {
+    if (event?.type === "dismissed" || !selectedDate) {
       console.log("[Dashboard] Date picker dismissed");
       setShowDatePicker(null);
       return;
     }
+    const hoje = new Date();
+    const escolhida = formatYMD(selectedDate) > formatYMD(hoje) ? hoje : selectedDate;
     if (showDatePicker === "inicio") {
-      console.log("[Dashboard] Data início selected:", selectedDate.toISOString());
-      setDataInicio(selectedDate);
-      setDataFim(null);
-      setShowDatePicker("fim");
+      console.log("[Dashboard] Data início selected:", escolhida.toISOString());
+      setDataInicio(escolhida);
+      if (dataFim && formatYMD(escolhida) <= formatYMD(dataFim)) {
+        setShowDatePicker(null);
+      } else {
+        setDataFim(null);
+        setShowDatePicker("fim");
+      }
     } else if (showDatePicker === "fim") {
-      console.log("[Dashboard] Data fim selected:", selectedDate.toISOString());
-      setDataFim(selectedDate);
+      console.log("[Dashboard] Data fim selected:", escolhida.toISOString());
+      setDataFim(dataInicio && formatYMD(escolhida) < formatYMD(dataInicio) ? dataInicio : escolhida);
       setShowDatePicker(null);
     }
   };
@@ -377,10 +383,6 @@ export default function DashboardScreen() {
   const avgTicketStr = formatCurrency(resumo.avg_ticket ?? 0);
   const topDishes = resumo.top_dishes ?? [];
   const ordersByStatus = resumo.orders_by_status ?? { aberta: 0, fechada: 0, cancelada: 0 };
-
-  const dateRangeLabel = dataInicio && dataFim
-    ? `${formatDateBR(dataInicio)} – ${formatDateBR(dataFim)}`
-    : null;
 
   const periodoCardTitle = resumo.periodo_label || "Receita no Período";
 
@@ -484,12 +486,64 @@ export default function DashboardScreen() {
             })}
           </ScrollView>
 
-          {/* Date range label for personalizado */}
-          {periodo === "personalizado" && dateRangeLabel && (
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-              <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 12, color: COLORS.textSecondary }}>
-                {dateRangeLabel}
-              </Text>
+          {/* Campos De / Até do período personalizado */}
+          {periodo === "personalizado" && (
+            <View style={{ gap: 8 }}>
+              {showDatePicker !== null && (
+                <Text style={{ fontFamily: "Outfit_600SemiBold", fontSize: 13, color: COLORS.primary }}>
+                  {showDatePicker === "inicio" ? "Escolha a data de início" : "Escolha a data final"}
+                </Text>
+              )}
+              <View style={{ flexDirection: "row", gap: 12 }}>
+                {([
+                  { k: "inicio", label: "De", valor: dataInicio },
+                  { k: "fim", label: "Até", valor: dataFim },
+                ] as const).map((c) => {
+                  const ativo = showDatePicker === c.k;
+                  return (
+                    <AnimatedPressable
+                      key={c.k}
+                      onPress={() => setShowDatePicker(c.k)}
+                      accessibilityRole="button"
+                      accessibilityLabel={`${c.label}: ${c.valor ? formatDateBR(c.valor) : "Selecionar"}`}
+                      style={{
+                        flex: 1,
+                        minHeight: 56,
+                        borderRadius: 12,
+                        borderWidth: ativo ? 2 : 1,
+                        borderColor: ativo ? COLORS.primary : COLORS.border,
+                        backgroundColor: ativo ? COLORS.primaryMuted : COLORS.surface,
+                        paddingHorizontal: 12,
+                        paddingVertical: 8,
+                        flexDirection: "row",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                      }}
+                    >
+                      <View>
+                        <Text style={{ fontFamily: "Outfit_500Medium", fontSize: 12, color: ativo ? COLORS.primary : COLORS.textSecondary }}>
+                          {c.label}
+                        </Text>
+                        <Text
+                          style={{
+                            fontFamily: "Outfit_600SemiBold",
+                            fontSize: 15,
+                            color: c.valor ? COLORS.text : COLORS.textTertiary,
+                          }}
+                        >
+                          {c.valor ? formatDateBR(c.valor) : "Selecionar"}
+                        </Text>
+                      </View>
+                      <Ionicons name="calendar-outline" size={20} color={ativo ? COLORS.primary : COLORS.textSecondary} />
+                    </AnimatedPressable>
+                  );
+                })}
+              </View>
+              {(!dataInicio || !dataFim) && (
+                <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 12, color: COLORS.textSecondary }}>
+                  Escolha as duas datas para ver o período
+                </Text>
+              )}
             </View>
           )}
 
@@ -798,7 +852,8 @@ export default function DashboardScreen() {
       {/* Date picker for personalizado */}
       {showDatePicker !== null && (
         <DateTimePicker
-          value={showDatePicker === "fim" && dataInicio ? dataInicio : new Date()}
+          key={showDatePicker}
+          value={showDatePicker === "fim" ? dataFim ?? dataInicio ?? new Date() : dataInicio ?? new Date()}
           mode="date"
           display={Platform.OS === "ios" ? "inline" : "default"}
           onChange={handleDatePickerChange}
