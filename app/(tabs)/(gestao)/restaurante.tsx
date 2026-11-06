@@ -18,8 +18,6 @@ import { Ionicons } from '@expo/vector-icons';
 import { useColors } from '@/hooks/useColors';
 import { useTabBarInset } from "@/hooks/useTabBarInset";
 import useModoComanda from '@/hooks/useModoComanda';
-import useFusoRestaurante from '@/hooks/useFusoRestaurante';
-import { GRUPOS_FUSO, type GrupoFuso } from '@/utils/fusoHorario';
 import { useAuth } from '@/contexts/AuthContext';
 import { isAdmin } from '@/utils/helpers';
 import { apiGet, apiPut, apiDelete } from '@/utils/api';
@@ -59,12 +57,6 @@ export default function RestauranteScreen() {
   const { modo, loading: modoLoading, recarregar: recarregarModo } = useModoComanda();
   const [modoPendente, setModoPendente] = useState<'mesa' | 'individual' | null>(null);
   const [trocandoModo, setTrocandoModo] = useState(false);
-
-  // Horário do restaurante (fuso): só quem vê o modo de comandas altera
-  const { grupo: grupoFuso, confirmado: fusoConfirmado, loading: fusoLoading, recarregar: recarregarFuso, salvar: salvarFuso } = useFusoRestaurante();
-  const [fusoPendente, setFusoPendente] = useState<GrupoFuso | null>(null);
-  const [salvandoFuso, setSalvandoFuso] = useState(false);
-  const [fusoSalvandoId, setFusoSalvandoId] = useState<GrupoFuso['id'] | null>(null);
 
   const handleBack = useCallback(() => {
     console.log('[Restaurante] Botão Voltar pressionado');
@@ -187,36 +179,6 @@ export default function RestauranteScreen() {
 
   const handleModoCancel = useCallback(() => {
     setModoPendente(null);
-  }, []);
-
-  const handleFusoPress = useCallback(
-    (novo: GrupoFuso) => {
-      if ((novo.id === grupoFuso.id && fusoConfirmado !== false) || salvandoFuso || fusoLoading) return;
-      setFusoPendente(novo);
-    },
-    [grupoFuso.id, fusoConfirmado, salvandoFuso, fusoLoading]
-  );
-
-  const handleFusoConfirm = useCallback(async () => {
-    const novo = fusoPendente;
-    setFusoPendente(null);
-    if (!novo) return;
-    setSalvandoFuso(true);
-    setFusoSalvandoId(novo.id);
-    try {
-      await salvarFuso(novo.principal);
-      await recarregarFuso();
-    } catch (err: any) {
-      console.error('[Restaurante] Erro ao salvar o horário:', err);
-      Alert.alert('Horário não alterado', err?.message || 'Não foi possível salvar o horário agora.');
-    } finally {
-      setSalvandoFuso(false);
-      setFusoSalvandoId(null);
-    }
-  }, [fusoPendente, salvarFuso, recarregarFuso]);
-
-  const handleFusoCancel = useCallback(() => {
-    setFusoPendente(null);
   }, []);
 
   const handleEdit = useCallback(() => {
@@ -520,51 +482,6 @@ export default function RestauranteScreen() {
                 </View>
               )}
 
-              {isAdministrador && (
-                <View style={[s.card, { marginTop: 16 }]}>
-                  <View style={s.cardRow}>
-                    <Text style={s.cardLabel}>Horário do restaurante</Text>
-                    <Text style={[s.cardValue, { fontSize: 13, color: COLORS.textSecondary, marginTop: 4 }]}>
-                      Os relatórios, o fechamento do dia e as reservas usam este horário.
-                    </Text>
-                    {fusoConfirmado === false && (
-                      <Text style={{ fontFamily: 'Outfit_600SemiBold', fontSize: 13, color: COLORS.textSecondary, marginTop: 8 }}>
-                        Ainda não confirmado. O sistema está usando Brasília (UTC-3).
-                      </Text>
-                    )}
-                  </View>
-                  {GRUPOS_FUSO.map((op) => {
-                    const ativo = grupoFuso.id === op.id;
-                    return (
-                      <React.Fragment key={op.id}>
-                        <View style={s.divider} />
-                        <TouchableOpacity
-                          style={[s.cardRow, { flexDirection: 'row', alignItems: 'center', gap: 12 }]}
-                          onPress={() => handleFusoPress(op)}
-                          disabled={salvandoFuso || fusoLoading}
-                          activeOpacity={0.7}
-                        >
-                          <Ionicons
-                            name={ativo ? 'radio-button-on' : 'radio-button-off'}
-                            size={22}
-                            color={ativo ? COLORS.primary : COLORS.textTertiary}
-                          />
-                          <View style={{ flex: 1 }}>
-                            <Text style={[s.cardValue, { fontFamily: ativo ? 'Outfit_700Bold' : 'Outfit_600SemiBold' }]}>
-                              {op.nome} ({op.deslocamento})
-                            </Text>
-                            <Text style={{ fontFamily: 'Outfit_400Regular', fontSize: 12, color: COLORS.textSecondary, marginTop: 2 }}>
-                              {op.descricao}
-                            </Text>
-                          </View>
-                          {fusoSalvandoId === op.id ? <ActivityIndicator size="small" color={COLORS.primary} /> : null}
-                        </TouchableOpacity>
-                      </React.Fragment>
-                    );
-                  })}
-                </View>
-              )}
-
               <View style={s.rowBtns}>
                 <TouchableOpacity
                   style={[s.btnBlue, s.flex1]}
@@ -734,17 +651,6 @@ export default function RestauranteScreen() {
         cancelLabel="Cancelar"
         onConfirm={handleModoConfirm}
         onCancel={handleModoCancel}
-      />
-
-      {/* ── Confirmação da troca do horário do restaurante ─────────────────── */}
-      <ConfirmDialog
-        visible={fusoPendente !== null}
-        title={fusoPendente?.id === grupoFuso.id ? 'Confirmar horário do restaurante' : 'Alterar horário do restaurante'}
-        message={fusoPendente?.id === grupoFuso.id ? `O horário do restaurante será ${fusoPendente?.nome ?? ''} (${fusoPendente?.deslocamento ?? ''}).` : `Os relatórios e o fechamento do dia passam a considerar o horário ${fusoPendente?.nome ?? ''} (${fusoPendente?.deslocamento ?? ''}). Os dias já fechados serão reagrupados por esse horário.`}
-        confirmLabel={fusoPendente?.id === grupoFuso.id ? 'Confirmar' : 'Alterar horário'}
-        cancelLabel="Cancelar"
-        onConfirm={handleFusoConfirm}
-        onCancel={handleFusoCancel}
       />
 
       {/* ── Confirm Delete Dialog ──────────────────────────────────────────── */}
