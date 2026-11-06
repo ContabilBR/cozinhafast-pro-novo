@@ -142,7 +142,7 @@ function EvolucaoRecebido({ refreshKey }: { refreshKey: number }) {
   return (
     <View style={{ backgroundColor: COLORS.surface, borderColor: COLORS.border, borderWidth: 1, borderRadius: 16, padding: 16, gap: 12 }}>
       <Text accessibilityRole="header" style={{ fontFamily: 'Outfit_700Bold', fontSize: 18, color: COLORS.text }}>Evolução do total recebido</Text>
-      <Text style={muted}>Por dia · horário de Brasília</Text>
+      <Text style={muted}>Por dia · horário do aparelho</Text>
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
         {([7, 30, 60, 90] as const).map(valor => <AnimatedPressable key={valor} accessibilityRole="button" accessibilityLabel={`Evolução: ${valor} dias`} accessibilityState={{ selected: dias === valor }} onPress={() => { if (dias !== valor) { setSeries(null); setSelecionado(null); setCarregando(true); setDias(valor); } }} style={{ flexGrow: 1, minHeight: 44, paddingHorizontal: 10, justifyContent: 'center', alignItems: 'center', borderRadius: 12, borderWidth: 1, borderColor: dias === valor ? COLORS.primary : COLORS.border, backgroundColor: dias === valor ? COLORS.primaryMuted : COLORS.surface }}>
           <Text style={text}>{valor} dias</Text>

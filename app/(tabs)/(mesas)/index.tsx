@@ -21,6 +21,8 @@ import { SkeletonLine } from "@/components/SkeletonLoader";
 import { apiGet, apiPost } from "@/utils/api";
 import { isAdmin } from "@/utils/helpers";
 import { hojeNoAparelho } from "@/utils/exportacao/periodo";
+// Hora da reserva (HH:MM) no fuso do aparelho
+import { horaDoAparelho } from "@/utils/horaAparelho";
 import { contarReservas } from "@/utils/reservasGrupo";
 import { setMesaHistoricoId } from "@/utils/mesaHistoricoStore";
 import { Users, UtensilsCrossed, LayoutGrid } from "lucide-react-native";
@@ -34,13 +36,6 @@ interface ApiMesa {
   status: string;
   comanda_id?: string;
   proxima_reserva?: { id: string; nome: string; horario: string; pessoas: number } | null;
-}
-
-// Horário de Brasília (UTC-3, sem horário de verão) no formato HH:MM
-function horaReservaBrasilia(iso: string): string {
-  const d = new Date(new Date(iso).getTime() - 3 * 3600 * 1000);
-  if (isNaN(d.getTime())) return "--:--";
-  return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
 }
 
 type FilterKey = "todas" | "livres" | "ocupadas" | "reservadas";
@@ -271,7 +266,7 @@ function MesaCard({
                 numberOfLines={1}
                 style={{ fontFamily: "Outfit_600SemiBold", fontSize: 11, color: "#B45309" }}
               >
-                Reservada {horaReservaBrasilia(mesa.proxima_reserva.horario)} · {mesa.proxima_reserva.nome}
+                Reservada {horaDoAparelho(mesa.proxima_reserva.horario)} · {mesa.proxima_reserva.nome}
               </Text>
             </View>
           )}
@@ -466,7 +461,7 @@ export default function MesasScreen() {
     if (role === "garcom" && isLivre(mesa.status) && mesa.proxima_reserva) {
       const r = mesa.proxima_reserva;
       Alert.alert(
-        `Mesa ${mesa.numero} reservada às ${horaReservaBrasilia(r.horario)} para ${r.nome} (${r.pessoas} ${r.pessoas === 1 ? "pessoa" : "pessoas"})`,
+        `Mesa ${mesa.numero} reservada às ${horaDoAparelho(r.horario)} para ${r.nome} (${r.pessoas} ${r.pessoas === 1 ? "pessoa" : "pessoas"})`,
         undefined,
         [
           {

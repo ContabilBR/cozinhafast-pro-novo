@@ -104,7 +104,7 @@ function montarResumo(wb: ExcelJSTipos.Workbook, r: RelatorioDef, usados: Set<st
   });
   const info: [string, string][] = [
     ['Relatório', r.titulo], ['Período', periodoTexto(r.periodo)],
-    ['Gerado em (horário de Brasília)', r.geradoEm], ['Gerado por', r.contexto.geradoPor],
+    ['Gerado em (horário do aparelho)', r.geradoEm], ['Gerado por', r.contexto.geradoPor],
   ];
   info.forEach(([rotulo, valor]) => {
     const row = ws.getRow(linha++);

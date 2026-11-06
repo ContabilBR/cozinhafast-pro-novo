@@ -79,7 +79,7 @@ tr.total td { font-weight: bold; background: #${CORES.claro} !important; border-
 section { page-break-inside: auto; } .rodape { margin-top: 18px; border-top: 1px solid #${CORES.borda}; padding-top: 6px; color: #${CORES.cinza}; font-size: 8.5px; }
 </style></head><body>
 <div class="topo">${linhasRest.map((l, i) => i === 0 ? `<h1>${esc(l)}</h1>` : `<p>${esc(l)}</p>`).join('')}</div>
-<div class="info"><b>${esc(r.titulo)}</b><br>Período: ${esc(periodoTexto(r.periodo))}<br>Gerado em ${esc(r.geradoEm)} (horário de Brasília) por ${esc(r.contexto.geradoPor)}</div>
+<div class="info"><b>${esc(r.titulo)}</b><br>Período: ${esc(periodoTexto(r.periodo))}<br>Gerado em ${esc(r.geradoEm)} (horário do aparelho) por ${esc(r.contexto.geradoPor)}</div>
 <h2>${esc(r.resumoTitulo ?? 'Resumo')}</h2>${blocos}${pendentes}
 ${r.tabelas.map(t => tabelaHtml(r, t)).join('')}
 <div class="rodape">${(r.legenda ?? LEGENDA).map(esc).join('<br>')}</div></body></html>`;

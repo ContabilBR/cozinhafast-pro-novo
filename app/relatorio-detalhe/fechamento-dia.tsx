@@ -71,7 +71,8 @@ function deslocarDia(value: string, delta: number) {
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`;
 }
 function dataLabel(value: string) {
-  return new Date(`${value}T12:00:00-03:00`).toLocaleDateString('pt-BR', {
+  const [ano, mes, dia] = value.split('-').map(Number);
+  return new Date(ano, mes - 1, dia, 12).toLocaleDateString('pt-BR', {
     weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric',
   });
 }
@@ -160,14 +161,14 @@ export default function FechamentoDiaScreen() {
   };
   const controls = <View style={{ gap: 12 }}>
     <ReportTitle>{dataLabel(selecionada)}</ReportTitle>
-    <ReportNote>Horário de Brasília · Relatório somente de leitura</ReportNote>
+    <ReportNote>Horário do aparelho · Relatório somente de leitura</ReportNote>
     <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
       {[
         { label: 'Dia anterior', disabled: false, action: () => mudarData(deslocarDia(selecionada, -1)) },
         { label: 'Próximo dia', disabled: selecionada >= hoje, action: () => mudarData(deslocarDia(selecionada, 1)) },
         { label: 'Hoje', disabled: false, action: () => mudarData(hojeNoAparelho()) },
       ].map(button => <AnimatedPressable key={button.label} accessibilityRole="button"
-        accessibilityLabel={button.label === 'Hoje' ? 'Selecionar o dia de hoje no horário de Brasília' : `Selecionar ${button.label.toLowerCase()}`}
+        accessibilityLabel={button.label === 'Hoje' ? 'Selecionar o dia de hoje' : `Selecionar ${button.label.toLowerCase()}`}
         accessibilityState={{ disabled: button.disabled }} disabled={button.disabled} onPress={button.action}
         style={[reportStyles.chip, { backgroundColor: colors.surface, borderColor: colors.border }]}>
         <Text style={[reportStyles.label, { fontSize: 13, color: colors.primary }]}>{button.label}</Text>
@@ -262,7 +263,7 @@ export default function FechamentoDiaScreen() {
           <Linha label="Comandas abertas" value={String(data.pendencias.total_comandas_abertas)} />
           <Linha label="Valor parcial total" value={formatCurrency(data.pendencias.valor_parcial_total)} />
           <Linha label="Entregas em andamento" value={String(data.pendencias.entregas_em_andamento)} />
-          <ReportNote>Até 50 comandas abertas. Horários de abertura em Brasília.</ReportNote>
+          <ReportNote>Até 50 comandas abertas. Horários de abertura no fuso do aparelho.</ReportNote>
           {data.pendencias.comandas_abertas.length === 0 && <ReportNote>Nenhuma comanda aberta.</ReportNote>}
           {data.pendencias.comandas_abertas.slice(0, 50).map(row => <Linha key={row.comanda_id}
             label={row.tipo === 'mesa' && row.mesa_numero != null ? `Mesa ${row.mesa_numero}` : row.rotulo?.trim() || (row.tipo === 'delivery' ? 'Delivery' : 'Mesa sem número')}

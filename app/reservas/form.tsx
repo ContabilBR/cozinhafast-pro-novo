@@ -16,6 +16,7 @@ import { useColors } from "@/hooks/useColors";
 import { AnimatedPressable } from "@/components/AnimatedPressable";
 import { apiGet, apiPost, apiPut } from "@/utils/api";
 import { hojeNoAparelho } from "@/utils/exportacao/periodo";
+import { horaDoAparelho, diaDoAparelho } from "@/utils/horaAparelho";
 
 const MAX_MESAS = 20;
 
@@ -44,13 +45,11 @@ function maskTelefone(v: string): string {
   return `+${ddi} (${ddd}) ${num.slice(0, corte)}-${num.slice(corte)}`;
 }
 
-// Brasília = UTC-3 (sem horário de verão)
-function partesBrasilia(iso: string): { data: string; hora: string } {
-  const d = new Date(new Date(iso).getTime() - 3 * 3600 * 1000);
-  const p = (n: number) => String(n).padStart(2, "0");
+// Data e hora no fuso do aparelho
+function partesAparelho(iso: string): { data: string; hora: string } {
   return {
-    data: `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}`,
-    hora: `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`,
+    data: diaDoAparelho(iso) ?? "",
+    hora: horaDoAparelho(iso),
   };
 }
 
@@ -69,7 +68,7 @@ function mensagemErro(e: any): string {
   const base = e?.body?.error || e?.message || "";
   if (e?.status === 404 && !e?.body?.error) return "Esta função de reservas ainda não está disponível no servidor (rota não encontrada).";
   if (e?.status === 409 && e?.body?.conflicting_reservation_time) {
-    const p = partesBrasilia(e.body.conflicting_reservation_time);
+    const p = partesAparelho(e.body.conflicting_reservation_time);
     return `${base || "Horário indisponível para esta mesa."}\nConflito com a reserva das ${p.hora}`;
   }
   return base || "Não foi possível salvar a reserva. Tente novamente.";
@@ -87,7 +86,7 @@ export default function ReservaFormScreen() {
     existente = null;
   }
   const editando = !!existente?.id;
-  const inicial = existente ? partesBrasilia(existente.data_hora) : null;
+  const inicial = existente ? partesAparelho(existente.data_hora) : null;
 
   const [nome, setNome] = useState<string>(existente?.nome_pessoa ?? "");
   const [telefone, setTelefone] = useState<string>(existente?.telefone ? maskTelefone(existente.telefone) : "");
@@ -169,13 +168,15 @@ export default function ReservaFormScreen() {
     const m = /^(\d{2}):(\d{2})$/.exec(hora);
     if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) return { ok: false, msg: "Informe a hora no formato HH:MM (00:00 a 23:59)." };
     if (pessoas < 1 || pessoas > 50) return { ok: false, msg: "O número de pessoas deve ser de 1 a 50." };
-    const iso = `${data}T${hora}:00-03:00`;
-    const t = new Date(iso).getTime();
-    if (isNaN(t)) return { ok: false, msg: "Data ou hora inválida." };
+    const [ano, mes, dia] = data.split("-").map(Number);
+    const local = new Date(ano, mes - 1, dia, Number(m[1]), Number(m[2]));
+    const t = local.getTime();
+    // data inexistente (ex.: 31/02) o JS "rola" para o mês seguinte: tratar como inválida
+    if (isNaN(t) || local.getMonth() !== mes - 1 || local.getDate() !== dia) return { ok: false, msg: "Data ou hora inválida." };
     const agora = Date.now();
     if (t < agora - 5 * 60 * 1000) return { ok: false, msg: "A reserva não pode ser mais de 5 minutos no passado." };
     if (t > agora + 90 * 24 * 3600 * 1000) return { ok: false, msg: "A reserva não pode ser daqui a mais de 90 dias." };
-    return { ok: true, iso };
+    return { ok: true, iso: local.toISOString() };
   };
 
   const salvar = async () => {
@@ -394,7 +395,7 @@ export default function ReservaFormScreen() {
             />
           )}
           <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 12, color: COLORS.textSecondary, marginTop: 6 }}>
-            Horário de Brasília. A reserva não pode ser mais de 5 minutos no passado nem daqui a mais de 90 dias.
+            Horário do seu aparelho. A reserva não pode ser mais de 5 minutos no passado nem daqui a mais de 90 dias.
           </Text>
 
           <Text style={labelStyle}>Número de pessoas *</Text>

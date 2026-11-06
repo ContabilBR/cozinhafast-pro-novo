@@ -21,6 +21,7 @@ import { AnimatedPressable } from "@/components/AnimatedPressable";
 import { apiGet, apiPost, apiPut } from "@/utils/api";
 import { isAdmin } from "@/utils/helpers";
 import { deslocarDias, hojeNoAparelho } from "@/utils/exportacao/periodo";
+import { horaDoAparelho, diaDoAparelho } from "@/utils/horaAparelho";
 import { agruparReservas, listaMesas, type ItemReserva, type ReservaApi } from "@/utils/reservasGrupo";
 
 type Reserva = ReservaApi;
@@ -42,13 +43,6 @@ const STATUS_LABEL: Record<Reserva["status"], string> = {
   nao_compareceu: "Não compareceu",
 };
 
-// Brasília = UTC-3 (sem horário de verão)
-function horaBrasilia(iso: string): string {
-  const d = new Date(new Date(iso).getTime() - 3 * 3600 * 1000);
-  if (isNaN(d.getTime())) return "--:--";
-  return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
-}
-
 function dataBR(iso: string): string {
   const [a, m, d] = iso.split("-");
   return `${d}/${m}/${a}`;
@@ -58,10 +52,6 @@ const DIAS = ["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sáb
 function diaSemana(iso: string): string {
   const [a, m, d] = iso.split("-").map(Number);
   return DIAS[new Date(Date.UTC(a, m - 1, d)).getUTCDay()];
-}
-
-function diaBrasilia(iso: string): string {
-  return new Date(new Date(iso).getTime() - 3 * 3600 * 1000).toISOString().slice(0, 10);
 }
 
 // Número para o wa.me: só dígitos; 10/11 dígitos ganham 55; 12/13 precisam começar por 55
@@ -81,7 +71,7 @@ function mensagemErro(e: any): string {
   const base = e?.body?.error || e?.message || "";
   if (status === 404 && !e?.body?.error) return "Esta função de reservas ainda não está disponível no servidor (rota não encontrada).";
   if (status === 409 && e?.body?.conflicting_reservation_time) {
-    return `${base || "Horário indisponível."}\nConflito com a reserva das ${horaBrasilia(e.body.conflicting_reservation_time)}`;
+    return `${base || "Horário indisponível."}\nConflito com a reserva das ${horaDoAparelho(e.body.conflicting_reservation_time)}`;
   }
   return base || "Não foi possível concluir a ação. Tente novamente.";
 }
@@ -117,11 +107,11 @@ export default function ReservasScreen() {
       Alert.alert("Telefone inválido para WhatsApp. Edite a reserva e corrija o número.");
       return;
     }
-    const dataIso = diaBrasilia(r.data_hora);
+    const dataIso = diaDoAparelho(r.data_hora) ?? hojeNoAparelho();
     const [, mm, dd] = dataIso.split("-");
     const pessoas = `${r.numero_pessoas} ${r.numero_pessoas === 1 ? "pessoa" : "pessoas"}`;
     const quem = nomeRestaurante ? `Aqui é do ${nomeRestaurante}.` : "Aqui é do restaurante.";
-    const texto = `Olá, ${r.nome_pessoa}! ${quem} Sua reserva para ${pessoas} está marcada para ${diaSemana(dataIso)}, ${dd}/${mm} às ${horaBrasilia(r.data_hora)}. Responda SIM para confirmar ou NÃO se precisar cancelar. Obrigado!`;
+    const texto = `Olá, ${r.nome_pessoa}! ${quem} Sua reserva para ${pessoas} está marcada para ${diaSemana(dataIso)}, ${dd}/${mm} às ${horaDoAparelho(r.data_hora)}. Responda SIM para confirmar ou NÃO se precisar cancelar. Obrigado!`;
     try {
       await Linking.openURL(`https://wa.me/${numero}?text=${encodeURIComponent(texto)}`);
     } catch {
@@ -174,7 +164,7 @@ export default function ReservasScreen() {
     const titulo = status === "cancelada" ? "Cancelar reserva" : "Marcar como não compareceu";
     const base =
       status === "cancelada"
-        ? `Cancelar a reserva de ${r.nome_pessoa} às ${horaBrasilia(r.data_hora)}?`
+        ? `Cancelar a reserva de ${r.nome_pessoa} às ${horaDoAparelho(r.data_hora)}?`
         : `Marcar que ${r.nome_pessoa} não compareceu?`;
     const msg = nMesasGrupo ? `${base}\nIsso vale para as ${nMesasGrupo} mesas do grupo.` : base;
     Alert.alert(titulo, msg, [
@@ -313,7 +303,7 @@ export default function ReservasScreen() {
       >
         <View style={{ alignItems: "center", minWidth: 62 }}>
           <Text style={{ fontFamily: "Outfit_700Bold", fontSize: 24, color: COLORS.primary, letterSpacing: -0.5 }}>
-            {horaBrasilia(r.data_hora)}
+            {horaDoAparelho(r.data_hora)}
           </Text>
         </View>
         <View style={{ flex: 1, minWidth: 0 }}>

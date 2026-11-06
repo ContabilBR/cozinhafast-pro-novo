@@ -382,7 +382,7 @@ function fechamentoSheets(data: FechamentoDia, contexto: ContextoExportacao): Sh
   planilhas.push(montarResumo('Resumo do dia', [
     ['Restaurante', contexto.restaurante], ['CNPJ', contexto.cnpj],
     ['Relatório', 'Fechamento do dia'], ['Período', dia],
-    ['Gerado em (horário de Brasília)', dataHoraBrasil()], ['Gerado por', contexto.geradoPor],
+    ['Gerado em (horário do aparelho)', dataHoraBrasil()], ['Gerado por', contexto.geradoPor],
   ], ['Indicador', 'Valor'], linha => {
     const f = (rotulo: string) => `B${linha(rotulo)}`;
     const ITENS = 'Faturamento dos itens (bruto, sem gorjeta e taxa)';
