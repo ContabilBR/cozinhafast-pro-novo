@@ -28,7 +28,7 @@ export default function FaleConoscoScreen() {
   const restaurante = typeof restauranteRaw === 'string' ? restauranteRaw.trim() : '';
 
   const linhasContexto = [
-    `Usuário: ${nome}${papel ? ` (${papel})` : ''}`,
+    ...(nome ? [`Usuário: ${nome}${papel ? ` (${papel})` : ''}`] : []),
     ...(restaurante ? [`Restaurante: ${restaurante}`] : []),
     `Versão do app: ${versao}`,
     `Plataforma: ${plataforma}`,
@@ -36,7 +36,7 @@ export default function FaleConoscoScreen() {
 
   const voltar = () => {
     if (router.canGoBack()) router.back();
-    else router.replace('/(tabs)/(perfil)' as any);
+    else router.replace((user ? '/(tabs)/(perfil)' : '/auth-screen') as any);
   };
 
   const abrirWhatsApp = async () => {

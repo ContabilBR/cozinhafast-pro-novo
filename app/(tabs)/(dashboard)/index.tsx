@@ -22,7 +22,7 @@ import { setMesaHistoricoId } from "@/utils/mesaHistoricoStore";
 import { formatCurrency, isAdmin } from "@/utils/helpers";
 import { hojeBrasilia } from "@/utils/exportacao/periodo";
 import { contarReservas } from "@/utils/reservasGrupo";
-import { TrendingUp, ShoppingBag, Grid3x3, Clock, RefreshCw, ChevronRight, DollarSign, ChefHat, CalendarDays } from "lucide-react-native";
+import { TrendingUp, ShoppingBag, Grid3x3, Clock, RefreshCw, ChevronRight, DollarSign, ChefHat, CalendarDays, MessageCircle } from "lucide-react-native";
 import { useRealtime, type RealtimeStatus } from "@/hooks/useRealtime";
 import { Ionicons } from "@expo/vector-icons";
 import DateTimePicker from "@react-native-community/datetimepicker";
@@ -847,6 +847,31 @@ export default function DashboardScreen() {
             </View>
           )}
         </View>
+
+        {userIsAdmin && (
+          <AnimatedPressable
+            onPress={() => router.push("/fale-conosco" as any)}
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 12,
+              padding: 14,
+              borderRadius: 16,
+              borderWidth: 1,
+              borderColor: COLORS.border,
+              backgroundColor: COLORS.surface,
+            }}
+          >
+            <View style={{ width: 36, height: 36, borderRadius: 10, backgroundColor: COLORS.primaryMuted, alignItems: "center", justifyContent: "center" }}>
+              <MessageCircle size={18} color={COLORS.primary} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontFamily: "Outfit_600SemiBold", fontSize: 14, color: COLORS.text }}>Ajuda e sugestões</Text>
+              <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 12, color: COLORS.textSecondary }}>Relate um problema ou envie uma sugestão</Text>
+            </View>
+            <ChevronRight size={16} color={COLORS.textSecondary} />
+          </AnimatedPressable>
+        )}
       </ScrollView>
 
       {/* Date picker for personalizado */}

@@ -64,7 +64,9 @@ function RootLayoutNav() {
       return;
     }
 
-    if (!user && !inAuthScreen) {
+    // Fale conosco é pública: aberta a partir do login, não expulsa quem não está autenticado
+    const inFaleConosco = segments[0] === "fale-conosco";
+    if (!user && !inAuthScreen && !inFaleConosco) {
       console.log("[Layout] No user — redirecionando para /auth-screen");
       router.replace("/auth-screen");
     } else if (user && inAuthScreen) {

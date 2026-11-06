@@ -353,6 +353,18 @@ export default function AuthScreen() {
                 </Text>
               )}
             </AnimatedPressable>
+
+            {/* Help */}
+            <TouchableOpacity
+              onPress={() => router.push("/fale-conosco" as any)}
+              style={{ alignSelf: "center", marginTop: 4 }}
+              hitSlop={8}
+              accessibilityRole="link"
+            >
+              <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 13, color: TEXT_SECONDARY }}>
+                Precisa de ajuda?
+              </Text>
+            </TouchableOpacity>
           </View>
         </Animated.View>
 
