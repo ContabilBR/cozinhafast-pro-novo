@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, Text, ScrollView, Pressable, Linking, Platform, Alert } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -8,6 +8,7 @@ import { useColors } from '@/hooks/useColors';
 import { useAuth } from '@/contexts/AuthContext';
 import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { getRoleLabel } from '@/utils/helpers';
+import { apiGet } from '@/utils/api';
 
 // Número do WhatsApp de atendimento, com DDI e DDD, só dígitos (ex.: 5511999999999).
 const WHATSAPP_NUMERO = '5521995679931';
@@ -24,12 +25,29 @@ export default function FaleConoscoScreen() {
   const u: any = user ?? {};
   const nome = u.nome || u.name || u.email || '';
   const papel = u.role ? getRoleLabel(u.role) : '';
-  const restauranteRaw = u.restaurante_nome ?? u.restaurante?.nome ?? u.restaurant_name ?? u.tenant_nome ?? '';
-  const restaurante = typeof restauranteRaw === 'string' ? restauranteRaw.trim() : '';
+  const [restInfo, setRestInfo] = useState<{ nome: string; filial: string } | null>(null);
+  const logado = !!user;
+
+  useEffect(() => {
+    if (!logado) return;
+    let ativo = true;
+    apiGet<any>('/api/restaurante')
+      .then((r) => {
+        if (!ativo) return;
+        const d = r?.restaurante || r;
+        const n = typeof d?.nome === 'string' ? d.nome.trim() : '';
+        const f = typeof d?.filial === 'string' ? d.filial.trim() : '';
+        if (n) setRestInfo({ nome: n, filial: f });
+      })
+      .catch(() => {});
+    return () => {
+      ativo = false;
+    };
+  }, [logado]);
 
   const linhasContexto = [
     ...(nome ? [`Usuário: ${nome}${papel ? ` (${papel})` : ''}`] : []),
-    ...(restaurante ? [`Restaurante: ${restaurante}`] : []),
+    ...(logado && restInfo ? [`Restaurante: ${restInfo.nome}${restInfo.filial ? ` (${restInfo.filial})` : ''}`] : []),
     `Versão do app: ${versao}`,
     `Plataforma: ${plataforma}`,
   ];
