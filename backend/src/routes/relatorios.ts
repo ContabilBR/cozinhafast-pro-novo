@@ -3,7 +3,7 @@ import { eq, sum, count, gte, lt, and, sql, not, gt } from "drizzle-orm";
 import * as schema from "../db/schema/schema.js";
 import type { App } from "../index.js";
 import { requireAuth as customRequireAuth, requireTenant, requireRole } from "../utils/auth.js";
-import { obterFusoRestaurante, inicioDoDiaLocal, diaLocalDeInstante, type DiaLocal } from "../utils/fuso.js";
+import { obterFusoRestaurante, inicioDoDiaLocal, diaLocalDeInstante, fusoSql, type DiaLocal } from "../utils/fuso.js";
 
 type Periodo = "hoje" | "7dias" | "mes" | "personalizado";
 
@@ -1610,7 +1610,7 @@ LIMIT 5
             ),
             por_data AS (
               SELECT
-                (closed_at AT TIME ZONE 'America/Sao_Paulo')::date AS data_local,
+                (closed_at AT TIME ZONE ${fusoSql(fuso)})::date AS data_local,
                 COUNT(*) AS total_comandas,
                 CAST(SUM(subtotal) AS DECIMAL(10,2)) AS faturamento_itens,
                 CAST(SUM(gorjeta) AS DECIMAL(10,2)) AS gorjeta_total,
@@ -1618,7 +1618,7 @@ LIMIT 5
                 CAST(SUM(total) AS DECIMAL(10,2)) AS total_recebido,
                 CAST(COALESCE(SUM(desconto_efetivo),0) AS DECIMAL(10,2)) AS desconto_aplicado
               FROM vendas_com_taxa
-              GROUP BY (closed_at AT TIME ZONE 'America/Sao_Paulo')::date
+              GROUP BY (closed_at AT TIME ZONE ${fusoSql(fuso)})::date
             )
             SELECT
               to_char(data_local, 'YYYY-MM-DD') AS data_local,
@@ -2117,11 +2117,11 @@ LIMIT 5
               WHERE status = 'fechada' AND total > 0 AND closed_at >= ${inicio.toISOString()}::timestamptz AND closed_at < ${fim.toISOString()}::timestamptz
             )
             SELECT
-              EXTRACT(HOUR FROM (closed_at AT TIME ZONE 'America/Sao_Paulo'))::integer AS hora,
+              EXTRACT(HOUR FROM (closed_at AT TIME ZONE ${fusoSql(fuso)}))::integer AS hora,
               COUNT(*)::integer AS comandas,
               SUM(subtotal) AS faturamento_itens
             FROM base_vendas
-            GROUP BY EXTRACT(HOUR FROM (closed_at AT TIME ZONE 'America/Sao_Paulo'))
+            GROUP BY EXTRACT(HOUR FROM (closed_at AT TIME ZONE ${fusoSql(fuso)}))
           `
         ) as any[];
 
@@ -2151,11 +2151,11 @@ LIMIT 5
               WHERE status = 'fechada' AND total > 0 AND closed_at >= ${inicio.toISOString()}::timestamptz AND closed_at < ${fim.toISOString()}::timestamptz
             )
             SELECT
-              EXTRACT(DOW FROM (closed_at AT TIME ZONE 'America/Sao_Paulo'))::integer AS dia_semana,
+              EXTRACT(DOW FROM (closed_at AT TIME ZONE ${fusoSql(fuso)}))::integer AS dia_semana,
               COUNT(*)::integer AS comandas,
               SUM(subtotal) AS faturamento_itens
             FROM base_vendas
-            GROUP BY EXTRACT(DOW FROM (closed_at AT TIME ZONE 'America/Sao_Paulo'))
+            GROUP BY EXTRACT(DOW FROM (closed_at AT TIME ZONE ${fusoSql(fuso)}))
           `
         ) as any[];
 
@@ -2979,7 +2979,7 @@ LIMIT 5
             ),
             cancelamentos_filtrados AS (
               SELECT
-                to_char(cancelado_em AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD') AS data,
+                to_char(cancelado_em AT TIME ZONE ${fusoSql(fuso)}, 'YYYY-MM-DD') AS data,
                 quantidade,
                 CAST(quantidade AS DECIMAL(10,2)) * CAST(preco_unitario AS DECIMAL(10,2)) AS valor_bruto,
                 CASE WHEN cancelado_apos_inicio = true THEN CAST(quantidade AS DECIMAL(10,2)) * CAST(preco_unitario AS DECIMAL(10,2)) ELSE 0 END AS valor_perda
@@ -3314,7 +3314,7 @@ LIMIT 5
             SELECT ie.id, ie.restaurante_id, ie.comanda_id, ie.prato_id,
               EXTRACT(EPOCH FROM (ie.pronto_em - ie.iniciado_em))::double precision / 60.0 AS duracao_min,
               ie.iniciado_em, ie.pronto_em, ie.prato_nome_historico,
-              EXTRACT(HOUR FROM ie.iniciado_em AT TIME ZONE 'America/Sao_Paulo')::integer AS hora
+              EXTRACT(HOUR FROM ie.iniciado_em AT TIME ZONE ${fusoSql(fuso)})::integer AS hora
             FROM itens_elegiveis ie
             WHERE ie.iniciado_em IS NOT NULL AND ie.pronto_em IS NOT NULL AND ie.pronto_em >= ie.iniciado_em
           ),
@@ -4495,8 +4495,8 @@ LIMIT 5
               SELECT cu.id
               FROM comandas_unicas cu
               WHERE cu.status = 'fechada' AND cu.total > 0
-                AND cu.closed_at >= ${dataInicioStr}::date::timestamp AT TIME ZONE 'America/Sao_Paulo'
-                AND cu.closed_at < (${dataFimStr}::date + INTERVAL '1 day')::timestamp AT TIME ZONE 'America/Sao_Paulo'
+                AND cu.closed_at >= ${dataInicioStr}::date::timestamp AT TIME ZONE ${fusoSql(fuso)}
+                AND cu.closed_at < (${dataFimStr}::date + INTERVAL '1 day')::timestamp AT TIME ZONE ${fusoSql(fuso)}
             ),
             itens_fontes AS (
               SELECT p.id, p.comanda_id, p.prato_id, p.quantidade, p.preco_unitario, p.status::text, p.cancelado_em, p.restaurante_id, NULL::text AS nome_prato, 0 AS prioridade_fonte
@@ -4778,11 +4778,11 @@ LIMIT 5
               ORDER BY cf.restaurante_id, cf.id, cf.prioridade_fonte ASC
             ),
             comandas_validas AS (
-              SELECT cu.id, cu.restaurante_id, cu.desconto_tipo, (cu.closed_at AT TIME ZONE 'America/Sao_Paulo')::date::text AS dia
+              SELECT cu.id, cu.restaurante_id, cu.desconto_tipo, (cu.closed_at AT TIME ZONE ${fusoSql(fuso)})::date::text AS dia
               FROM comandas_unicas cu
               WHERE cu.status = 'fechada'
-                AND cu.closed_at >= ${dataInicioStr}::date::timestamp AT TIME ZONE 'America/Sao_Paulo'
-                AND cu.closed_at < (${dataFimStr}::date + INTERVAL '1 day')::timestamp AT TIME ZONE 'America/Sao_Paulo'
+                AND cu.closed_at >= ${dataInicioStr}::date::timestamp AT TIME ZONE ${fusoSql(fuso)}
+                AND cu.closed_at < (${dataFimStr}::date + INTERVAL '1 day')::timestamp AT TIME ZONE ${fusoSql(fuso)}
                 AND (cu.total > 0 OR cu.desconto_tipo = 'cortesia')
             ),
             itens_fontes AS (
@@ -4848,8 +4848,8 @@ LIMIT 5
             SELECT iu.prato_id, iu.nome_prato, iu.quantidade, iu.preco_unitario
             FROM itens_unicos iu
             WHERE iu.status = 'cancelado' AND iu.cancelado_apos_inicio = true
-              AND iu.cancelado_em >= ${dataInicioStr}::date::timestamp AT TIME ZONE 'America/Sao_Paulo'
-              AND iu.cancelado_em < (${dataFimStr}::date + INTERVAL '1 day')::timestamp AT TIME ZONE 'America/Sao_Paulo'
+              AND iu.cancelado_em >= ${dataInicioStr}::date::timestamp AT TIME ZONE ${fusoSql(fuso)}
+              AND iu.cancelado_em < (${dataFimStr}::date + INTERVAL '1 day')::timestamp AT TIME ZONE ${fusoSql(fuso)}
           `
         ) as any[];
 
