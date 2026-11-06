@@ -12,7 +12,7 @@ import { useColors } from "@/hooks/useColors";
 import { useAuth } from "@/contexts/AuthContext";
 import { AnimatedPressable } from "@/components/AnimatedPressable";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { LogOut, User, Mail, Shield, Tag, ChevronRight, Trash2 } from "lucide-react-native";
+import { LogOut, User, Mail, Shield, Tag, ChevronRight, Trash2, MessageCircle } from "lucide-react-native";
 import { getRoleLabel, getInitials, isAdmin } from "@/utils/helpers";
 import { UserRole } from "@/types";
 import { apiDelete } from "@/utils/api";
@@ -261,6 +261,37 @@ export default function PerfilScreen() {
             </AnimatedPressable>
           </Animated.View>
         )}
+
+        <Animated.View
+          style={{
+            opacity: fadeAnim,
+            transform: [{ translateY: slideAnim }],
+            backgroundColor: COLORS.surface,
+            borderRadius: 16,
+            borderWidth: 1,
+            borderColor: COLORS.border,
+            overflow: "hidden",
+            boxShadow: "0 1px 3px rgba(0,0,0,0.06), 0 4px 12px rgba(0,0,0,0.04)",
+          }}
+        >
+          <AnimatedPressable
+            onPress={() => router.push("/fale-conosco" as any)}
+            style={{ flexDirection: "row", alignItems: "center", gap: 14, padding: 16 }}
+          >
+            <View style={{ width: 36, height: 36, borderRadius: 10, backgroundColor: COLORS.primaryMuted, alignItems: "center", justifyContent: "center" }}>
+              <MessageCircle size={18} color={COLORS.primary} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontFamily: "Outfit_600SemiBold", fontSize: 14, color: COLORS.text }}>
+                Fale conosco
+              </Text>
+              <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 12, color: COLORS.textSecondary }}>
+                Ajuda, problemas e sugestões
+              </Text>
+            </View>
+            <ChevronRight size={18} color={COLORS.textSecondary} />
+          </AnimatedPressable>
+        </Animated.View>
 
         <View style={{ height: 1, backgroundColor: COLORS.divider }} />
 

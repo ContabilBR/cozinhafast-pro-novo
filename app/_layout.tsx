@@ -99,6 +99,7 @@ function RootLayoutNav() {
         <Stack.Screen name="usuario/novo" options={{ headerShown: false }} />
         <Stack.Screen name="comanda/[id]" options={{ headerShown: false }} />
         <Stack.Screen name="comanda-dia/[id]" options={{ headerShown: false }} />
+        <Stack.Screen name="fale-conosco" options={{ headerShown: false }} />
         <Stack.Screen name="comanda/nova" options={{ headerShown: false }} />
         <Stack.Screen name="comanda/comprovante" options={{ headerShown: false, headerBackVisible: false }} />
         <Stack.Screen name="pedido/[id]" options={{ headerShown: false }} />
