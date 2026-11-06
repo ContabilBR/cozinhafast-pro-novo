@@ -47,12 +47,10 @@ interface ApiMesa {
 
 interface ApiComanda {
   id: string;
-  mesa?: { numero?: number } | number | string;
-  mesa_id?: string;
+  mesa_numero?: number | null;
+  rotulo?: string | null;
   status: string;
   total: number;
-  pedidos_count?: number;
-  opened_at?: string;
   created_at?: string;
 }
 
@@ -248,7 +246,7 @@ export default function DashboardScreen() {
           console.error("[Dashboard] mesas error:", e instanceof Error ? e.message : String(e));
           return null;
         }),
-        apiGet<any>("/api/comandas").catch((e) => {
+        apiGet<any>(`/api/comandas-dia?data=${hojeBrasilia()}&limit=5`).catch((e) => {
           console.error("[Dashboard] comandas error:", e instanceof Error ? e.message : String(e));
           return null;
         }),
@@ -295,12 +293,7 @@ export default function DashboardScreen() {
       const comandaList: ApiComanda[] = comandasRes
         ? (Array.isArray(comandasRes) ? comandasRes : (comandasRes.comandas || []))
         : [];
-      const sorted = [...comandaList].sort((a, b) => {
-        const dateA = new Date(a.opened_at ?? a.created_at ?? "").getTime();
-        const dateB = new Date(b.opened_at ?? b.created_at ?? "").getTime();
-        return dateB - dateA;
-      });
-      setRecentComandas(sorted.slice(0, 5));
+      setRecentComandas(comandaList.slice(0, 5));
       console.log("[Dashboard] Comandas loaded:", comandaList.length);
 
       Animated.timing(fadeAnim, { toValue: 1, duration: 400, useNativeDriver: true }).start();
@@ -730,12 +723,12 @@ export default function DashboardScreen() {
             <AnimatedPressable
               onPress={() => {
                 console.log("[Dashboard] View all comandas pressed");
-                router.push((Platform.OS === "ios" ? "/relatorio-detalhe" : "/(tabs)/(relatorios)") as any);
+                router.push("/(tabs)/(comandas)");
               }}
               style={{ flexDirection: "row", alignItems: "center", gap: 2 }}
             >
               <Text style={{ fontFamily: "Outfit_600SemiBold", fontSize: 13, color: COLORS.primary }}>
-                Ver relatórios
+                Ver todas
               </Text>
               <ChevronRight size={14} color={COLORS.primary} />
             </AnimatedPressable>
@@ -752,7 +745,7 @@ export default function DashboardScreen() {
           ) : recentComandas.length === 0 ? (
             <View style={{ backgroundColor: COLORS.surface, borderRadius: 12, padding: 24, alignItems: "center", borderWidth: 1, borderColor: COLORS.border }}>
               <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 14, color: COLORS.textSecondary }}>
-                Nenhuma comanda recente
+                Nenhuma comanda hoje
               </Text>
             </View>
           ) : (
@@ -761,15 +754,14 @@ export default function DashboardScreen() {
                 const statusColor = COMANDA_STATUS_COLORS[comanda.status] || "#94A3B8";
                 const statusLabel = COMANDA_STATUS_LABELS[comanda.status] || comanda.status;
                 const totalStr = formatCurrency(comanda.total);
-                const mesaNum = typeof comanda.mesa === "object" && comanda.mesa !== null
-                  ? (comanda.mesa as any).numero ?? "—"
-                  : comanda.mesa ?? "—";
+                const mesaNum = comanda.mesa_numero ?? "—";
+                const rotulo = typeof comanda.rotulo === "string" ? comanda.rotulo.trim() : "";
                 return (
                   <AnimatedPressable
                     key={comanda.id}
                     onPress={() => {
                       console.log("[Dashboard] Recent comanda pressed:", comanda.id);
-                      router.push(`/comanda/${comanda.id}`);
+                      router.push({ pathname: "/comanda-dia/[id]", params: { id: comanda.id } });
                     }}
                     style={{
                       backgroundColor: COLORS.surface,
@@ -784,7 +776,7 @@ export default function DashboardScreen() {
                   >
                     <View style={{ gap: 3 }}>
                       <Text style={{ fontFamily: "Outfit_600SemiBold", fontSize: 14, color: COLORS.text }}>
-                        Mesa {mesaNum}
+                        Mesa {mesaNum}{rotulo ? ` · ${rotulo}` : ""}
                       </Text>
                       <Text style={{ fontFamily: "Outfit_700Bold", fontSize: 13, color: COLORS.primary }}>
                         {totalStr}
