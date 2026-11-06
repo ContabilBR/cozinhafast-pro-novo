@@ -3,39 +3,16 @@ import { eq, sum, count, gte, lt, and, sql, not, gt } from "drizzle-orm";
 import * as schema from "../db/schema/schema.js";
 import type { App } from "../index.js";
 import { requireAuth as customRequireAuth, requireTenant, requireRole } from "../utils/auth.js";
+import { obterFusoRestaurante, inicioDoDiaLocal, diaLocalDeInstante, type DiaLocal } from "../utils/fuso.js";
 
 type Periodo = "hoje" | "7dias" | "mes" | "personalizado";
 
 // ---------------------------------------------------------------------------
 // Períodos do dashboard/relatórios
 // ---------------------------------------------------------------------------
-// Fuso do negócio: America/Sao_Paulo (UTC-3, sem horário de verão desde 2019).
+// O fuso é o do restaurante (coluna fuso_horario; padrão America/Sao_Paulo).
 // Todos os "dias" (hoje, 7 dias, mês, personalizado) começam à meia-noite DESTE
-// fuso, e não à meia-noite UTC (que cai às 21h no Brasil).
-const FUSO_HORAS = -3;
-const MS_HORA = 60 * 60 * 1000;
-
-interface DiaLocal {
-  ano: number;
-  mes0: number; // 0-11
-  dia: number;
-}
-
-// Meia-noite local do dia informado, expressa como instante UTC.
-// Date.UTC normaliza estouros (dia 0 = último dia do mês anterior, dia 32 = dia 1 do seguinte).
-function inicioDoDiaLocal(ano: number, mes0: number, dia: number): Date {
-  return new Date(Date.UTC(ano, mes0, dia) - FUSO_HORAS * MS_HORA);
-}
-
-// Data/hora "de parede" no fuso do negócio (ler o resultado com getUTC*).
-function paraLocal(instante: Date): Date {
-  return new Date(instante.getTime() + FUSO_HORAS * MS_HORA);
-}
-
-function diaLocalDeInstante(instante: Date): DiaLocal {
-  const l = paraLocal(instante);
-  return { ano: l.getUTCFullYear(), mes0: l.getUTCMonth(), dia: l.getUTCDate() };
-}
+// fuso, e não à meia-noite UTC.
 
 function formatDiaBR(d: DiaLocal): string {
   const normal = new Date(Date.UTC(d.ano, d.mes0, d.dia));
@@ -46,7 +23,7 @@ function formatDiaBR(d: DiaLocal): string {
 
 // Aceita "YYYY-MM-DD" (formato enviado pelo app) ou uma data/hora ISO (formato antigo).
 // No caso ISO, usa o dia civil no fuso do negócio. Retorna null se for inválido.
-function lerDiaLocal(valor: string | undefined): DiaLocal | null {
+function lerDiaLocal(valor: string | undefined, fuso: string): DiaLocal | null {
   if (!valor) return null;
   const texto = valor.trim();
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(texto);
@@ -66,11 +43,11 @@ function lerDiaLocal(valor: string | undefined): DiaLocal | null {
   }
   const instante = new Date(texto);
   if (isNaN(instante.getTime())) return null;
-  return diaLocalDeInstante(instante);
+  return diaLocalDeInstante(instante, fuso);
 }
 
 // Resolve o período pedido num intervalo [inicio, fim) em UTC.
-//  - hoje:          do início ao fim do dia de hoje (horário de Brasília)
+//  - hoje:          do início ao fim do dia de hoje (no fuso do restaurante)
 //  - 7dias:         hoje e os 6 dias anteriores (7 dias corridos, dias completos)
 //  - mes:           do dia 1 ao último dia do mês atual
 //  - personalizado: do dia inicial ao dia final, ambos inclusos, dias completos
@@ -79,21 +56,22 @@ function resolvePeriodo(
   periodo: string | undefined,
   dataInicio: string | undefined,
   dataFim: string | undefined,
+  fuso: string,
   agora: Date = new Date()
 ): { inicio: Date; fim: Date; label: string } {
-  const hoje = diaLocalDeInstante(agora);
+  const hoje = diaLocalDeInstante(agora, fuso);
 
   if (periodo === "personalizado") {
-    let di = lerDiaLocal(dataInicio);
-    let df = lerDiaLocal(dataFim);
+    let di = lerDiaLocal(dataInicio, fuso);
+    let df = lerDiaLocal(dataFim, fuso);
     if (di && df) {
       // Se vierem invertidos, corrige em vez de devolver um período vazio.
       if (Date.UTC(di.ano, di.mes0, di.dia) > Date.UTC(df.ano, df.mes0, df.dia)) {
         [di, df] = [df, di];
       }
       return {
-        inicio: inicioDoDiaLocal(di.ano, di.mes0, di.dia),
-        fim: inicioDoDiaLocal(df.ano, df.mes0, df.dia + 1),
+        inicio: inicioDoDiaLocal(di.ano, di.mes0, di.dia, fuso),
+        fim: inicioDoDiaLocal(df.ano, df.mes0, df.dia + 1, fuso),
         label: `${formatDiaBR(di)} – ${formatDiaBR(df)}`,
       };
     }
@@ -102,24 +80,24 @@ function resolvePeriodo(
 
   if (periodo === "7dias") {
     return {
-      inicio: inicioDoDiaLocal(hoje.ano, hoje.mes0, hoje.dia - 6),
-      fim: inicioDoDiaLocal(hoje.ano, hoje.mes0, hoje.dia + 1),
+      inicio: inicioDoDiaLocal(hoje.ano, hoje.mes0, hoje.dia - 6, fuso),
+      fim: inicioDoDiaLocal(hoje.ano, hoje.mes0, hoje.dia + 1, fuso),
       label: "Últimos 7 dias",
     };
   }
 
   if (periodo === "mes") {
     return {
-      inicio: inicioDoDiaLocal(hoje.ano, hoje.mes0, 1),
-      fim: inicioDoDiaLocal(hoje.ano, hoje.mes0 + 1, 1),
+      inicio: inicioDoDiaLocal(hoje.ano, hoje.mes0, 1, fuso),
+      fim: inicioDoDiaLocal(hoje.ano, hoje.mes0 + 1, 1, fuso),
       label: "Este mês",
     };
   }
 
   // padrão: "hoje"
   return {
-    inicio: inicioDoDiaLocal(hoje.ano, hoje.mes0, hoje.dia),
-    fim: inicioDoDiaLocal(hoje.ano, hoje.mes0, hoje.dia + 1),
+    inicio: inicioDoDiaLocal(hoje.ano, hoje.mes0, hoje.dia, fuso),
+    fim: inicioDoDiaLocal(hoje.ano, hoje.mes0, hoje.dia + 1, fuso),
     label: "Hoje",
   };
 }
@@ -240,8 +218,9 @@ export function registerRelatoriosRoutes(app: App) {
 
       try {
         const tenantId = requireTenant(authUser);
+        const fuso = await obterFusoRestaurante(app, tenantId);
         const query = request.query as { periodo?: string; dataInicio?: string; dataFim?: string };
-        const { inicio, fim, label: periodoLabel } = resolvePeriodo(query.periodo, query.dataInicio, query.dataFim);
+        const { inicio, fim, label: periodoLabel } = resolvePeriodo(query.periodo, query.dataInicio, query.dataFim, fuso);
 
         // Check custom period length (max 366 days)
         if (query.periodo === "personalizado") {
@@ -580,8 +559,9 @@ ORDER BY p.nome ASC,p.id ASC LIMIT 50`
 
       try {
         const tenantId = requireTenant(authUser);
+        const fuso = await obterFusoRestaurante(app, tenantId);
         const query = request.query as { periodo?: string; dataInicio?: string; dataFim?: string };
-        const { inicio, fim, label: periodoLabel } = resolvePeriodo(query.periodo, query.dataInicio, query.dataFim);
+        const { inicio, fim, label: periodoLabel } = resolvePeriodo(query.periodo, query.dataInicio, query.dataFim, fuso);
         app.logger.info({ tenantId, periodo: query.periodo, inicio, fim }, "Getting resumo");
 
         // Total mesas — estado atual, sem filtro de período
@@ -1075,8 +1055,9 @@ LIMIT 5
 
       try {
         const tenantId = requireTenant(authUser);
+        const fuso = await obterFusoRestaurante(app, tenantId);
         const query = request.query as { periodo?: string; dataInicio?: string; dataFim?: string };
-        const { inicio, fim, label: periodoLabel } = resolvePeriodo(query.periodo, query.dataInicio, query.dataFim);
+        const { inicio, fim, label: periodoLabel } = resolvePeriodo(query.periodo, query.dataInicio, query.dataFim, fuso);
         app.logger.info({ tenantId, periodo: query.periodo, inicio, fim }, "Getting relatorio por mesa");
 
         // Ticket médio e nº de comandas fechadas por mesa, no período (ativas + histórico)
@@ -1300,10 +1281,11 @@ LIMIT 5
 
       try {
         const tenantId = requireTenant(authUser);
+        const fuso = await obterFusoRestaurante(app, tenantId);
         const query = request.query as { periodo?: string; dataInicio?: string; dataFim?: string };
 
         // Resolve current period
-        const { inicio, fim, label: periodoLabel } = resolvePeriodo(query.periodo, query.dataInicio, query.dataFim);
+        const { inicio, fim, label: periodoLabel } = resolvePeriodo(query.periodo, query.dataInicio, query.dataFim, fuso);
 
         // Check custom period length (max 366 days)
         if (query.periodo === "personalizado") {
@@ -1327,7 +1309,7 @@ LIMIT 5
         );
 
         // Format label for previous period
-        const periodoAnteriorLabel = `${formatDiaBR(diaLocalDeInstante(periodoAnteriorInicio))} – ${formatDiaBR(diaLocalDeInstante(new Date(periodoAnteriorFim.getTime() - 1)))}`;
+        const periodoAnteriorLabel = `${formatDiaBR(diaLocalDeInstante(periodoAnteriorInicio, fuso))} – ${formatDiaBR(diaLocalDeInstante(new Date(periodoAnteriorFim.getTime() - 1), fuso))}`;
 
         // Fetch sales data for current period (both comandas and comandas_historico)
         const vendasPeriodoResult = await (app.db as any).execute(
@@ -1885,8 +1867,8 @@ LIMIT 5
         }
 
         // Fill missing days with zeros
-        const inicioDia = diaLocalDeInstante(inicio);
-        const fimDia = diaLocalDeInstante(new Date(fim.getTime() - 1));
+        const inicioDia = diaLocalDeInstante(inicio, fuso);
+        const fimDia = diaLocalDeInstante(new Date(fim.getTime() - 1), fuso);
 
         for (let d = new Date(Date.UTC(inicioDia.ano, inicioDia.mes0, inicioDia.dia));
              d <= new Date(Date.UTC(fimDia.ano, fimDia.mes0, fimDia.dia));
@@ -2092,10 +2074,11 @@ LIMIT 5
 
       try {
         const tenantId = requireTenant(authUser);
+        const fuso = await obterFusoRestaurante(app, tenantId);
         const query = request.query as { periodo?: string; dataInicio?: string; dataFim?: string };
 
         // Resolve period
-        const { inicio, fim } = resolvePeriodo(query.periodo, query.dataInicio, query.dataFim);
+        const { inicio, fim } = resolvePeriodo(query.periodo, query.dataInicio, query.dataFim, fuso);
 
         // Check custom period length (max 366 days)
         if (query.periodo === "personalizado") {
@@ -2399,8 +2382,8 @@ LIMIT 5
         }
 
         // Count occurrences of each day of week in period
-        const inicioDia = diaLocalDeInstante(inicio);
-        const fimDia = diaLocalDeInstante(new Date(fim.getTime() - 1));
+        const inicioDia = diaLocalDeInstante(inicio, fuso);
+        const fimDia = diaLocalDeInstante(new Date(fim.getTime() - 1), fuso);
         for (let d = new Date(Date.UTC(inicioDia.ano, inicioDia.mes0, inicioDia.dia));
              d <= new Date(Date.UTC(fimDia.ano, fimDia.mes0, fimDia.dia));
              d.setUTCDate(d.getUTCDate() + 1)) {
@@ -2661,10 +2644,11 @@ LIMIT 5
 
       try {
         const tenantId = requireTenant(authUser);
+        const fuso = await obterFusoRestaurante(app, tenantId);
         const query = request.query as { periodo?: string; dataInicio?: string; dataFim?: string };
 
         // Resolve period
-        const { inicio, fim } = resolvePeriodo(query.periodo, query.dataInicio, query.dataFim);
+        const { inicio, fim } = resolvePeriodo(query.periodo, query.dataInicio, query.dataFim, fuso);
 
         // Check custom period length (max 366 days)
         if (query.periodo === "personalizado") {
@@ -3256,6 +3240,7 @@ LIMIT 5
       if (!(await requireRole(authUser, ["administrador", "gerente"], reply))) return;
 
       const tenantId = requireTenant(authUser);
+      const fuso = await obterFusoRestaurante(app, tenantId);
       const { periodo, dataInicio, dataFim } = request.query as {
         periodo?: Periodo;
         dataInicio?: string;
@@ -3266,7 +3251,7 @@ LIMIT 5
 
       try {
         // Validate period and get date range
-        const { inicio, fim } = resolvePeriodo(periodo, dataInicio, dataFim);
+        const { inicio, fim } = resolvePeriodo(periodo, dataInicio, dataFim, fuso);
 
         // Check custom period length (max 366 days)
         if (periodo === "personalizado") {
@@ -3604,6 +3589,7 @@ LIMIT 5
       if (!(await requireRole(authUser, ["administrador", "gerente"], reply))) return;
 
       const tenantId = requireTenant(authUser);
+      const fuso = await obterFusoRestaurante(app, tenantId);
       const { periodo, dataInicio, dataFim } = request.query as {
         periodo?: Periodo;
         dataInicio?: string;
@@ -3614,7 +3600,7 @@ LIMIT 5
 
       try {
         // Validate period and get date range
-        const { inicio, fim } = resolvePeriodo(periodo, dataInicio, dataFim);
+        const { inicio, fim } = resolvePeriodo(periodo, dataInicio, dataFim, fuso);
 
         // Check custom period length (max 366 days)
         if (periodo === "personalizado") {
@@ -3905,6 +3891,7 @@ LIMIT 5
       if (!(await requireRole(authUser, ["administrador", "gerente"], reply))) return;
 
       const tenantId = requireTenant(authUser);
+      const fuso = await obterFusoRestaurante(app, tenantId);
       const queryData = request.query as { data?: string };
 
       app.logger.info({ tenantId, data: queryData.data }, "Fetching fechamento-dia report");
@@ -3942,7 +3929,7 @@ LIMIT 5
           targetDate = testDate;
 
           // Check not future
-          const localToday = diaLocalDeInstante(new Date());
+          const localToday = diaLocalDeInstante(new Date(), fuso);
           const todayUtc = new Date(Date.UTC(localToday.ano, localToday.mes0, localToday.dia));
           if (targetDate > todayUtc) {
             app.logger.warn({ tenantId, data: queryData.data }, "Data is in the future");
@@ -3952,7 +3939,7 @@ LIMIT 5
           ehHoje = targetDate.getTime() === todayUtc.getTime();
         } else {
           // Default to today
-          const localToday = diaLocalDeInstante(new Date());
+          const localToday = diaLocalDeInstante(new Date(), fuso);
           targetDate = new Date(Date.UTC(localToday.ano, localToday.mes0, localToday.dia));
           ehHoje = true;
         }
@@ -3961,7 +3948,7 @@ LIMIT 5
         const dateStr = `${String(targetDate.getUTCFullYear()).padStart(4, "0")}-${String(targetDate.getUTCMonth() + 1).padStart(2, "0")}-${String(targetDate.getUTCDate()).padStart(2, "0")}`;
 
         // Get date range (00:00 local to 00:00 next day local)
-        const inicio = inicioDoDiaLocal(targetDate.getUTCFullYear(), targetDate.getUTCMonth(), targetDate.getUTCDate());
+        const inicio = inicioDoDiaLocal(targetDate.getUTCFullYear(), targetDate.getUTCMonth(), targetDate.getUTCDate(), fuso);
         const fim = new Date(inicio.getTime() + 24 * 60 * 60 * 1000);
 
         // Common base for deduped sold comandas
@@ -4467,9 +4454,10 @@ LIMIT 5
         if (!session) return;
         if (!(await requireRole(session, ["administrador", "gerente", "admin"], reply))) return;
         const restauranteId = requireTenant(session);
+        const fuso = await obterFusoRestaurante(app, restauranteId);
 
         const query = request.query as { periodo?: string; dataInicio?: string; dataFim?: string };
-        const { inicio, fim } = resolvePeriodo(query.periodo, query.dataInicio, query.dataFim);
+        const { inicio, fim } = resolvePeriodo(query.periodo, query.dataInicio, query.dataFim, fuso);
 
         // Check period limit for personalizado
         if (query.periodo === "personalizado") {
@@ -4480,8 +4468,8 @@ LIMIT 5
           }
         }
 
-        const diaInicio = diaLocalDeInstante(inicio);
-        const diaFim = diaLocalDeInstante(new Date(fim.getTime() - 1000));
+        const diaInicio = diaLocalDeInstante(inicio, fuso);
+        const diaFim = diaLocalDeInstante(new Date(fim.getTime() - 1000), fuso);
 
         const dataInicioStr = `${String(diaInicio.ano).padStart(4, "0")}-${String(diaInicio.mes0 + 1).padStart(2, "0")}-${String(diaInicio.dia).padStart(2, "0")}`;
         const dataFimStr = `${String(diaFim.ano).padStart(4, "0")}-${String(diaFim.mes0 + 1).padStart(2, "0")}-${String(diaFim.dia).padStart(2, "0")}`;
@@ -4749,12 +4737,13 @@ LIMIT 5
         if (!session) return;
         if (!(await requireRole(session, ["administrador", "gerente"], reply))) return;
         const restauranteId = requireTenant(session);
+        const fuso = await obterFusoRestaurante(app, restauranteId);
 
         const query = request.query as { periodo?: string; dataInicio?: string; dataFim?: string };
-        const { inicio, fim } = resolvePeriodo(query.periodo, query.dataInicio, query.dataFim);
+        const { inicio, fim } = resolvePeriodo(query.periodo, query.dataInicio, query.dataFim, fuso);
 
-        const diaInicio = diaLocalDeInstante(inicio);
-        const diaFim = diaLocalDeInstante(new Date(fim.getTime() - 1000));
+        const diaInicio = diaLocalDeInstante(inicio, fuso);
+        const diaFim = diaLocalDeInstante(new Date(fim.getTime() - 1000), fuso);
 
         const dataInicioStr = `${String(diaInicio.ano).padStart(4, "0")}-${String(diaInicio.mes0 + 1).padStart(2, "0")}-${String(diaInicio.dia).padStart(2, "0")}`;
         const dataFimStr = `${String(diaFim.ano).padStart(4, "0")}-${String(diaFim.mes0 + 1).padStart(2, "0")}-${String(diaFim.dia).padStart(2, "0")}`;
