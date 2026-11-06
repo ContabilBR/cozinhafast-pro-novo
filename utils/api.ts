@@ -1,5 +1,6 @@
 import { Platform } from "react-native";
 import * as SecureStore from "expo-secure-store";
+import { fusoDoAparelho } from "@/utils/fusoAparelho";
 
 export const BACKEND_URL = "https://j74mf38wgua3d4qd5mqbjjvza88n2qcp.app.specular.dev";
 export const AUTH_TOKEN_KEY = "cozinhafast_token";
@@ -104,6 +105,11 @@ export const apiRequest = async <T = any>(
     "Content-Type": "application/json",
     ...(options?.headers as Record<string, string>),
   };
+
+  const fusoAparelho = fusoDoAparelho();
+  if (fusoAparelho) {
+    headers["x-fuso-horario"] = fusoAparelho;
+  }
 
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
