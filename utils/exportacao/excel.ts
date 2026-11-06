@@ -1,5 +1,5 @@
 import type ExcelJSTipos from 'exceljs';
-import { CORES, LEGENDA, TIME_ZONE, linhaCompacta, linhasDoRestaurante, periodoTexto } from './definicao';
+import { CORES, LEGENDA, linhaCompacta, linhasDoRestaurante, periodoTexto } from './definicao';
 import type { ColunaDef, CorBloco, RelatorioDef, TipoColuna, Valor } from './definicao';
 
 // Versão do navegador do exceljs (traz seus próprios polyfills; a versão "node" não roda no app).
@@ -28,7 +28,7 @@ function serialData(iso: string): Date {
 function fracaoHora(iso: string): number {
   const d = new Date(iso);
   if (!Number.isFinite(d.getTime())) throw new Error('Horário inválido no relatório.');
-  const partes = new Intl.DateTimeFormat('en-GB', { timeZone: TIME_ZONE, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(d);
+  const partes = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(d);
   const p = (t: string) => Number(partes.find(x => x.type === t)?.value ?? 0);
   return (p('hour') * 60 + p('minute')) / 1440;
 }

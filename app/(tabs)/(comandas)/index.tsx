@@ -21,7 +21,7 @@ import { CardSkeleton } from "@/components/SkeletonLoader";
 import { apiGet } from "@/utils/api";
 import { formatCurrency, formatRelativeTime } from "@/utils/helpers";
 import { useAuth } from "@/contexts/AuthContext";
-import { hojeBrasilia, deslocarDias } from "@/utils/exportacao/periodo";
+import { hojeNoAparelho, deslocarDias } from "@/utils/exportacao/periodo";
 import { Plus, Clock, ShoppingBag } from "lucide-react-native";
 
 interface ApiComanda {
@@ -197,7 +197,6 @@ function horaSP(iso: string | null): string {
   const dt = new Date(iso);
   if (isNaN(dt.getTime())) return "";
   const p = new Intl.DateTimeFormat("pt-BR", {
-    timeZone: "America/Sao_Paulo",
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
@@ -212,7 +211,7 @@ const DIA_STATUS_LABELS: Record<string, string> = { aberta: "Aberta", fechada: "
 function ComandasPorDia({ bottomPadding }: { bottomPadding: number }) {
   const COLORS = useColors();
   const router = useRouter();
-  const [dia, setDia] = useState(() => hojeBrasilia());
+  const [dia, setDia] = useState(() => hojeNoAparelho());
   const [lista, setLista] = useState<ComandaDiaItem[]>([]);
   const [total, setTotal] = useState(0);
   const [resumo, setResumo] = useState<ComandasDiaResp["resumo"] | null>(null);
@@ -223,7 +222,7 @@ function ComandasPorDia({ bottomPadding }: { bottomPadding: number }) {
   const [pickerAberto, setPickerAberto] = useState(false);
   const reqRef = useRef(0);
 
-  const hoje = hojeBrasilia();
+  const hoje = hojeNoAparelho();
   const ehHoje = dia >= hoje;
 
   const carregar = useCallback(async (alvo: string, offset: number) => {
@@ -264,7 +263,7 @@ function ComandasPorDia({ bottomPadding }: { bottomPadding: number }) {
   );
 
   const mudarDia = (novo: string) => {
-    const limitado = novo > hojeBrasilia() ? hojeBrasilia() : novo;
+    const limitado = novo > hojeNoAparelho() ? hojeNoAparelho() : novo;
     if (limitado !== dia) setDia(limitado);
   };
 

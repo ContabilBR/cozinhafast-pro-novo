@@ -79,7 +79,7 @@ export interface RelatorioDef {
   titulo: string;
   periodo: Periodo;
   contexto: Contexto;
-  geradoEm: string; // dd/mm/aaaa hh:mm (Brasília)
+  geradoEm: string; // dd/mm/aaaa hh:mm (horário do aparelho)
   resumoTitulo?: string;
   resumo: Indicador[];
   tabelas: TabelaDef[];
@@ -96,7 +96,6 @@ export const LEGENDA = [
   'Gorjeta e taxa de entrega não entram no faturamento dos itens.',
 ];
 
-export const TIME_ZONE = 'America/Sao_Paulo';
 
 export function dataBR(iso: string): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
@@ -105,7 +104,7 @@ export function dataBR(iso: string): string {
 }
 export function dataHoraBrasil(data = new Date()): string {
   return new Intl.DateTimeFormat('pt-BR', {
-    timeZone: TIME_ZONE, day: '2-digit', month: '2-digit', year: 'numeric',
+    day: '2-digit', month: '2-digit', year: 'numeric',
     hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
   }).format(data).replace(',', '');
 }

@@ -20,7 +20,7 @@ import { SkeletonLine } from "@/components/SkeletonLoader";
 import { apiGet } from "@/utils/api";
 import { setMesaHistoricoId } from "@/utils/mesaHistoricoStore";
 import { formatCurrency, isAdmin } from "@/utils/helpers";
-import { hojeBrasilia } from "@/utils/exportacao/periodo";
+import { hojeNoAparelho } from "@/utils/exportacao/periodo";
 import { contarReservas } from "@/utils/reservasGrupo";
 import { TrendingUp, ShoppingBag, Grid3x3, Clock, RefreshCw, ChevronRight, DollarSign, ChefHat, CalendarDays, MessageCircle } from "lucide-react-native";
 import { useRealtime, type RealtimeStatus } from "@/hooks/useRealtime";
@@ -185,7 +185,7 @@ function formatDateBR(date: Date): string {
 }
 
 // Data civil do aparelho no formato YYYY-MM-DD (sem horário, sem fuso).
-// O servidor interpreta esse dia inteiro (00:00 a 23:59) no horário de Brasília.
+// O servidor interpreta esse dia inteiro (00:00 a 23:59) no horário do aparelho.
 function formatYMD(date: Date): string {
   const dd = String(date.getDate()).padStart(2, "0");
   const mm = String(date.getMonth() + 1).padStart(2, "0");
@@ -246,11 +246,11 @@ export default function DashboardScreen() {
           console.error("[Dashboard] mesas error:", e instanceof Error ? e.message : String(e));
           return null;
         }),
-        apiGet<any>(`/api/comandas-dia?data=${hojeBrasilia()}&limit=5`).catch((e) => {
+        apiGet<any>(`/api/comandas-dia?data=${hojeNoAparelho()}&limit=5`).catch((e) => {
           console.error("[Dashboard] comandas error:", e instanceof Error ? e.message : String(e));
           return null;
         }),
-        apiGet<any>(`/api/reservas?data=${hojeBrasilia()}`).catch((e) => {
+        apiGet<any>(`/api/reservas?data=${hojeNoAparelho()}`).catch((e) => {
           console.error("[Dashboard] reservas error:", e instanceof Error ? e.message : String(e));
           return null;
         }),

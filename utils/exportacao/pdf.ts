@@ -15,7 +15,7 @@ function formatar(tipo: TipoColuna, v: Valor | undefined): string {
     return m ? `${m[3]}/${m[2]}/${m[1]}` : esc(v);
   }
   if (tipo === 'hora') {
-    return new Intl.DateTimeFormat('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(String(v)));
+    return new Intl.DateTimeFormat('pt-BR', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(String(v)));
   }
   const n = Number(v);
   if (!Number.isFinite(n)) return '';

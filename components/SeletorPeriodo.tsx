@@ -4,11 +4,11 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { useColors } from '@/hooks/useColors';
 import { dataBR } from '@/utils/exportacao/definicao';
-import { OPCOES_PERIODO, hojeBrasilia, resolverPeriodo } from '@/utils/exportacao/periodo';
+import { OPCOES_PERIODO, hojeNoAparelho, resolverPeriodo } from '@/utils/exportacao/periodo';
 import type { OpcaoPeriodo } from '@/utils/exportacao/periodo';
 
 export interface EstadoPeriodo { opcao: OpcaoPeriodo; inicio: string; fim: string }
-export const periodoInicial = (): EstadoPeriodo => ({ opcao: 'hoje', inicio: hojeBrasilia(), fim: hojeBrasilia() });
+export const periodoInicial = (): EstadoPeriodo => ({ opcao: 'hoje', inicio: hojeNoAparelho(), fim: hojeNoAparelho() });
 export const periodoDoEstado = (e: EstadoPeriodo) => resolverPeriodo(e.opcao, e.inicio, e.fim);
 
 const paraIso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -18,7 +18,7 @@ const paraData = (iso: string) => new Date(`${iso}T12:00:00`);
 export function SeletorPeriodo({ value, onChange }: { value: EstadoPeriodo; onChange: (v: EstadoPeriodo) => void }) {
   const colors = useColors();
   const [escolhendo, setEscolhendo] = useState<'inicio' | 'fim' | null>(null);
-  const hoje = hojeBrasilia();
+  const hoje = hojeNoAparelho();
   const periodo = periodoDoEstado(value);
   return (
     <View style={styles.wrap}>

@@ -2,7 +2,7 @@ import { MOTIVOS_DESCONTO } from '@/utils/desconto';
 import { apiGet } from '@/utils/api';
 import { comRanking, dataHoraBrasil, dataBR } from './definicao';
 import type { Contexto, Indicador, Periodo, RelatorioDef, TabelaDef, Valor } from './definicao';
-import { diasDoPeriodo, hojeBrasilia } from './periodo';
+import { diasDoPeriodo, hojeNoAparelho } from './periodo';
 
 type Forma = { quantidade: number; valor_entregue: number; troco: number; valor_liquido: number };
 type Bloco = {
@@ -161,7 +161,7 @@ export function montarFechamento(dias: FechamentoDia[], periodo: Periodo, contex
       ['Dinheiro em caixa', null, v(d => d.pagamentos.dinheiro_em_caixa), null],
     ],
   });
-  const hoje = hojeBrasilia();
+  const hoje = hojeNoAparelho();
   const dHoje = dias.find(d => d.data === hoje);
   if (dHoje?.pendencias?.disponivel) {
     const abertas = [...dHoje.pendencias.comandas_abertas].sort((a, b) => a.aberta_em.localeCompare(b.aberta_em)).slice(0, 50)

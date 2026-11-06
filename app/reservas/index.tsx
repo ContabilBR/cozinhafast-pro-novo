@@ -20,7 +20,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { AnimatedPressable } from "@/components/AnimatedPressable";
 import { apiGet, apiPost, apiPut } from "@/utils/api";
 import { isAdmin } from "@/utils/helpers";
-import { deslocarDias, hojeBrasilia } from "@/utils/exportacao/periodo";
+import { deslocarDias, hojeNoAparelho } from "@/utils/exportacao/periodo";
 import { agruparReservas, listaMesas, type ItemReserva, type ReservaApi } from "@/utils/reservasGrupo";
 
 type Reserva = ReservaApi;
@@ -93,7 +93,7 @@ export default function ReservasScreen() {
   const role = user?.role as string | undefined;
   const gerencia = isAdmin(role);
 
-  const [dia, setDia] = useState(hojeBrasilia());
+  const [dia, setDia] = useState(hojeNoAparelho());
   const [filtro, setFiltro] = useState<Filtro>("todas");
   const [itens, setItens] = useState<Reserva[]>([]);
   const [loading, setLoading] = useState(true);
@@ -464,7 +464,7 @@ export default function ReservasScreen() {
           >
             <CalendarDays size={18} color={COLORS.primary} />
             <Text style={{ fontFamily: "Outfit_600SemiBold", fontSize: 16, color: COLORS.text }}>
-              {dataBR(dia)} · {dia === hojeBrasilia() ? "hoje" : diaSemana(dia)}
+              {dataBR(dia)} · {dia === hojeNoAparelho() ? "hoje" : diaSemana(dia)}
             </Text>
           </AnimatedPressable>
           {setaDia(1)}

@@ -1,5 +1,4 @@
 import type { Periodo } from './definicao';
-import { TIME_ZONE } from './definicao';
 
 export type OpcaoPeriodo = 'hoje' | 'ontem' | '7dias' | 'mes' | 'mesAnterior' | 'personalizado';
 export const OPCOES_PERIODO: { valor: OpcaoPeriodo; rotulo: string }[] = [
@@ -11,8 +10,8 @@ export const OPCOES_PERIODO: { valor: OpcaoPeriodo; rotulo: string }[] = [
   { valor: 'personalizado', rotulo: 'Personalizado' },
 ];
 
-export function hojeBrasilia(agora = new Date()): string {
-  const p = new Intl.DateTimeFormat('en-US', { timeZone: TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(agora);
+export function hojeNoAparelho(agora = new Date()): string {
+  const p = new Intl.DateTimeFormat('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(agora);
   const g = (t: string) => p.find(x => x.type === t)!.value;
   return `${g('year')}-${g('month')}-${g('day')}`;
 }
@@ -24,7 +23,7 @@ export function deslocarDias(iso: string, delta: number): string {
 export const dataValida = (v: string) => /^\d{4}-\d{2}-\d{2}$/.test(v)
   && deslocarDias(v, 0) === v;
 
-export function resolverPeriodo(opcao: OpcaoPeriodo, inicioPersonalizado = '', fimPersonalizado = '', hoje = hojeBrasilia()): Periodo {
+export function resolverPeriodo(opcao: OpcaoPeriodo, inicioPersonalizado = '', fimPersonalizado = '', hoje = hojeNoAparelho()): Periodo {
   if (opcao === 'hoje') return { inicio: hoje, fim: hoje };
   if (opcao === 'ontem') { const o = deslocarDias(hoje, -1); return { inicio: o, fim: o }; }
   if (opcao === '7dias') return { inicio: deslocarDias(hoje, -6), fim: hoje };

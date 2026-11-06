@@ -14,7 +14,6 @@ import { BotoesExportar } from '@/components/BotoesExportar';
 import { carregarContexto } from '@/utils/exportacao/exportar';
 import { carregarFechamentos, montarFechamento } from '@/utils/exportacao/fechamento';
 
-const TIME_ZONE = 'America/Sao_Paulo';
 type Canal = { comandas_fechadas: number; total_recebido: number };
 type Forma = { quantidade: number; valor_entregue: number; troco: number; valor_liquido: number };
 type BlocoDesconto = {
@@ -58,9 +57,9 @@ const FORMAS = [
   { key: 'cartao_credito', label: 'Cartão de crédito' },
 ] as const;
 
-function hojeBrasilia() {
+function hojeNoAparelho() {
   const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit',
+    year: 'numeric', month: '2-digit', day: '2-digit',
   }).formatToParts(new Date());
   const part = (type: string) => parts.find(p => p.type === type)!.value;
   return `${part('year')}-${part('month')}-${part('day')}`;
@@ -73,13 +72,13 @@ function deslocarDia(value: string, delta: number) {
 }
 function dataLabel(value: string) {
   return new Date(`${value}T12:00:00-03:00`).toLocaleDateString('pt-BR', {
-    timeZone: TIME_ZONE, weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric',
+    weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric',
   });
 }
 function horaBrasilia(value: string) {
   const date = new Date(value);
   return Number.isFinite(date.getTime()) ? date.toLocaleTimeString('pt-BR', {
-    timeZone: TIME_ZONE, hour: '2-digit', minute: '2-digit',
+    hour: '2-digit', minute: '2-digit',
   }) : '—';
 }
 const contagem = (value: number, singular: string, plural: string) =>
@@ -101,11 +100,11 @@ function Linha({ label, value, note, danger = false }: { label: string; value: s
 
 export default function FechamentoDiaScreen() {
   const colors = useColors();
-  const [hoje, setHoje] = useState(hojeBrasilia);
+  const [hoje, setHoje] = useState(hojeNoAparelho);
   const [escolhida, setEscolhida] = useState(hoje);
   const selecionada = escolhida > hoje ? hoje : escolhida;
   useEffect(() => {
-    const update = () => setHoje(hojeBrasilia());
+    const update = () => setHoje(hojeNoAparelho());
     const timer = setInterval(update, 30_000);
     const subscription = AppState.addEventListener('change', status => { if (status === 'active') update(); });
     return () => { clearInterval(timer); subscription.remove(); };
@@ -155,7 +154,7 @@ export default function FechamentoDiaScreen() {
     return montarFechamento(dias, periodo, contexto);
   };
   const mudarData = (next: string) => {
-    const limite = hojeBrasilia();
+    const limite = hojeNoAparelho();
     setHoje(limite);
     setEscolhida(next > limite ? limite : next);
   };
@@ -166,7 +165,7 @@ export default function FechamentoDiaScreen() {
       {[
         { label: 'Dia anterior', disabled: false, action: () => mudarData(deslocarDia(selecionada, -1)) },
         { label: 'Próximo dia', disabled: selecionada >= hoje, action: () => mudarData(deslocarDia(selecionada, 1)) },
-        { label: 'Hoje', disabled: false, action: () => mudarData(hojeBrasilia()) },
+        { label: 'Hoje', disabled: false, action: () => mudarData(hojeNoAparelho()) },
       ].map(button => <AnimatedPressable key={button.label} accessibilityRole="button"
         accessibilityLabel={button.label === 'Hoje' ? 'Selecionar o dia de hoje no horário de Brasília' : `Selecionar ${button.label.toLowerCase()}`}
         accessibilityState={{ disabled: button.disabled }} disabled={button.disabled} onPress={button.action}

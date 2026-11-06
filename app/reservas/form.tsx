@@ -15,7 +15,7 @@ import { ArrowLeft, Plus, Minus, CalendarDays, Clock } from "lucide-react-native
 import { useColors } from "@/hooks/useColors";
 import { AnimatedPressable } from "@/components/AnimatedPressable";
 import { apiGet, apiPost, apiPut } from "@/utils/api";
-import { hojeBrasilia } from "@/utils/exportacao/periodo";
+import { hojeNoAparelho } from "@/utils/exportacao/periodo";
 
 const MAX_MESAS = 20;
 
@@ -91,7 +91,7 @@ export default function ReservaFormScreen() {
 
   const [nome, setNome] = useState<string>(existente?.nome_pessoa ?? "");
   const [telefone, setTelefone] = useState<string>(existente?.telefone ? maskTelefone(existente.telefone) : "");
-  const [data, setData] = useState<string>(inicial?.data ?? ((params.dia as string) || hojeBrasilia()));
+  const [data, setData] = useState<string>(inicial?.data ?? ((params.dia as string) || hojeNoAparelho()));
   const [hora, setHora] = useState<string>(inicial?.hora ?? "");
   const [pessoas, setPessoas] = useState<number>(existente?.numero_pessoas ?? 2);
   const editandoGrupo = editando && !!existente?.grupo_id;

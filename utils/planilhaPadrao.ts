@@ -46,7 +46,6 @@ export const FORMATOS = {
   hora: 'hh:mm',
 } as const;
 
-export const TIME_ZONE = 'America/Sao_Paulo';
 
 export function nomeDaAba(nome: string): string {
   return nome.replace(/[:\\/?*\[\]]/g, '').trim().slice(0, 31);
@@ -75,22 +74,22 @@ export function celulaData(iso: string | null): XLSX.CellObject | null {
   return { t: 'n', v: dias, z: FORMATOS.data };
 }
 
-/** Instante ISO como hora do dia (hh:mm) no horário de Brasília. */
+/** Instante ISO como hora do dia (hh:mm) no horário do aparelho. */
 export function celulaHora(iso: string | null): XLSX.CellObject | null {
   if (iso == null) return null;
   const data = new Date(iso);
   if (!Number.isFinite(data.getTime())) throw new Error('Horário inválido no relatório.');
   const partes = new Intl.DateTimeFormat('en-GB', {
-    timeZone: TIME_ZONE, hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
   }).formatToParts(data);
   const parte = (tipo: string) => Number(partes.find(p => p.type === tipo)?.value ?? 0);
   return { t: 'n', v: (parte('hour') * 60 + parte('minute')) / 1440, z: FORMATOS.hora };
 }
 
-/** "dd/mm/aaaa hh:mm" no horário de Brasília. */
+/** "dd/mm/aaaa hh:mm" no horário do aparelho. */
 export function dataHoraBrasil(data = new Date()): string {
   return new Intl.DateTimeFormat('pt-BR', {
-    timeZone: TIME_ZONE, day: '2-digit', month: '2-digit', year: 'numeric',
+    day: '2-digit', month: '2-digit', year: 'numeric',
     hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
   }).format(data).replace(',', '');
 }

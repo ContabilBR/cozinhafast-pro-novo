@@ -20,7 +20,7 @@ import { AnimatedPressable } from "@/components/AnimatedPressable";
 import { SkeletonLine } from "@/components/SkeletonLoader";
 import { apiGet, apiPost } from "@/utils/api";
 import { isAdmin } from "@/utils/helpers";
-import { hojeBrasilia } from "@/utils/exportacao/periodo";
+import { hojeNoAparelho } from "@/utils/exportacao/periodo";
 import { contarReservas } from "@/utils/reservasGrupo";
 import { setMesaHistoricoId } from "@/utils/mesaHistoricoStore";
 import { Users, UtensilsCrossed, LayoutGrid } from "lucide-react-native";
@@ -404,7 +404,7 @@ export default function MesasScreen() {
 
   const fetchReservasHoje = useCallback(async () => {
     try {
-      const res = await apiGet<any>(`/api/reservas?data=${hojeBrasilia()}`);
+      const res = await apiGet<any>(`/api/reservas?data=${hojeNoAparelho()}`);
       const lista: { status: string }[] = Array.isArray(res) ? res : res?.reservas || [];
       setReservasHoje(contarReservas(lista));
     } catch (e: any) {
