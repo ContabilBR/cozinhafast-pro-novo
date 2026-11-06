@@ -76,6 +76,9 @@ export const restaurante = pgTable("restaurante", {
   ativo: boolean("ativo").default(true).notNull(),
   // Como o restaurante controla o consumo: "mesa" (uma comanda por mesa) ou "individual" (várias comandas por mesa, cada uma com nome)
   modoComanda: modoComandaEnum("modo_comanda").default("mesa").notNull(),
+  // Fuso horário do restaurante (nome IANA do Brasil) e se um administrador ou gerente já o definiu/confirmou
+  fusoHorario: text("fuso_horario").default("America/Sao_Paulo").notNull(),
+  fusoHorarioConfirmado: boolean("fuso_horario_confirmado").default(false).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });

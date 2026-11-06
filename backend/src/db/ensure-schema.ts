@@ -88,13 +88,17 @@ export async function garantirColunasDeCancelamento(app: App): Promise<number> {
  *
  * Cria, só se faltarem, o tipo `modo_comanda` e as colunas:
  *  - restaurante.modo_comanda (NOT NULL, padrão 'mesa': restaurantes existentes ficam em "mesa");
- *  - comandas.rotulo e comandas_historico.rotulo (texto, opcional).
+ *  - comandas.rotulo e comandas_historico.rotulo (texto, opcional);
+ *  - restaurante.fuso_horario (texto NOT NULL, padrão 'America/Sao_Paulo') e restaurante.fuso_horario_confirmado
+ *    (boolean NOT NULL, padrão false).
  * Idempotente: confere o information_schema antes e usa IF NOT EXISTS, então convive com
  * colunas já criadas à mão no banco e com uma eventual migração do Drizzle.
  * Devolve quantas colunas foram criadas (0 quando o banco já estava em dia).
  */
 const COLUNAS_MODO_COMANDA: Array<[tabela: string, coluna: string, definicao: string]> = [
   ["restaurante", "modo_comanda", "modo_comanda NOT NULL DEFAULT 'mesa'"],
+  ["restaurante", "fuso_horario", "text NOT NULL DEFAULT 'America/Sao_Paulo'"],
+  ["restaurante", "fuso_horario_confirmado", "boolean NOT NULL DEFAULT false"],
   ["comandas", "rotulo", "text"],
   ["comandas_historico", "rotulo", "text"],
 ];
@@ -111,7 +115,7 @@ export async function garantirColunasDeModoComanda(app: App): Promise<number> {
         sql`SELECT table_name, column_name
             FROM information_schema.columns
             WHERE table_schema = current_schema()
-              AND ((table_name = 'restaurante' AND column_name = 'modo_comanda')
+              AND ((table_name = 'restaurante' AND column_name IN ('modo_comanda', 'fuso_horario', 'fuso_horario_confirmado'))
                 OR (table_name IN ('comandas', 'comandas_historico') AND column_name = 'rotulo'))`
       );
       existentes = linhasDe(result);

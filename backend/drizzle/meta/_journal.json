@@ -400,6 +400,13 @@
       "when": 1793905246833,
       "tag": "20261105190046_transacoes_terminal",
       "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1793969255224,
+      "tag": "20261106124735_fuso_horario_restaurante",
+      "breakpoints": true
     }
   ]
 }

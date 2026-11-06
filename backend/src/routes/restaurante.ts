@@ -5,6 +5,7 @@ import type { App } from "../index.js";
 import { requireAuth as customRequireAuth, requireTenant, requireRole } from "../utils/auth.js";
 import { validarRestauranteParaNfce } from "../utils/fiscal-payloads.js";
 import { cnpjValido, idEhCnpj } from "../utils/cnpj.js";
+import { FUSOS_BRASIL } from "../utils/fusos-brasil.js";
 
 // Papéis que podem trocar o modo de comandas do restaurante
 const PAPEIS_TROCA_MODO_COMANDA = ["administrador", "admin", "gerente", "manager", "superadmin", "super_admin"];
@@ -144,6 +145,8 @@ function serializar(r: any) {
     telefone: r.telefone,
     email: r.email,
     modo_comanda: r.modoComanda,
+    fuso_horario: r.fusoHorario,
+    fuso_horario_confirmado: r.fusoHorarioConfirmado,
     created_at: r.createdAt.toISOString(),
     updated_at: r.updatedAt.toISOString(),
   };
@@ -173,6 +176,8 @@ const RESTAURANTE_PROPS = {
   telefone: { type: "string", nullable: true },
   email: { type: "string", nullable: true },
   modo_comanda: { type: "string", enum: ["mesa", "individual"] },
+  fuso_horario: { type: "string" },
+  fuso_horario_confirmado: { type: "boolean" },
   created_at: { type: "string", format: "date-time" },
   updated_at: { type: "string", format: "date-time" },
 } as const;
@@ -471,6 +476,79 @@ export function registerRestauranteRoutes(app: App) {
         return await reply.code(200).send({ modo_comanda: novoModo });
       } catch (error) {
         app.logger.error({ err: error }, "Failed to change modo_comanda");
+        return await reply.code(500).send({ error: "Internal server error" });
+      }
+    }
+  );
+
+  // PUT /api/restaurante/fuso-horario - administrador, admin ou gerente definem o fuso do restaurante
+  app.fastify.put<{ Body: { fuso_horario: string } }>(
+    "/api/restaurante/fuso-horario",
+    {
+      schema: {
+        description: "Set the time zone of the restaurant (administrador, admin or gerente; Brazilian time zones only)",
+        tags: ["restaurante"],
+        body: { type: "object", required: ["fuso_horario"], properties: { fuso_horario: { type: "string" } } },
+        response: {
+          200: {
+            type: "object",
+            properties: { fuso_horario: { type: "string" }, fuso_horario_confirmado: { type: "boolean" } },
+          },
+          400: { type: "object", properties: { error: { type: "string" } } },
+          401: { type: "object", properties: { error: { type: "string" } } },
+          403: { type: "object", properties: { error: { type: "string" } } },
+          404: { type: "object", properties: { error: { type: "string" } } },
+        },
+      },
+    },
+    async (
+      request: FastifyRequest<{ Body: { fuso_horario: string } }>,
+      reply: FastifyReply
+    ) => {
+      const authUser = await customRequireAuth(app, request, reply);
+      if (!authUser) return;
+      const papel = String(authUser.role ?? "").trim().toLowerCase();
+      if (!PAPEIS_TROCA_MODO_COMANDA.includes(papel)) {
+        app.logger.warn({ userId: authUser.id, papel }, "fuso_horario: troca recusada, papel sem permissão");
+        return await reply.code(403).send({ error: "Você não tem permissão para esta ação." });
+      }
+
+      try {
+        let tenantId: string;
+        try {
+          tenantId = requireTenant(authUser);
+        } catch {
+          return await reply.code(404).send({ error: "Nenhum dado cadastrado" });
+        }
+
+        const novoFuso = String(request.body.fuso_horario ?? "").trim();
+        if (!(FUSOS_BRASIL as readonly string[]).includes(novoFuso)) {
+          return await reply.code(400).send({ error: "Fuso horário inválido. Informe um fuso do Brasil." });
+        }
+
+        const resultado = await (app.db as any).transaction(async (tx: any) => {
+          const atual = linhasDe(
+            await tx.execute(sql`SELECT fuso_horario FROM restaurante WHERE id = ${tenantId} FOR UPDATE`)
+          );
+          if (atual.length === 0) return null;
+
+          await tx
+            .update(schema.restaurante)
+            .set({ fusoHorario: novoFuso, fusoHorarioConfirmado: true, updatedAt: new Date() })
+            .where(eq(schema.restaurante.id, tenantId));
+
+          return { de: String(atual[0].fuso_horario) };
+        });
+
+        if (!resultado) {
+          return await reply.code(404).send({ error: "Nenhum dado cadastrado" });
+        }
+
+        app.logger.info({ tenantId, de: resultado.de, para: novoFuso }, "fuso_horario changed");
+
+        return await reply.code(200).send({ fuso_horario: novoFuso, fuso_horario_confirmado: true });
+      } catch (error) {
+        app.logger.error({ err: error }, "Failed to change fuso_horario");
         return await reply.code(500).send({ error: "Internal server error" });
       }
     }
