@@ -50,8 +50,8 @@
             "minSdkVersion": 24,
             "targetSdkVersion": 35,
             "buildArchs": ["arm64-v8a", "armeabi-v7a"],
-            "enableMinifyInReleaseBuilds": true,
-            "enableShrinkResourcesInReleaseBuilds": true
+            "enableMinifyInReleaseBuilds": false,
+            "enableShrinkResourcesInReleaseBuilds": false
           }
         }
       ]
