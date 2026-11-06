@@ -9,9 +9,9 @@ import {
   ActivityIndicator,
   Alert,
   StyleSheet,
-  KeyboardAvoidingView,
   Platform,
 } from 'react-native';
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { Image } from 'expo-image';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -913,7 +913,7 @@ export default function ComandaDetailScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
       <NavBar
         title={headerTitle}
         semConsumo={semConsumo}

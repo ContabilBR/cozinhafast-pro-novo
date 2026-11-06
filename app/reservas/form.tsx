@@ -4,10 +4,10 @@ import {
   Text,
   TextInput,
   ScrollView,
-  KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
 } from "react-native";
+import { TelaComTeclado } from "@/components/TelaComTeclado";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import DateTimePicker from "@react-native-community/datetimepicker";
@@ -312,12 +312,7 @@ export default function ReservaFormScreen() {
         <View style={{ width: 84 }} />
       </View>
 
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-        <ScrollView
-          keyboardShouldPersistTaps="handled"
-          keyboardDismissMode="on-drag"
-          contentContainerStyle={{ padding: 16, paddingBottom: 120 }}
-        >
+      <TelaComTeclado contentContainerStyle={{ padding: 16 }}>
           <Text style={{ ...labelStyle, marginTop: 0 }}>Nome *</Text>
           <TextInput
             value={nome}
@@ -481,8 +476,7 @@ export default function ReservaFormScreen() {
               </Text>
             )}
           </AnimatedPressable>
-        </ScrollView>
-      </KeyboardAvoidingView>
+      </TelaComTeclado>
     </SafeAreaView>
   );
 }

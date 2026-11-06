@@ -7,9 +7,10 @@ import {
   ActivityIndicator,
   FlatList,
   Pressable,
-  KeyboardAvoidingView,
   Platform,
 } from "react-native";
+import { TelaComTeclado } from "@/components/TelaComTeclado";
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Image } from "expo-image";
@@ -163,7 +164,25 @@ export default function NovoPedidoScreen() {
           </Text>
         </View>
 
-        <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 120, gap: 16 }}>
+        <TelaComTeclado
+          contentContainerStyle={{ padding: 16, paddingBottom: 24, gap: 16 }}
+          rodapeStyle={{ padding: 16, backgroundColor: COLORS.surface, borderTopWidth: 1, borderTopColor: COLORS.border, gap: 8 }}
+          rodape={
+            <>
+          <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+            <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 14, color: COLORS.textSecondary }}>Total estimado</Text>
+            <Text style={{ fontFamily: "Outfit_700Bold", fontSize: 18, color: COLORS.primary }}>{cartTotalStr}</Text>
+          </View>
+          <AnimatedPressable
+            onPress={() => { console.log("[NovoPedido] Confirmar pedido pressionado"); handleSubmit(); }}
+            disabled={submitting || cart.length === 0}
+            style={{ backgroundColor: COLORS.primary, borderRadius: 14, height: 52, alignItems: "center", justifyContent: "center" }}
+          >
+            {submitting ? <ActivityIndicator color="#fff" /> : <Text style={{ fontFamily: "Outfit_700Bold", fontSize: 16, color: "#fff" }}>Confirmar Pedido</Text>}
+          </AnimatedPressable>
+            </>
+          }
+        >
           <Text style={{ fontFamily: "Outfit_700Bold", fontSize: 20, color: COLORS.text }}>Itens do pedido</Text>
 
           {cart.map((item) => {
@@ -203,28 +222,14 @@ export default function NovoPedidoScreen() {
           {error ? (
             <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 13, color: COLORS.danger, textAlign: "center" }}>{error}</Text>
           ) : null}
-        </ScrollView>
-
-        <View style={{ position: "absolute", bottom: 0, left: 0, right: 0, padding: 16, backgroundColor: COLORS.surface, borderTopWidth: 1, borderTopColor: COLORS.border, gap: 8 }}>
-          <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-            <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 14, color: COLORS.textSecondary }}>Total estimado</Text>
-            <Text style={{ fontFamily: "Outfit_700Bold", fontSize: 18, color: COLORS.primary }}>{cartTotalStr}</Text>
-          </View>
-          <AnimatedPressable
-            onPress={() => { console.log("[NovoPedido] Confirmar pedido pressionado"); handleSubmit(); }}
-            disabled={submitting || cart.length === 0}
-            style={{ backgroundColor: COLORS.primary, borderRadius: 14, height: 52, alignItems: "center", justifyContent: "center" }}
-          >
-            {submitting ? <ActivityIndicator color="#fff" /> : <Text style={{ fontFamily: "Outfit_700Bold", fontSize: 16, color: "#fff" }}>Confirmar Pedido</Text>}
-          </AnimatedPressable>
-        </View>
+        </TelaComTeclado>
       </SafeAreaView>
     );
   }
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.background }} edges={["top", "left", "right"]}>
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
       {/* Nav bar */}
       <View style={{ flexDirection: "row", alignItems: "center", height: 56, paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: COLORS.border, backgroundColor: COLORS.surface }}>
         <Pressable

@@ -12,8 +12,8 @@ import {
   ImageSourcePropType,
   Platform,
   UIManager,
-  KeyboardAvoidingView,
 } from "react-native";
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { Image } from "expo-image";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter, useLocalSearchParams } from "expo-router";
@@ -629,7 +629,7 @@ export default function NovaComandaScreen() {
       style={{ flex: 1, backgroundColor: COLORS.background }}
       edges={["top", "left", "right"]}
     >
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
       {/* ── Success Modal ── */}
       <Modal visible={showSuccess} transparent animationType="none" statusBarTranslucent>
         <Animated.View

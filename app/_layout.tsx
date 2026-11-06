@@ -6,6 +6,7 @@ import { Stack, useRouter, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { SystemBars } from "react-native-edge-to-edge";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { useColorScheme } from "react-native";
 import { DarkTheme, DefaultTheme, ThemeProvider } from "@react-navigation/native";
@@ -137,12 +138,14 @@ export default function RootLayout() {
         <SafeAreaProvider>
           <WidgetProvider>
             <GestureHandlerRootView style={{ flex: 1 }}>
+              <KeyboardProvider>
               <AuthProvider>
                 <MesaClienteProvider>
                   <RootLayoutNav />
                   <SystemBars style="auto" />
                 </MesaClienteProvider>
               </AuthProvider>
+              </KeyboardProvider>
             </GestureHandlerRootView>
           </WidgetProvider>
         </SafeAreaProvider>
