@@ -10,7 +10,7 @@ import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { getRoleLabel } from '@/utils/helpers';
 
 // Número do WhatsApp de atendimento, com DDI e DDD, só dígitos (ex.: 5511999999999).
-const WHATSAPP_NUMERO = '';
+const WHATSAPP_NUMERO = '5521995679931';
 const EMAIL_CONTATO = 'contato@cozinhafastpro.com.br';
 
 export default function FaleConoscoScreen() {
