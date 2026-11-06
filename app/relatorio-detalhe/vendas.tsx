@@ -10,6 +10,7 @@ import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { SkeletonLine } from '@/components/SkeletonLoader';
 import { apiGet } from '@/utils/api';
 import { formatCurrency } from '@/utils/helpers';
+import { hojeNoAparelho } from '@/utils/exportacao/periodo';
 
 type Periodo = 'hoje' | '7dias' | 'mes';
 interface TotaisVendas {
@@ -96,7 +97,7 @@ function EvolucaoRecebido({ refreshKey }: { refreshKey: number }) {
     setSeries(null);
     setSelecionado(null);
     setTabela(false);
-    const hoje = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const hoje = hojeNoAparelho();
     const inicio = deslocarDia(hoje, 1 - dias);
     const inicioAnterior = deslocarDia(inicio, -dias);
     const fimAnterior = deslocarDia(inicio, -1);
