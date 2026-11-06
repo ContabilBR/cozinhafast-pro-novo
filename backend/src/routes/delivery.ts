@@ -790,6 +790,9 @@ export function registerDeliveryRoutes(app: App) {
 
         const ehGestor = ["gerente", "administrador", "admin", "manager", "superadmin", "super_admin"].includes(role);
 
+        // Fuso lido antes da transação, para não abrir outra conexão com travas seguradas
+        const fusoEstorno = await obterFusoRestaurante(app, restauranteId);
+
         // Tudo dentro de uma transação
         const resultado = await (db as any).transaction(async (tx: any) => {
           // 1) Buscar e travar a entrega
@@ -906,7 +909,6 @@ export function registerDeliveryRoutes(app: App) {
           const { confirmar_estorno, forma_devolucao, detalhe_devolucao, observacao_estorno } = (request as any).body;
           if (pagsConfirmados.length > 0 && confirmar_estorno) {
             const agora12 = new Date();
-            const fusoEstorno = await obterFusoRestaurante(app, restauranteId);
             const autorNome = (authUser as any).name || (authUser as any).nome || "Desconhecido";
             const autorRole = authUser.role || "";
             const FORMA_LABEL: Record<string, string> = {
