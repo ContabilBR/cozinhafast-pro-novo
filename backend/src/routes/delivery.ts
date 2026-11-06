@@ -4,7 +4,7 @@ import type { App } from "../index.js";
 import { requireAuth as customRequireAuth, requireTenant, requireRole } from "../utils/auth.js";
 import * as schema from "../db/schema/schema.js";
 import { realtimeHub } from "../realtime/hub.js";
-import { obterFusoRestaurante } from "../utils/fuso.js";
+import { obterFusoDaRequisicao } from "../utils/fuso.js";
 import { totalDelivery, subtotalDaComanda } from "../services/total-comanda.js";
 
 // Normaliza formas curtas enviadas pelo frontend para os valores aceitos pelo banco
@@ -791,7 +791,7 @@ export function registerDeliveryRoutes(app: App) {
         const ehGestor = ["gerente", "administrador", "admin", "manager", "superadmin", "super_admin"].includes(role);
 
         // Fuso lido antes da transação, para não abrir outra conexão com travas seguradas
-        const fusoEstorno = await obterFusoRestaurante(app, restauranteId);
+        const fusoEstorno = await obterFusoDaRequisicao(app, request, restauranteId);
 
         // Tudo dentro de uma transação
         const resultado = await (db as any).transaction(async (tx: any) => {

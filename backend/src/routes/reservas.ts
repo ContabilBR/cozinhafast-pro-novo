@@ -5,7 +5,7 @@ import * as schema from "../db/schema/schema.js";
 import type { App } from "../index.js";
 import { requireAuth as customRequireAuth, requireTenant } from "../utils/auth.js";
 import { sentarReserva } from "../services/sentar-reserva.js";
-import { obterFusoRestaurante, inicioDoDiaLocal, diaLocalDeInstante } from "../utils/fuso.js";
+import { obterFusoDaRequisicao, inicioDoDiaLocal, diaLocalDeInstante } from "../utils/fuso.js";
 
 const PAPEIS_GERENCIAM_RESERVAS = ["administrador", "admin", "gerente", "manager", "superadmin", "super_admin"];
 const PAPEIS_CRIAM_EDITAM = ["garcom", "garçom", ...PAPEIS_GERENCIAM_RESERVAS];
@@ -125,7 +125,7 @@ export function registerReservasRoutes(app: App) {
 
       try {
         const restauranteId = requireTenant(authUser);
-        const fuso = await obterFusoRestaurante(app, restauranteId);
+        const fuso = await obterFusoDaRequisicao(app, request, restauranteId);
         const queryData = request.query.data;
         const queryStatus = request.query.status;
 

@@ -40,6 +40,21 @@ export async function obterFusoRestaurante(app: App, restauranteId: string): Pro
   }
 }
 
+// Fuso a usar na requisição: o cabeçalho x-fuso-horario, se for exatamente um dos fusos do Brasil.
+// Em qualquer outro caso (ausente, vazio, repetido ou fora da lista) usa o fuso do restaurante.
+export async function obterFusoDaRequisicao(
+  app: App,
+  request: { headers: Record<string, string | string[] | undefined> },
+  restauranteId: string
+): Promise<string> {
+  const valor = request.headers["x-fuso-horario"];
+  if (typeof valor === "string" && valor !== "") {
+    if (fusoValido(valor)) return valor;
+    app.logger.warn({ fuso: valor.slice(0, 64) }, "Cabeçalho x-fuso-horario fora da lista; usando o fuso do restaurante");
+  }
+  return obterFusoRestaurante(app, restauranteId);
+}
+
 // Diferença (em ms) entre a hora de parede no fuso e UTC, no instante informado.
 function deslocamentoMs(instanteMs: number, fuso: string): number {
   const partes = new Intl.DateTimeFormat("en-US", {

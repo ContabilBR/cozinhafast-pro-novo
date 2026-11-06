@@ -2,7 +2,7 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import { sql } from "drizzle-orm";
 import type { App } from "../index.js";
 import { requireAuth as customRequireAuth, requireRole, requireTenant } from "../utils/auth.js";
-import { obterFusoRestaurante, diaLocalDeInstante, fusoSql } from "../utils/fuso.js";
+import { obterFusoDaRequisicao, diaLocalDeInstante, fusoSql } from "../utils/fuso.js";
 
 export function registerComandasDiaRoutes(app: App) {
   // GET /api/comandas-dia - List comandas (mesa) by day
@@ -95,7 +95,7 @@ export function registerComandasDiaRoutes(app: App) {
       if (!(await requireRole(authUser, ["administrador", "gerente", "admin"], reply))) return;
 
       const tenantId = requireTenant(authUser);
-      const fuso = await obterFusoRestaurante(app, tenantId);
+      const fuso = await obterFusoDaRequisicao(app, request, tenantId);
 
       try {
         app.logger.info(

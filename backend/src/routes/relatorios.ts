@@ -3,7 +3,7 @@ import { eq, sum, count, gte, lt, and, sql, not, gt } from "drizzle-orm";
 import * as schema from "../db/schema/schema.js";
 import type { App } from "../index.js";
 import { requireAuth as customRequireAuth, requireTenant, requireRole } from "../utils/auth.js";
-import { obterFusoRestaurante, inicioDoDiaLocal, diaLocalDeInstante, fusoSql, type DiaLocal } from "../utils/fuso.js";
+import { obterFusoDaRequisicao, inicioDoDiaLocal, diaLocalDeInstante, fusoSql, type DiaLocal } from "../utils/fuso.js";
 
 type Periodo = "hoje" | "7dias" | "mes" | "personalizado";
 
@@ -218,7 +218,7 @@ export function registerRelatoriosRoutes(app: App) {
 
       try {
         const tenantId = requireTenant(authUser);
-        const fuso = await obterFusoRestaurante(app, tenantId);
+        const fuso = await obterFusoDaRequisicao(app, request, tenantId);
         const query = request.query as { periodo?: string; dataInicio?: string; dataFim?: string };
         const { inicio, fim, label: periodoLabel } = resolvePeriodo(query.periodo, query.dataInicio, query.dataFim, fuso);
 
@@ -559,7 +559,7 @@ ORDER BY p.nome ASC,p.id ASC LIMIT 50`
 
       try {
         const tenantId = requireTenant(authUser);
-        const fuso = await obterFusoRestaurante(app, tenantId);
+        const fuso = await obterFusoDaRequisicao(app, request, tenantId);
         const query = request.query as { periodo?: string; dataInicio?: string; dataFim?: string };
         const { inicio, fim, label: periodoLabel } = resolvePeriodo(query.periodo, query.dataInicio, query.dataFim, fuso);
         app.logger.info({ tenantId, periodo: query.periodo, inicio, fim }, "Getting resumo");
@@ -1055,7 +1055,7 @@ LIMIT 5
 
       try {
         const tenantId = requireTenant(authUser);
-        const fuso = await obterFusoRestaurante(app, tenantId);
+        const fuso = await obterFusoDaRequisicao(app, request, tenantId);
         const query = request.query as { periodo?: string; dataInicio?: string; dataFim?: string };
         const { inicio, fim, label: periodoLabel } = resolvePeriodo(query.periodo, query.dataInicio, query.dataFim, fuso);
         app.logger.info({ tenantId, periodo: query.periodo, inicio, fim }, "Getting relatorio por mesa");
@@ -1281,7 +1281,7 @@ LIMIT 5
 
       try {
         const tenantId = requireTenant(authUser);
-        const fuso = await obterFusoRestaurante(app, tenantId);
+        const fuso = await obterFusoDaRequisicao(app, request, tenantId);
         const query = request.query as { periodo?: string; dataInicio?: string; dataFim?: string };
 
         // Resolve current period
@@ -2074,7 +2074,7 @@ LIMIT 5
 
       try {
         const tenantId = requireTenant(authUser);
-        const fuso = await obterFusoRestaurante(app, tenantId);
+        const fuso = await obterFusoDaRequisicao(app, request, tenantId);
         const query = request.query as { periodo?: string; dataInicio?: string; dataFim?: string };
 
         // Resolve period
@@ -2644,7 +2644,7 @@ LIMIT 5
 
       try {
         const tenantId = requireTenant(authUser);
-        const fuso = await obterFusoRestaurante(app, tenantId);
+        const fuso = await obterFusoDaRequisicao(app, request, tenantId);
         const query = request.query as { periodo?: string; dataInicio?: string; dataFim?: string };
 
         // Resolve period
@@ -3240,7 +3240,7 @@ LIMIT 5
       if (!(await requireRole(authUser, ["administrador", "gerente"], reply))) return;
 
       const tenantId = requireTenant(authUser);
-      const fuso = await obterFusoRestaurante(app, tenantId);
+      const fuso = await obterFusoDaRequisicao(app, request, tenantId);
       const { periodo, dataInicio, dataFim } = request.query as {
         periodo?: Periodo;
         dataInicio?: string;
@@ -3589,7 +3589,7 @@ LIMIT 5
       if (!(await requireRole(authUser, ["administrador", "gerente"], reply))) return;
 
       const tenantId = requireTenant(authUser);
-      const fuso = await obterFusoRestaurante(app, tenantId);
+      const fuso = await obterFusoDaRequisicao(app, request, tenantId);
       const { periodo, dataInicio, dataFim } = request.query as {
         periodo?: Periodo;
         dataInicio?: string;
@@ -3891,7 +3891,7 @@ LIMIT 5
       if (!(await requireRole(authUser, ["administrador", "gerente"], reply))) return;
 
       const tenantId = requireTenant(authUser);
-      const fuso = await obterFusoRestaurante(app, tenantId);
+      const fuso = await obterFusoDaRequisicao(app, request, tenantId);
       const queryData = request.query as { data?: string };
 
       app.logger.info({ tenantId, data: queryData.data }, "Fetching fechamento-dia report");
@@ -4454,7 +4454,7 @@ LIMIT 5
         if (!session) return;
         if (!(await requireRole(session, ["administrador", "gerente", "admin"], reply))) return;
         const restauranteId = requireTenant(session);
-        const fuso = await obterFusoRestaurante(app, restauranteId);
+        const fuso = await obterFusoDaRequisicao(app, request, restauranteId);
 
         const query = request.query as { periodo?: string; dataInicio?: string; dataFim?: string };
         const { inicio, fim } = resolvePeriodo(query.periodo, query.dataInicio, query.dataFim, fuso);
@@ -4737,7 +4737,7 @@ LIMIT 5
         if (!session) return;
         if (!(await requireRole(session, ["administrador", "gerente"], reply))) return;
         const restauranteId = requireTenant(session);
-        const fuso = await obterFusoRestaurante(app, restauranteId);
+        const fuso = await obterFusoDaRequisicao(app, request, restauranteId);
 
         const query = request.query as { periodo?: string; dataInicio?: string; dataFim?: string };
         const { inicio, fim } = resolvePeriodo(query.periodo, query.dataInicio, query.dataFim, fuso);
