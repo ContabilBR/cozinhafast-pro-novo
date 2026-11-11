@@ -24,7 +24,7 @@
     },
     "android": {
       "softwareKeyboardLayoutMode": "resize",
-      "package": "com.contabilbr.cozinhafastpro",
+      "package": "br.com.contabilbr.cozinhafastpro.Livre",
       "permissions": [
         "BLUETOOTH",
         "BLUETOOTH_ADMIN",
