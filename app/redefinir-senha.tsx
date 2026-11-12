@@ -3,14 +3,12 @@ import {
   View,
   Text,
   TextInput,
-  ScrollView,
-  KeyboardAvoidingView,
-  Platform,
   Animated,
   ActivityIndicator,
   TouchableOpacity,
   Alert,
 } from "react-native";
+import { TelaComTeclado } from "@/components/TelaComTeclado";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { AnimatedPressable } from "@/components/AnimatedPressable";
 import { Lock, Eye, EyeOff, ArrowLeft, CheckCircle, Key } from "lucide-react-native";
@@ -136,19 +134,14 @@ export default function RedefinirSenhaScreen() {
   };
 
   return (
-    <KeyboardAvoidingView
-      style={{ flex: 1, backgroundColor: BG }}
-      behavior={Platform.OS === "ios" ? "padding" : "height"}
-    >
-      <ScrollView
+    <View style={{ flex: 1, backgroundColor: BG }}>
+      <TelaComTeclado
         contentContainerStyle={{
           flexGrow: 1,
           paddingTop: insets.top + 24,
           paddingBottom: insets.bottom + 32,
           paddingHorizontal: 24,
         }}
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
       >
         {/* Back button */}
         {!sucesso && (
@@ -454,7 +447,7 @@ export default function RedefinirSenhaScreen() {
             </View>
           )}
         </Animated.View>
-      </ScrollView>
-    </KeyboardAvoidingView>
+      </TelaComTeclado>
+    </View>
   );
 }

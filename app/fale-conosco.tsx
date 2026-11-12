@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, ScrollView, Pressable, Linking, Platform, Alert, TextInput, ActivityIndicator, KeyboardAvoidingView, Keyboard } from 'react-native';
+import { View, Text, Pressable, Linking, Platform, Alert, TextInput, ActivityIndicator, Keyboard } from 'react-native';
 import { useRouter } from 'expo-router';
+import { TelaComTeclado } from '@/components/TelaComTeclado';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import Constants from 'expo-constants';
@@ -192,7 +193,7 @@ export default function FaleConoscoScreen() {
   const botaoTxt = { fontFamily: 'Outfit_600SemiBold', fontSize: 15, color: '#fff' } as const;
 
   return (
-    <KeyboardAvoidingView style={{ flex: 1, backgroundColor: COLORS.background }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+    <View style={{ flex: 1, backgroundColor: COLORS.background }}>
       <View style={{ paddingTop: insets.top + 8, paddingHorizontal: 16, paddingBottom: 16, backgroundColor: COLORS.surface, borderBottomWidth: 1, borderBottomColor: COLORS.border }}>
         <Pressable
           onPress={voltar}
@@ -208,11 +209,7 @@ export default function FaleConoscoScreen() {
         <Text style={{ fontFamily: 'Outfit_400Regular', fontSize: 14, color: COLORS.textSecondary }}>Ajuda, problemas e sugestões</Text>
       </View>
 
-      <ScrollView
-        contentContainerStyle={{ padding: 16, gap: 16, paddingBottom: insets.bottom + 32 }}
-        keyboardShouldPersistTaps="handled"
-        keyboardDismissMode={Platform.OS === 'ios' ? 'on-drag' : 'none'}
-      >
+      <TelaComTeclado contentContainerStyle={{ padding: 16, gap: 16, paddingBottom: insets.bottom + 32 }}>
         {logado && (
           <View style={card}>
             <Text style={titulo}>Enviar uma mensagem</Text>
@@ -339,7 +336,7 @@ export default function FaleConoscoScreen() {
           <Text style={{ fontFamily: 'Outfit_600SemiBold', fontSize: 15, color: COLORS.text }}>CozinhaFast Pro</Text>
           <Text style={texto}>Versão {versao}</Text>
         </View>
-      </ScrollView>
-    </KeyboardAvoidingView>
+      </TelaComTeclado>
+    </View>
   );
 }

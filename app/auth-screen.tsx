@@ -6,9 +6,9 @@ import {
   Animated,
   ActivityIndicator,
   TouchableOpacity,
-  ScrollView,
 } from "react-native";
 import { useRouter } from "expo-router";
+import { TelaComTeclado } from "@/components/TelaComTeclado";
 import { StatusBar } from "expo-status-bar";
 import { useAuth } from "@/contexts/AuthContext";
 import { AnimatedPressable } from "@/components/AnimatedPressable";
@@ -128,11 +128,8 @@ export default function AuthScreen() {
   return (
     <View style={{ flex: 1, backgroundColor: BG }}>
       <StatusBar style="dark" />
-      <ScrollView
-        style={{ flex: 1 }}
+      <TelaComTeclado
         contentContainerStyle={{ flexGrow: 1, justifyContent: "center", paddingTop: insets.top + 20, paddingBottom: insets.bottom + 40, paddingHorizontal: 24 }}
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
       >
         {/* Hero */}
         <Animated.View
@@ -394,7 +391,7 @@ export default function AuthScreen() {
             </AnimatedPressable>
           </Animated.View>
         )}
-      </ScrollView>
+      </TelaComTeclado>
     </View>
   );
 }

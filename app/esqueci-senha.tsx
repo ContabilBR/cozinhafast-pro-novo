@@ -3,13 +3,11 @@ import {
   View,
   Text,
   TextInput,
-  ScrollView,
-  KeyboardAvoidingView,
-  Platform,
   Animated,
   ActivityIndicator,
   TouchableOpacity,
 } from "react-native";
+import { TelaComTeclado } from "@/components/TelaComTeclado";
 import { useRouter } from "expo-router";
 import { AnimatedPressable } from "@/components/AnimatedPressable";
 import { Mail, ArrowLeft, CheckCircle } from "lucide-react-native";
@@ -82,19 +80,14 @@ export default function EsqueciSenhaScreen() {
   };
 
   return (
-    <KeyboardAvoidingView
-      style={{ flex: 1, backgroundColor: BG }}
-      behavior={Platform.OS === "ios" ? "padding" : "height"}
-    >
-      <ScrollView
+    <View style={{ flex: 1, backgroundColor: BG }}>
+      <TelaComTeclado
         contentContainerStyle={{
           flexGrow: 1,
           paddingTop: insets.top + 24,
           paddingBottom: insets.bottom + 32,
           paddingHorizontal: 24,
         }}
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
       >
         {/* Back button */}
         <TouchableOpacity
@@ -322,7 +315,7 @@ export default function EsqueciSenhaScreen() {
             </View>
           )}
         </Animated.View>
-      </ScrollView>
-    </KeyboardAvoidingView>
+      </TelaComTeclado>
+    </View>
   );
 }
