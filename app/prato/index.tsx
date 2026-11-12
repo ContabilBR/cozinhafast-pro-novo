@@ -1,8 +1,8 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
   View, Text, FlatList, TextInput, TouchableOpacity,
-  Modal, Alert, ActivityIndicator, KeyboardAvoidingView,
-  Platform, Image, ScrollView
+  Modal, Alert, ActivityIndicator,
+  Image, ScrollView
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -10,6 +10,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useColors } from '@/hooks/useColors';
 import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { apiGet, apiPost, apiPut, apiDelete } from '@/utils/api';
+import { TelaComTeclado } from '@/components/TelaComTeclado';
 import { CampoMoeda } from '@/components/CampoMoeda';
 
 interface Categoria { id: string; nome: string; }
@@ -375,18 +376,45 @@ export default function GerenciarPratosScreen() {
       )}
 
       {/* Create/Edit Modal — bottom sheet */}
-      <Modal visible={showModal} transparent animationType="slide" onRequestClose={() => setShowModal(false)}>
-        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+      <Modal visible={showModal} transparent animationType="slide" onRequestClose={() => setShowModal(false)} statusBarTranslucent navigationBarTranslucent>
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.45)' }}>
+        <TelaComTeclado
+          contentContainerStyle={{ flexGrow: 1 }}
+          rodapeStyle={{
+            paddingHorizontal: 24,
+            paddingTop: 12,
+            paddingBottom: 32,
+            borderTopWidth: 1,
+            borderTopColor: COLORS.border,
+            backgroundColor: COLORS.surface,
+          }}
+          rodape={
+              <View style={{ flexDirection: 'row', gap: 12 }}>
+                <TouchableOpacity
+                  onPress={() => { console.log('[Pratos] Botão Cancelar modal pressionado'); setShowModal(false); }}
+                  style={{ flex: 1, height: 48, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border, alignItems: 'center', justifyContent: 'center' }}
+                >
+                  <Text style={{ color: COLORS.textSecondary, fontWeight: '600' }}>Cancelar</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={handleSave}
+                  disabled={saving}
+                  style={{ flex: 1, height: 48, borderRadius: 12, backgroundColor: COLORS.primary, alignItems: 'center', justifyContent: 'center', opacity: saving ? 0.7 : 1 }}
+                >
+                  {saving ? <ActivityIndicator color="#fff" /> : <Text style={{ color: '#fff', fontWeight: '700' }}>Salvar</Text>}
+                </TouchableOpacity>
+              </View>
+          }
+        >
           {/* Backdrop */}
           <TouchableOpacity
-            style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.45)' }}
+            style={{ flex: 1 }}
             activeOpacity={1}
             onPress={() => setShowModal(false)}
           />
           {/* Sheet — plain View, NOT TouchableOpacity */}
           <View
             style={{
-              maxHeight: '90%',
               backgroundColor: COLORS.surface,
               borderTopLeftRadius: 20,
               borderTopRightRadius: 20,
@@ -403,12 +431,7 @@ export default function GerenciarPratosScreen() {
             </View>
 
             {/* Scrollable form */}
-            <ScrollView
-              style={{ flexGrow: 1 }}
-              contentContainerStyle={{ paddingHorizontal: 24, paddingBottom: 8 }}
-              keyboardShouldPersistTaps="handled"
-              showsVerticalScrollIndicator={false}
-            >
+            <View style={{ paddingHorizontal: 24, paddingBottom: 8 }}>
               <Text style={{ fontSize: 14, fontWeight: '600', color: COLORS.text, marginBottom: 6 }}>Nome *</Text>
               <TextInput
                 value={modalNome} onChangeText={setModalNome}
@@ -485,35 +508,10 @@ export default function GerenciarPratosScreen() {
                 </View>
                 <Text style={{ fontSize: 15, color: COLORS.text, fontWeight: '500' }}>Disponível</Text>
               </TouchableOpacity>
-            </ScrollView>
-
-            {/* Fixed action buttons — always visible, outside ScrollView */}
-            <View style={{
-              paddingHorizontal: 24,
-              paddingTop: 12,
-              paddingBottom: 32,
-              borderTopWidth: 1,
-              borderTopColor: COLORS.border,
-              backgroundColor: COLORS.surface,
-            }}>
-              <View style={{ flexDirection: 'row', gap: 12 }}>
-                <TouchableOpacity
-                  onPress={() => { console.log('[Pratos] Botão Cancelar modal pressionado'); setShowModal(false); }}
-                  style={{ flex: 1, height: 48, borderRadius: 12, borderWidth: 1, borderColor: COLORS.border, alignItems: 'center', justifyContent: 'center' }}
-                >
-                  <Text style={{ color: COLORS.textSecondary, fontWeight: '600' }}>Cancelar</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={handleSave}
-                  disabled={saving}
-                  style={{ flex: 1, height: 48, borderRadius: 12, backgroundColor: COLORS.primary, alignItems: 'center', justifyContent: 'center', opacity: saving ? 0.7 : 1 }}
-                >
-                  {saving ? <ActivityIndicator color="#fff" /> : <Text style={{ color: '#fff', fontWeight: '700' }}>Salvar</Text>}
-                </TouchableOpacity>
-              </View>
             </View>
           </View>
-        </KeyboardAvoidingView>
+        </TelaComTeclado>
+        </View>
       </Modal>
 
       {/* Success Toast */}

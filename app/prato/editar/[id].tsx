@@ -23,6 +23,7 @@ import { ChevronDown, Camera, Image as ImageIcon, UtensilsCrossed } from "lucide
 import * as ImagePicker from "expo-image-picker";
 import * as FileSystem from "expo-file-system";
 import type { ImageSourcePropType } from "react-native";
+import { TelaComTeclado } from "@/components/TelaComTeclado";
 import { CampoMoeda } from "@/components/CampoMoeda";
 
 function resolveImageSource(source: string | number | ImageSourcePropType | undefined): ImageSourcePropType {
@@ -256,9 +257,17 @@ export default function EditarPratoScreen() {
       </View>
 
       {/* Scrollable form */}
-      <ScrollView
-        keyboardShouldPersistTaps="handled"
-        contentContainerStyle={{ padding: 20, paddingBottom: 120, gap: 16 }}
+      <TelaComTeclado
+        contentContainerStyle={{ padding: 20, paddingBottom: 20, gap: 16 }}
+        rodapeStyle={{ padding: 16, backgroundColor: COLORS.background, borderTopWidth: 1, borderTopColor: COLORS.border }}
+        rodape={
+          <AnimatedPressable
+            onPress={handleSavePress}
+            style={{ backgroundColor: COLORS.primary, borderRadius: 14, height: 52, alignItems: "center", justifyContent: "center" }}
+          >
+            <Text style={{ color: "#fff", fontSize: 16, fontWeight: "700" }}>Salvar alterações</Text>
+          </AnimatedPressable>
+        }
       >
         {canOpenFicha && <AnimatedPressable accessibilityRole="button" accessibilityLabel="Abrir ficha técnica do prato" onPress={() => router.push(`/prato/ficha-tecnica/${id}` as any)} style={{ minHeight: 48, borderRadius: 12, padding: 12, backgroundColor: COLORS.primaryMuted, flexDirection: "row", alignItems: "center", gap: 8 }}>
           <Ionicons name="clipboard-outline" size={20} color={COLORS.primary} />
@@ -405,17 +414,7 @@ export default function EditarPratoScreen() {
         {error ? (
           <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 13, color: COLORS.danger, textAlign: "center" }}>{error}</Text>
         ) : null}
-      </ScrollView>
-
-      {/* Fixed bottom save button */}
-      <View style={{ position: "absolute", bottom: 0, left: 0, right: 0, padding: 16, backgroundColor: COLORS.background, borderTopWidth: 1, borderTopColor: COLORS.border }}>
-        <AnimatedPressable
-          onPress={handleSavePress}
-          style={{ backgroundColor: COLORS.primary, borderRadius: 14, height: 52, alignItems: "center", justifyContent: "center" }}
-        >
-          <Text style={{ color: "#fff", fontSize: 16, fontWeight: "700" }}>Salvar alterações</Text>
-        </AnimatedPressable>
-      </View>
+      </TelaComTeclado>
 
       {/* Category Modal */}
       <Modal visible={showCatModal} transparent animationType="slide" onRequestClose={() => setShowCatModal(false)}>

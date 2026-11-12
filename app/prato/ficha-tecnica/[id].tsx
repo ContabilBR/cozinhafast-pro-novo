@@ -1,5 +1,5 @@
 import React, { useCallback, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Platform, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, Modal, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
@@ -7,6 +7,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '@/contexts/AuthContext';
 import { useColors } from '@/hooks/useColors';
 import { AnimatedPressable } from '@/components/AnimatedPressable';
+import { TelaComTeclado } from '@/components/TelaComTeclado';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { apiDelete, apiGet, apiPost, apiPut } from '@/utils/api';
 import { aguardarTodas } from '@/utils/promessasSettled';
@@ -195,11 +196,19 @@ function Ficha({ id }: { id: string }) {
       {missing && !dados.aviso && <Text style={[styles.note, { color: colors.warning }]}>Há insumos com custo indisponível. Atualize o cadastro no Estoque.</Text>}
       <Text style={[styles.note, { color: colors.textSecondary }]}>Custo calculado com o custo atual dos insumos. Não guarda histórico.</Text>
     </View>}
-    <Modal visible={!!panel} transparent animationType="slide" onRequestClose={() => { if (!busy) setPanel(null); }}>
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.5)' }}>
-        <View accessibilityViewIsModal style={[styles.panel, { backgroundColor: colors.surface, paddingBottom: Math.max(insets.bottom, 20) }]}>
+    <Modal visible={!!panel} transparent animationType="slide" onRequestClose={() => { if (!busy) setPanel(null); }} statusBarTranslucent navigationBarTranslucent>
+      <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)' }}>
+      <TelaComTeclado
+        contentContainerStyle={{ flexGrow: 1, justifyContent: 'flex-end' }}
+        rodapeStyle={{ backgroundColor: colors.surface, paddingHorizontal: 20, paddingBottom: Math.max(insets.bottom, 20), gap: 12 }}
+        rodape={<>
+          {busy ? <ActivityIndicator color={colors.primary} /> : button('Salvar', () => { void save(); }, !selected)}
+          <AnimatedPressable accessibilityRole="button" accessibilityLabel="Cancelar" disabled={busy} onPress={() => setPanel(null)} style={styles.button}><Text style={muted}>Cancelar</Text></AnimatedPressable>
+        </>}
+      >
+        <View accessibilityViewIsModal style={[styles.panel, { backgroundColor: colors.surface, paddingBottom: 12 }]}>
           <View style={styles.row}><Text style={[styles.title, { color: colors.text }]}>{panel?.item ? 'Alterar quantidade' : 'Adicionar insumo'}</Text><AnimatedPressable accessibilityRole="button" accessibilityLabel="Fechar painel" disabled={busy} onPress={() => setPanel(null)} style={styles.back}><Ionicons name="close" size={24} color={colors.text} /></AnimatedPressable></View>
-          <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ gap: 12 }}>
+          <View style={{ gap: 12 }}>
             {panel?.item ? <Text style={[styles.bold, { color: colors.text }]}>{panel.item.insumoNome} · {panel.item.insumoUnidade}</Text> : dados?.aviso ? <><Text style={muted}>{dados.aviso}</Text>{button('Tentar novamente', () => { setPanel(null); void load(); })}</> : available.length === 0 ? <><Text style={text}>Não há insumos ativos disponíveis para adicionar. Cadastre ou ative um insumo na tela Estoque.</Text>{button('Abrir Estoque', () => { setPanel(null); router.push('/(tabs)/(gestao)/estoque' as any); })}</> : <>
               <TextInput accessibilityLabel="Buscar insumo por nome" placeholder="Buscar insumo..." placeholderTextColor={colors.textSecondary} value={search} onChangeText={setSearch} style={input} editable={!busy} />
               <ScrollView nestedScrollEnabled style={{ maxHeight: 200 }} keyboardShouldPersistTaps="handled">
@@ -209,11 +218,10 @@ function Ficha({ id }: { id: string }) {
             </>}
             {selected && <><Text style={[styles.bold, { color: colors.text }]}>Quantidade</Text><View style={{ flexDirection: 'row', gap: 12, alignItems: 'center' }}><TextInput accessibilityLabel={`Quantidade em ${selected.unidade}`} value={qtd} onChangeText={setQtd} keyboardType="decimal-pad" placeholder="0,000" placeholderTextColor={colors.textSecondary} style={[input, { flex: 1 }]} editable={!busy} maxLength={30} /><Text style={text}>{selected.unidade}</Text></View><Text style={muted}>Quantidade na mesma unidade do insumo (por exemplo, {selected.unidade})</Text></>}
             {!!formError && <Text accessibilityRole="alert" style={[styles.body, { color: colors.danger }]}>{formError}</Text>}
-          </ScrollView>
-          {busy ? <ActivityIndicator color={colors.primary} /> : button('Salvar', () => { void save(); }, !selected)}
-          <AnimatedPressable accessibilityRole="button" accessibilityLabel="Cancelar" disabled={busy} onPress={() => setPanel(null)} style={styles.button}><Text style={muted}>Cancelar</Text></AnimatedPressable>
+          </View>
         </View>
-      </KeyboardAvoidingView>
+      </TelaComTeclado>
+      </View>
     </Modal>
     <ConfirmDialog destructive visible={!!remover} title="Remover insumo da ficha técnica?" message={`Remover ${remover?.insumoNome ?? ''} da ficha técnica de ${dados?.prato.nome ?? ''}? O insumo continua cadastrado no estoque.`} confirmLabel="Remover" cancelLabel="Cancelar" onConfirm={() => { void remove(); }} onCancel={() => setRemover(null)} />
   </SafeAreaView>;

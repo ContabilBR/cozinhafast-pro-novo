@@ -7,14 +7,13 @@ import {
   Switch,
   ActivityIndicator,
   Alert,
-  KeyboardAvoidingView,
-  Platform,
   Modal,
   TouchableOpacity,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { Image } from "expo-image";
 import { useRouter } from "expo-router";
+import { TelaComTeclado } from "@/components/TelaComTeclado";
 import { Ionicons } from "@expo/vector-icons";
 import { useColors } from "@/hooks/useColors";
 import { AnimatedPressable } from "@/components/AnimatedPressable";
@@ -182,10 +181,6 @@ export default function NovoPratoScreen() {
 
   return (
     <>
-    <KeyboardAvoidingView
-      style={{ flex: 1 }}
-      behavior={Platform.OS === "ios" ? "padding" : "height"}
-    >
       <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.background }} edges={["top", "left", "right"]}>
         {/* Nav bar */}
         <View style={{
@@ -219,10 +214,34 @@ export default function NovoPratoScreen() {
           </Text>
         </View>
 
-        <ScrollView
-          style={{ flex: 1 }}
+        <TelaComTeclado
           contentContainerStyle={{ padding: 20, gap: 16 }}
-          keyboardShouldPersistTaps="handled"
+          rodapeStyle={{
+            paddingHorizontal: 20,
+            paddingTop: 12,
+            paddingBottom: Math.max(insets.bottom, 16),
+            borderTopWidth: 1,
+            borderTopColor: COLORS.border,
+            backgroundColor: COLORS.background,
+          }}
+          rodape={
+            <>
+              {error ? (
+                <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 13, color: COLORS.danger, textAlign: "center", marginBottom: 8 }}>{error}</Text>
+              ) : null}
+              <AnimatedPressable
+                onPress={() => { console.log("[NovoPrato] Salvar prato pressionado"); handleSave(); }}
+                disabled={isBusy}
+                style={{ backgroundColor: COLORS.primary, borderRadius: 14, height: 52, alignItems: "center", justifyContent: "center", opacity: isBusy ? 0.7 : 1 }}
+              >
+                {isBusy ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={{ fontFamily: "Outfit_700Bold", fontSize: 16, color: "#fff" }}>Salvar prato</Text>
+                )}
+              </AnimatedPressable>
+            </>
+          }
         >
           <FormField label="Nome *">
             <TextInput
@@ -350,35 +369,9 @@ export default function NovoPratoScreen() {
             />
           </View>
 
-        </ScrollView>
-
-        {/* Fixed save button */}
-        <View style={{
-          paddingHorizontal: 20,
-          paddingTop: 12,
-          paddingBottom: Math.max(insets.bottom, 16),
-          borderTopWidth: 1,
-          borderTopColor: COLORS.border,
-          backgroundColor: COLORS.background,
-        }}>
-          {error ? (
-            <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 13, color: COLORS.danger, textAlign: "center", marginBottom: 8 }}>{error}</Text>
-          ) : null}
-          <AnimatedPressable
-            onPress={() => { console.log("[NovoPrato] Salvar prato pressionado"); handleSave(); }}
-            disabled={isBusy}
-            style={{ backgroundColor: COLORS.primary, borderRadius: 14, height: 52, alignItems: "center", justifyContent: "center", opacity: isBusy ? 0.7 : 1 }}
-          >
-            {isBusy ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <Text style={{ fontFamily: "Outfit_700Bold", fontSize: 16, color: "#fff" }}>Salvar prato</Text>
-            )}
-          </AnimatedPressable>
-        </View>
+        </TelaComTeclado>
 
       </SafeAreaView>
-    </KeyboardAvoidingView>
 
       {/* Category Modal */}
       <Modal visible={showCatModal} transparent animationType="slide" onRequestClose={() => setShowCatModal(false)}>

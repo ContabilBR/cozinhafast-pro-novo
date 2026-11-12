@@ -1,5 +1,5 @@
 import React, { useCallback, useRef, useState } from 'react';
-import { ActivityIndicator, Keyboard, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Keyboard, Platform, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
@@ -9,6 +9,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { useAuth } from '@/contexts/AuthContext';
 import { useColors } from '@/hooks/useColors';
+import { TelaComTeclado } from '@/components/TelaComTeclado';
 import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { BACKEND_URL } from '@/utils/api';
@@ -101,7 +102,6 @@ function Importar({ token }: { token: string }) {
   const lock = useRef(false);
   const currentPreview = useRef<Previa | null>(null);
   const input = useRef<TextInput>(null);
-  const scroll = useRef<ScrollView>(null);
   const inputTop = useRef(0);
   const controllers = useRef(new Set<AbortController>());
   useFocusEffect(useCallback(() => {
@@ -236,14 +236,14 @@ function Importar({ token }: { token: string }) {
   const resultMap = new Map(preview?.resposta.resultados.map(row => [preview.enviadas[row.linha - 1].numero, row]));
   const bodyStyle = [styles.body, { color: colors.text }];
   const button = (label: string, action: () => void, secondary = false) => <AnimatedPressable accessibilityRole="button" accessibilityLabel={label} disabled={!!busy} onPress={action} style={[styles.button, { backgroundColor: secondary ? colors.primaryMuted : colors.primary }]}><Text style={[styles.bold, { color: secondary ? colors.primary : '#fff' }]}>{label}</Text></AnimatedPressable>;
-  const correct = () => { setDialog(null); publishPreview(null); input.current?.focus(); scroll.current?.scrollTo({ y: inputTop.current, animated: true }); };
+  const correct = () => { setDialog(null); publishPreview(null); input.current?.focus(); };
   return <SafeAreaView edges={['top', 'left', 'right', 'bottom']} style={{ flex: 1, backgroundColor: colors.background }}>
     <View style={[styles.header, { borderBottomColor: colors.border }]}>
       <AnimatedPressable accessibilityRole="button" accessibilityLabel="Voltar" disabled={!!busy} onPress={() => router.back()} style={styles.back}><Ionicons name="chevron-back" size={26} color={colors.primary} /></AnimatedPressable>
       <Text style={[styles.title, { color: colors.text }]}>Importar fichas técnicas</Text>
     </View>
-    <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-      <ScrollView ref={scroll} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" contentContainerStyle={{ padding: 16, gap: 18, paddingBottom: 32 }}>
+    <View style={{ flex: 1 }}>
+      <TelaComTeclado contentContainerStyle={{ padding: 16, gap: 18, paddingBottom: 32 }}>
         <View style={{ gap: 10 }}>
           <Text style={[styles.heading, { color: colors.text }]}>1. Prepare a planilha</Text>
           <Text style={bodyStyle}>Use uma linha por insumo, com as colunas Prato, Insumo, Quantidade e Unidade. Os nomes precisam corresponder aos cadastros; maiúsculas e acentos não fazem diferença.</Text>
@@ -289,8 +289,8 @@ function Importar({ token }: { token: string }) {
         </>}
         {!!busy && <View style={styles.row}><ActivityIndicator color={colors.primary} /><Text style={bodyStyle}>{busy === 'modelo' ? 'Preparando modelo...' : busy === 'conferir' ? 'Conferindo linhas...' : 'Importando fichas técnicas...'}</Text></View>}
         {!!error && <Text accessibilityRole="alert" style={[styles.body, { color: colors.danger }]}>{error}</Text>}
-      </ScrollView>
-    </KeyboardAvoidingView>
+      </TelaComTeclado>
+    </View>
     <ConfirmDialog visible={!!dialog} title="Confirmar importação?" message={`Vai criar ${dialog?.preview.resposta.resumo.novas ?? 0} e atualizar ${dialog?.preview.resposta.resumo.atualizam ?? 0} itens de ficha técnica. Nada será apagado.${errors > 0 ? ` As linhas com erro (${errors}) não serão importadas.` : ''}`} confirmLabel="Importar" cancelLabel="Cancelar" onConfirm={() => { void importRows(); }} onCancel={() => setDialog(null)} />
   </SafeAreaView>;
 }

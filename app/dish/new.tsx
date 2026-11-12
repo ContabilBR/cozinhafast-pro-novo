@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   TouchableOpacity,
 } from "react-native";
+import { TelaComTeclado } from "@/components/TelaComTeclado";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Image } from "expo-image";
 import { useRouter } from "expo-router";
@@ -134,7 +135,7 @@ export default function NewDishScreen() {
         </Text>
       </View>
 
-      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 20, gap: 16, paddingBottom: 40 }} keyboardShouldPersistTaps="handled">
+      <TelaComTeclado contentContainerStyle={{ padding: 20, gap: 16, paddingBottom: 40 }}>
         <View style={{ height: 160, borderRadius: 16, backgroundColor: COLORS.surfaceSecondary, overflow: "hidden", borderWidth: 1, borderColor: COLORS.border }}>
           {imageUrl ? (
             <Image source={imageSource} style={{ width: "100%", height: "100%" }} contentFit="cover" transition={200} />
@@ -193,7 +194,7 @@ export default function NewDishScreen() {
         >
           {submitting ? <ActivityIndicator color="#fff" /> : <Text style={{ fontFamily: "Outfit_700Bold", fontSize: 16, color: "#fff" }}>Criar prato</Text>}
         </AnimatedPressable>
-      </ScrollView>
+      </TelaComTeclado>
     </SafeAreaView>
   );
 }
