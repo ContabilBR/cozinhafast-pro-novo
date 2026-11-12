@@ -3,8 +3,15 @@ import { CORES, LEGENDA, linhaCompacta, linhasDoRestaurante, periodoTexto } from
 import type { ColunaDef, CorBloco, RelatorioDef, TipoColuna, Valor } from './definicao';
 
 // Versão do navegador do exceljs (traz seus próprios polyfills; a versão "node" não roda no app).
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const ExcelJS = require('exceljs/dist/exceljs.min.js') as typeof ExcelJSTipos;
+// Carregada só ao gerar a planilha: uma falha da biblioteca não pode derrubar o PDF nem a tela.
+let exceljsCarregado: typeof ExcelJSTipos | null = null;
+function carregarExcelJS(): typeof ExcelJSTipos {
+  if (!exceljsCarregado) {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    exceljsCarregado = require('exceljs/dist/exceljs.min.js') as typeof ExcelJSTipos;
+  }
+  return exceljsCarregado;
+}
 
 const FONTE = 'Calibri';
 const TAMANHO = 10;
@@ -244,6 +251,7 @@ function montarTabela(wb: ExcelJSTipos.Workbook, r: RelatorioDef, tabela: Relato
 
 /** Gera a pasta de trabalho (base64) a partir da definição do relatório. */
 export async function gerarExcelBase64(r: RelatorioDef): Promise<string> {
+  const ExcelJS = carregarExcelJS();
   const wb = new ExcelJS.Workbook();
   wb.creator = r.contexto.geradoPor; wb.created = new Date();
   const usados = new Set<string>();

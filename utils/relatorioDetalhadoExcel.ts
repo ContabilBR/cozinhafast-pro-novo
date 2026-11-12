@@ -1,5 +1,6 @@
 import * as XLSX from 'xlsx';
 import { apiGet } from '@/utils/api';
+import { aguardarTodas } from '@/utils/promessasSettled';
 import { MOTIVOS_DESCONTO } from '@/utils/desconto';
 import {
   FORMATOS, Planilha, Valor, celulaInteiro, celulaMoeda, dataBR, dataHoraBrasil,
@@ -362,7 +363,7 @@ function assertFechamento(data: FechamentoDia): void {
 }
 interface ContextoExportacao { restaurante: string; cnpj: string; geradoPor: string }
 async function contextoExportacao(): Promise<ContextoExportacao> {
-  const [restaurante, usuario] = await Promise.allSettled([
+  const [restaurante, usuario] = await aguardarTodas([
     apiGet<any>('/api/restaurante'), apiGet<any>('/api/me'),
   ]);
   const r = restaurante.status === 'fulfilled' ? (restaurante.value?.restaurante ?? restaurante.value) : null;
@@ -500,7 +501,7 @@ export async function appendDetailedReportSheets(workbook: XLSX.WorkBook, period
     { name: 'Delivery por bairro', load: async () => deliverySheets(await apiGet<Delivery>(`/api/relatorios/delivery-bairros${query}`)) },
   ];
   // Construção de cada seção também fica isolada: uma resposta incompleta não bloqueia as demais.
-  const results = await Promise.allSettled(sections.map(section => section.load()));
+  const results = await aguardarTodas(sections.map(section => section.load()));
   const warnings: Rows = [['Seção não carregada', 'Aviso']];
   results.forEach((result, index) => {
     if (result.status === 'fulfilled') {

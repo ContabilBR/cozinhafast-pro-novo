@@ -9,6 +9,7 @@ import { useColors } from '@/hooks/useColors';
 import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { apiDelete, apiGet, apiPost, apiPut } from '@/utils/api';
+import { aguardarTodas } from '@/utils/promessasSettled';
 import { formatCurrency } from '@/utils/helpers';
 
 type Prato = { id: string; nome: string; preco: number };
@@ -96,7 +97,7 @@ function Ficha({ id }: { id: string }) {
     setLoading(true); setError('');
     try {
       if (!id) throw new Error('Prato não informado.');
-      const [prato, ficha, insumos] = await Promise.allSettled([
+      const [prato, ficha, insumos] = await aguardarTodas([
         apiGet<unknown>(`/api/pratos/${encodeURIComponent(id)}`), apiGet<unknown>(endpoint), apiGet<unknown>('/api/insumos'),
       ]);
       if (!active.current || request !== version.current) return;

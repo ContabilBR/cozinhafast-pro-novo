@@ -2,13 +2,14 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import { apiGet } from '@/utils/api';
+import { aguardarTodas } from '@/utils/promessasSettled';
 import { gerarExcelBase64 } from './excel';
 import { gerarHtmlPdf } from './pdf';
 import type { Contexto, RelatorioDef } from './definicao';
 
 /** Dados do cabeçalho: cadastro em Gestão > Restaurante e o usuário que gera. Campos vazios ficam vazios. */
 export async function carregarContexto(): Promise<Contexto> {
-  const [rest, user] = await Promise.allSettled([apiGet<any>('/api/restaurante'), apiGet<any>('/api/me')]);
+  const [rest, user] = await aguardarTodas([apiGet<any>('/api/restaurante'), apiGet<any>('/api/me')]);
   const r = rest.status === 'fulfilled' ? (rest.value?.restaurante ?? rest.value) : null;
   const u = user.status === 'fulfilled' ? (user.value?.user ?? user.value?.usuario ?? user.value) : null;
   const t = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : '');
