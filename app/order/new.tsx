@@ -1,8 +1,8 @@
+import { TelaComTeclado } from "@/components/TelaComTeclado";
 import React, { useEffect, useState, useCallback } from "react";
 import {
   View,
   Text,
-  ScrollView,
   TextInput,
   ActivityIndicator,
   TouchableOpacity,
@@ -90,7 +90,7 @@ export default function NewOrderScreen() {
         </Text>
       </View>
 
-      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 20, gap: 20, paddingBottom: 40 }} keyboardShouldPersistTaps="handled">
+      <TelaComTeclado contentContainerStyle={{ padding: 20, gap: 20, paddingBottom: 40 }}>
         {/* Table picker */}
         <View style={{ gap: 10 }}>
           <Text style={{ fontFamily: "Outfit_700Bold", fontSize: 17, color: COLORS.text }}>Selecionar Mesa</Text>
@@ -165,7 +165,7 @@ export default function NewOrderScreen() {
         >
           {submitting ? <ActivityIndicator color="#fff" /> : <Text style={{ fontFamily: "Outfit_700Bold", fontSize: 16, color: "#fff" }}>Abrir Comanda</Text>}
         </AnimatedPressable>
-      </ScrollView>
+      </TelaComTeclado>
     </SafeAreaView>
   );
 }

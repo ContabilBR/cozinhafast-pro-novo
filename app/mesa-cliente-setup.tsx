@@ -1,5 +1,6 @@
+import { TelaComTeclado } from "@/components/TelaComTeclado";
 import React, { useState, useEffect, useCallback } from "react";
-import { View, Text, FlatList, Pressable, ActivityIndicator, Alert, TextInput, KeyboardAvoidingView, Platform } from "react-native";
+import { View, Text, FlatList, Pressable, ActivityIndicator, Alert, TextInput } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -118,8 +119,9 @@ export default function MesaClienteSetupScreen() {
 
   if (!user) {
     return (
-      <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={{ flex: 1, backgroundColor: COLORS.background }}>
-        <View style={{ flex: 1, justifyContent: "center", padding: 24, gap: 12 }}>
+      <View style={{ flex: 1, backgroundColor: COLORS.background }}>
+        <TelaComTeclado contentContainerStyle={{ flexGrow: 1 }}>
+        <View style={{ flexGrow: 1, justifyContent: "center", padding: 24, gap: 12 }}>
           <Ionicons name="tablet-landscape-outline" size={40} color={COLORS.primary} style={{ alignSelf: "center", marginBottom: 8 }} />
           <Text style={{ fontFamily: "Outfit_700Bold", fontSize: 20, color: COLORS.text, textAlign: "center" }}>Login de gerente</Text>
           <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 13, color: COLORS.textSecondary, textAlign: "center", marginBottom: 8 }}>Entre para configurar o modo mesa deste tablet.</Text>
@@ -133,7 +135,8 @@ export default function MesaClienteSetupScreen() {
             <Text style={{ fontFamily: "Outfit_500Medium", fontSize: 13, color: COLORS.textSecondary }}>Voltar ao cardápio</Text>
           </Pressable>
         </View>
-      </KeyboardAvoidingView>
+        </TelaComTeclado>
+      </View>
     );
   }
 

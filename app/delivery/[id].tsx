@@ -1,3 +1,4 @@
+import { TelaComTeclado } from "@/components/TelaComTeclado";
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { View, Text, ScrollView, Pressable, Alert, ActivityIndicator, TextInput, Modal, Platform } from "react-native";
 import { useRouter, useLocalSearchParams } from "expo-router";
@@ -361,7 +362,7 @@ export default function DeliveryDetalhes() {
         <Pressable onPress={() => { console.log("[DeliveryDetalhes] Back button pressed"); router.back(); }}><Ionicons name="arrow-back" size={24} color={COLORS.text} /></Pressable>
         <Text style={{ fontSize: 20, fontWeight: "700", color: COLORS.text }}>Pedido #{(e.id || "").slice(0, 6)}</Text>
       </View>
-      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 120 }}>
+      <TelaComTeclado contentContainerStyle={{ padding: 16, paddingBottom: 120 }}>
         {/* Timeline */}
         <View style={{ backgroundColor: COLORS.surface, borderRadius: 12, padding: 14, borderWidth: 0.5, borderColor: COLORS.surfaceSecondary, marginBottom: 12 }}>
           <Text style={{ fontSize: 12, fontWeight: "600", color: COLORS.primary, marginBottom: 12, textTransform: "uppercase", letterSpacing: 0.5 }}>Status da entrega</Text>
@@ -692,17 +693,49 @@ export default function DeliveryDetalhes() {
             })()}
           </View>
         )}
-      </ScrollView>
+      </TelaComTeclado>
 
       {/* Modal de cancelamento */}
       <Modal
         visible={showCancelModal}
         transparent
         animationType="slide"
+        statusBarTranslucent
+        navigationBarTranslucent
         onRequestClose={() => setShowCancelModal(false)}
       >
-        <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" }}>
-          <View style={{ backgroundColor: COLORS.background, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, paddingBottom: 40 }}>
+        <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)" }}>
+          <TelaComTeclado
+            contentContainerStyle={{ flexGrow: 1, justifyContent: "flex-end" }}
+            rodapeStyle={{ backgroundColor: COLORS.background, paddingHorizontal: 20, paddingTop: 16, paddingBottom: 40 }}
+            rodape={
+              (() => {
+              const cancelBtnDisabled = cancelando
+                || !cancelMotivo
+                || (cancelMotivo === "outro" && !cancelDetalhe.trim())
+                || (data?.exige_estorno && (!cancelFormaEstorno || (cancelFormaEstorno === "outra" && !cancelDetalheEstorno.trim()) || !cancelConfirmacaoEstorno));
+              const cancelBtnLabel = data?.exige_estorno ? "Cancelar e registrar estorno" : "Confirmar cancelamento";
+              return (
+                <View style={{ flexDirection: "row", gap: 10 }}>
+                  <Pressable
+                    onPress={() => { console.log("[DeliveryDetalhes] Cancel modal dismissed"); setShowCancelModal(false); setCancelMotivo(""); setCancelDetalhe(""); setCancelFormaEstorno(""); setCancelDetalheEstorno(""); setCancelObsEstorno(""); setCancelConfirmacaoEstorno(false); }}
+                    style={{ flex: 1, borderWidth: 1, borderColor: COLORS.border, borderRadius: 10, padding: 14, alignItems: "center" }}
+                  >
+                    <Text style={{ color: COLORS.text, fontWeight: "500" }}>Voltar</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={confirmarCancelamento}
+                    disabled={cancelBtnDisabled}
+                    style={{ flex: 2, backgroundColor: cancelBtnDisabled ? COLORS.textTertiary : "#EF4444", borderRadius: 10, padding: 14, alignItems: "center" }}
+                  >
+                    {cancelando ? <ActivityIndicator color="white" size="small" /> : <Text style={{ color: "white", fontWeight: "600" }}>{cancelBtnLabel}</Text>}
+                  </Pressable>
+                </View>
+              );
+              })()
+            }
+          >
+          <View style={{ backgroundColor: COLORS.background, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, paddingBottom: 0 }}>
             <Text style={{ fontSize: 18, fontWeight: "700", color: COLORS.text, marginBottom: 16 }}>Cancelar pedido</Text>
 
             {data?.exige_estorno && (
@@ -837,32 +870,8 @@ export default function DeliveryDetalhes() {
               </View>
             )}
 
-            {/* Botões */}
-            {(() => {
-              const cancelBtnDisabled = cancelando
-                || !cancelMotivo
-                || (cancelMotivo === "outro" && !cancelDetalhe.trim())
-                || (data?.exige_estorno && (!cancelFormaEstorno || (cancelFormaEstorno === "outra" && !cancelDetalheEstorno.trim()) || !cancelConfirmacaoEstorno));
-              const cancelBtnLabel = data?.exige_estorno ? "Cancelar e registrar estorno" : "Confirmar cancelamento";
-              return (
-                <View style={{ flexDirection: "row", gap: 10, marginTop: 16 }}>
-                  <Pressable
-                    onPress={() => { console.log("[DeliveryDetalhes] Cancel modal dismissed"); setShowCancelModal(false); setCancelMotivo(""); setCancelDetalhe(""); setCancelFormaEstorno(""); setCancelDetalheEstorno(""); setCancelObsEstorno(""); setCancelConfirmacaoEstorno(false); }}
-                    style={{ flex: 1, borderWidth: 1, borderColor: COLORS.border, borderRadius: 10, padding: 14, alignItems: "center" }}
-                  >
-                    <Text style={{ color: COLORS.text, fontWeight: "500" }}>Voltar</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={confirmarCancelamento}
-                    disabled={cancelBtnDisabled}
-                    style={{ flex: 2, backgroundColor: cancelBtnDisabled ? COLORS.textTertiary : "#EF4444", borderRadius: 10, padding: 14, alignItems: "center" }}
-                  >
-                    {cancelando ? <ActivityIndicator color="white" size="small" /> : <Text style={{ color: "white", fontWeight: "600" }}>{cancelBtnLabel}</Text>}
-                  </Pressable>
-                </View>
-              );
-            })()}
           </View>
+          </TelaComTeclado>
         </View>
       </Modal>
 
@@ -871,11 +880,11 @@ export default function DeliveryDetalhes() {
         visible={showConfirmarModal}
         transparent
         animationType="slide"
+        statusBarTranslucent
+        navigationBarTranslucent
         onRequestClose={() => setShowConfirmarModal(false)}
       >
-        <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" }}>
-          <View style={{ backgroundColor: COLORS.background, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, paddingBottom: 40 }}>
-            <Text style={{ fontSize: 18, fontWeight: "700", color: COLORS.text, marginBottom: 4 }}>Confirmar entrega</Text>
+        <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)" }}>
             {(() => {
               const totalDue = parseFloat(data?.comanda?.total || "0");
               const jaFoiPago = (data?.pagamentos || []).some((p: any) => p.status === "confirmado");
@@ -917,8 +926,32 @@ export default function DeliveryDetalhes() {
                 return null;
               })();
 
+              const botoes = (
+                  <View style={{ flexDirection: "row", gap: 10 }}>
+                    <Pressable
+                      onPress={() => { console.log("[DeliveryDetalhes] Confirmar modal dismissed"); setShowConfirmarModal(false); setConfirmarErro(null); }}
+                      style={{ flex: 1, borderWidth: 1, borderColor: COLORS.border, borderRadius: 10, padding: 14, alignItems: "center" }}
+                    >
+                      <Text style={{ color: COLORS.text, fontWeight: "500" }}>Cancelar</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={executarConfirmacao}
+                      disabled={btnDisabled}
+                      style={{ flex: 2, borderRadius: 10, padding: 14, alignItems: "center", backgroundColor: btnDisabled ? COLORS.textTertiary : "#22C55E" }}
+                    >
+                      {updating ? <ActivityIndicator color="white" size="small" /> : <Text style={{ color: "white", fontWeight: "600" }}>Confirmar entrega</Text>}
+                    </Pressable>
+                  </View>
+              );
+
               return (
-                <>
+                <TelaComTeclado
+                  contentContainerStyle={{ flexGrow: 1, justifyContent: "flex-end" }}
+                  rodapeStyle={{ backgroundColor: COLORS.background, paddingHorizontal: 20, paddingTop: 8, paddingBottom: 40 }}
+                  rodape={botoes}
+                >
+                <View style={{ backgroundColor: COLORS.background, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, paddingBottom: 0 }}>
+                  <Text style={{ fontSize: 18, fontWeight: "700", color: COLORS.text, marginBottom: 4 }}>Confirmar entrega</Text>
                   <Text style={{ fontSize: 22, fontWeight: "700", color: COLORS.primary, marginBottom: 16 }}>
                     Total: {formatCurrency(totalDue)}
                   </Text>
@@ -1010,26 +1043,10 @@ export default function DeliveryDetalhes() {
                     <Text style={{ fontSize: 13, color: "#EF4444", marginBottom: 8, textAlign: "center" }}>{btnDisabledReason}</Text>
                   )}
 
-                  {/* Botões */}
-                  <View style={{ flexDirection: "row", gap: 10 }}>
-                    <Pressable
-                      onPress={() => { console.log("[DeliveryDetalhes] Confirmar modal dismissed"); setShowConfirmarModal(false); setConfirmarErro(null); }}
-                      style={{ flex: 1, borderWidth: 1, borderColor: COLORS.border, borderRadius: 10, padding: 14, alignItems: "center" }}
-                    >
-                      <Text style={{ color: COLORS.text, fontWeight: "500" }}>Cancelar</Text>
-                    </Pressable>
-                    <Pressable
-                      onPress={executarConfirmacao}
-                      disabled={btnDisabled}
-                      style={{ flex: 2, borderRadius: 10, padding: 14, alignItems: "center", backgroundColor: btnDisabled ? COLORS.textTertiary : "#22C55E" }}
-                    >
-                      {updating ? <ActivityIndicator color="white" size="small" /> : <Text style={{ color: "white", fontWeight: "600" }}>Confirmar entrega</Text>}
-                    </Pressable>
-                  </View>
-                </>
+                </View>
+                </TelaComTeclado>
               );
             })()}
-          </View>
         </View>
       </Modal>
 

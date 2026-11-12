@@ -1,3 +1,4 @@
+import { TelaComTeclado } from "@/components/TelaComTeclado";
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   View,
@@ -964,7 +965,7 @@ export default function NovoDelivery() {
         <Text style={{ fontSize: 20, fontWeight: "700", color: COLORS.text }}>Novo delivery</Text>
       </View>
 
-      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 120 }}>
+      <TelaComTeclado contentContainerStyle={{ padding: 16, paddingBottom: 120 }}>
         {/* Cliente */}
         <Text
           style={{
@@ -1366,7 +1367,7 @@ export default function NovoDelivery() {
             <Text style={{ color: "white", fontSize: 16, fontWeight: "600" }}>Confirmar pedido</Text>
           )}
         </Pressable>
-      </ScrollView>
+      </TelaComTeclado>
 
       {/* Dish selector modal */}
       <DishSelectorModal

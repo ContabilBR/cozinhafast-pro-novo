@@ -1,3 +1,4 @@
+import { TelaComTeclado } from "@/components/TelaComTeclado";
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { View, Text, ScrollView, Pressable, Image, Modal, ActivityIndicator, TextInput, Alert } from "react-native";
 import { useRouter } from "expo-router";
@@ -270,9 +271,25 @@ export default function MesaClienteScreen() {
         </Pressable>
       )}
 
-      <Modal visible={cartVisible} transparent animationType="slide" onRequestClose={() => setCartVisible(false)}>
-        <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" }}>
-          <View style={{ backgroundColor: COLORS.background, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, maxHeight: "80%" }}>
+      <Modal visible={cartVisible} transparent animationType="slide" statusBarTranslucent navigationBarTranslucent onRequestClose={() => setCartVisible(false)}>
+        <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)" }}>
+          <TelaComTeclado
+            contentContainerStyle={{ flexGrow: 1, justifyContent: "flex-end" }}
+            rodapeStyle={{ backgroundColor: COLORS.background, paddingHorizontal: 20, paddingBottom: 20 }}
+            rodape={
+              sucesso ? undefined : (
+                <>
+                <Pressable disabled={enviando || cart.length === 0 || precisaReconfigurar} onPress={enviarPedido} style={{ backgroundColor: COLORS.primary, borderRadius: 12, paddingVertical: 14, alignItems: "center", opacity: enviando || precisaReconfigurar ? 0.5 : 1 }}>
+                  {enviando ? <ActivityIndicator color="white" /> : <Text style={{ fontFamily: "Outfit_700Bold", fontSize: 15, color: "white" }}>Enviar pedido</Text>}
+                </Pressable>
+                <Pressable onPress={() => setCartVisible(false)} style={{ paddingVertical: 14, alignItems: "center" }}>
+                  <Text style={{ fontFamily: "Outfit_500Medium", fontSize: 14, color: COLORS.textSecondary }}>Continuar pedindo</Text>
+                </Pressable>
+                </>
+              )
+            }
+          >
+          <View style={{ backgroundColor: COLORS.background, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, paddingBottom: sucesso ? 20 : 0 }}>
             {sucesso ? (
               <View style={{ alignItems: "center", paddingVertical: 30, gap: 8 }}>
                 <Ionicons name="checkmark-circle" size={48} color="#22C55E" />
@@ -318,15 +335,10 @@ export default function MesaClienteScreen() {
                 {precisaReconfigurar && (
                   <Text accessibilityRole="alert" style={{ fontFamily: "Outfit_700Bold", fontSize: 15, color: COLORS.text, marginBottom: 12 }}>{AVISO_RECONFIGURAR}</Text>
                 )}
-                <Pressable disabled={enviando || cart.length === 0 || precisaReconfigurar} onPress={enviarPedido} style={{ backgroundColor: COLORS.primary, borderRadius: 12, paddingVertical: 14, alignItems: "center", opacity: enviando || precisaReconfigurar ? 0.5 : 1 }}>
-                  {enviando ? <ActivityIndicator color="white" /> : <Text style={{ fontFamily: "Outfit_700Bold", fontSize: 15, color: "white" }}>Enviar pedido</Text>}
-                </Pressable>
-                <Pressable onPress={() => setCartVisible(false)} style={{ paddingVertical: 14, alignItems: "center" }}>
-                  <Text style={{ fontFamily: "Outfit_500Medium", fontSize: 14, color: COLORS.textSecondary }}>Continuar pedindo</Text>
-                </Pressable>
               </>
             )}
           </View>
+          </TelaComTeclado>
         </View>
       </Modal>
     </View>

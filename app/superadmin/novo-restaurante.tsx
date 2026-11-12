@@ -13,6 +13,7 @@ import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { apiPost } from "@/utils/api";
+import { TelaComTeclado } from "@/components/TelaComTeclado";
 import { AnimatedPressable } from "@/components/AnimatedPressable";
 import { Ionicons } from "@expo/vector-icons";
 import { CheckCircle, Copy, Globe } from "lucide-react-native";
@@ -347,10 +348,7 @@ export default function NovoRestauranteScreen() {
         </View>
       </View>
 
-      <ScrollView
-        contentContainerStyle={{ padding: 20, paddingBottom: 120, gap: 14 }}
-        keyboardShouldPersistTaps="handled"
-      >
+      <TelaComTeclado contentContainerStyle={{ padding: 20, paddingBottom: 120, gap: 14 }}>
         {/* Restaurante */}
         <Text style={sectionStyle}>Dados do restaurante</Text>
 
@@ -534,7 +532,7 @@ export default function NovoRestauranteScreen() {
             </Text>
           )}
         </AnimatedPressable>
-      </ScrollView>
+      </TelaComTeclado>
     </View>
   );
 }
