@@ -5,12 +5,14 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { apiPost } from "@/utils/api";
 import { lerTransacaoPendente, limparTransacaoPendente } from "@/utils/terminalPendente";
+import { nomeExibicaoProvedor } from "@/utils/provedoresMaquininha/registro";
 import { voltarDaMaquininha } from "@/utils/cobrancaMaquininha";
 
 export default function AguardandoMaquininhaScreen() {
   const COLORS = useColors();
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const [provedor, setProvedor] = useState<string | undefined>(undefined);
   const params = useLocalSearchParams<{ transacaoId?: string; comandaId?: string; retorno?: string }>();
   const [retorno, setRetorno] = useState<string | undefined>(params.retorno);
   const [transacaoId, setTransacaoId] = useState<string | undefined>(params.transacaoId);
@@ -19,9 +21,9 @@ export default function AguardandoMaquininhaScreen() {
 
   // Se o Android recriou o app, os parâmetros se perdem: recupera do armazenamento local
   useEffect(() => {
-    if (transacaoId && comandaId) return;
     lerTransacaoPendente().then((p) => {
-      if (p) {
+      if (p && (!transacaoId || !comandaId || p.transacaoId === transacaoId)) setProvedor(p.provedor);
+      if (p && (!transacaoId || !comandaId)) {
         console.log("[AguardandoMaquininha] Transação pendente recuperada:", p);
         setTransacaoId(p.transacaoId);
         setComandaId(p.comandaId);
@@ -53,7 +55,7 @@ export default function AguardandoMaquininhaScreen() {
         <ActivityIndicator size="large" color={COLORS.primary} />
         <Text style={{ fontSize: 20, fontWeight: "700", color: COLORS.text }}>Aguardando a maquininha</Text>
         <Text style={{ fontSize: 14, color: COLORS.textSecondary, textAlign: "center" }}>
-          Conclua a cobrança no aplicativo de pagamento da Stone. Quando terminar, o resultado volta para cá.
+          Conclua a cobrança no aplicativo de pagamento da {nomeExibicaoProvedor(provedor)}. Quando terminar, o resultado volta para cá.
         </Text>
       </View>
       <Pressable
