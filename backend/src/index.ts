@@ -30,7 +30,6 @@ import { registerReservasRoutes } from './routes/reservas.js';
 import { registerTransacoesTerminalRoutes } from './routes/transacoes-terminal.js';
 import { registerMensagensContatoRoutes } from './routes/mensagens-contato.js';
 import { registerRenovacaoDeImagens } from './utils/imagem-assinada.js';
-import { seedDatabase } from './db/seed.js';
 import { enableSelectRetry } from './db/withRetry.js';
 import { garantirColunasDeCancelamento, garantirColunasDeModoComanda, garantirColunasContinuasDeDesconto, backfillQrTokens, garantirTabelaReservas, garantirTabelaTransacoesTerminal, garantirTabelaMensagensContato } from './db/ensure-schema.js';
 import { garantirRestauranteIdTexto } from './db/ensure-restaurante-id.js';
@@ -194,10 +193,7 @@ registerReservasRoutes(app);
 registerTransacoesTerminalRoutes(app);
 registerMensagensContatoRoutes(app);
 
-// Seed database on startup (only if not in production and explicitly enabled)
-if (process.env.NODE_ENV !== 'production' && process.env.SEED_ENABLED === 'true') {
-  await seedDatabase(app);
-}
+// A criação automática dos usuários de demonstração (seed) está desativada: nada é criado no início.
 
 try {
   app.logger.info('Starting application...');
