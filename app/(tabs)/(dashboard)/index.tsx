@@ -547,6 +547,33 @@ export default function DashboardScreen() {
             </View>
           )}
 
+          {/* Atalho para os relatórios (mesmo destino do cartão Faturamento) */}
+          <AnimatedPressable
+            onPress={() => {
+              console.log("[Dashboard] Relatórios shortcut pressed");
+              router.push((Platform.OS === "ios" ? "/relatorio-detalhe" : "/(tabs)/(relatorios)") as any);
+            }}
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 12,
+              backgroundColor: COLORS.surface,
+              borderRadius: 16,
+              padding: 16,
+              borderWidth: 1,
+              borderColor: COLORS.border,
+            }}
+          >
+            <View style={{ width: 40, height: 40, borderRadius: 12, backgroundColor: COLORS.primaryMuted, alignItems: "center", justifyContent: "center" }}>
+              <Ionicons name="bar-chart-outline" size={20} color={COLORS.primary} />
+            </View>
+            <View style={{ flex: 1, gap: 2 }}>
+              <Text style={{ fontFamily: "Outfit_700Bold", fontSize: 16, color: COLORS.text }}>Relatórios</Text>
+              <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 12, color: COLORS.textSecondary }}>Vendas, fechamento do dia, CMV e mais</Text>
+            </View>
+            <ChevronRight size={18} color={COLORS.textTertiary} />
+          </AnimatedPressable>
+
           {/* Cards de resumo: grade uniforme (2 colunas no celular, 3 no tablet) */}
           <View
             onLayout={(e) => setGridWidth(e.nativeEvent.layout.width)}

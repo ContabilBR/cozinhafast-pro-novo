@@ -1,5 +1,5 @@
 import React, { useRef, useEffect } from "react";
-import { View, Text, ScrollView, Animated } from "react-native";
+import { View, Text, ScrollView, Animated, Platform } from "react-native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
@@ -66,6 +66,7 @@ export default function GestaoScreen() {
     { icon: <Tag size={26} color="#8B5CF6" />, title: "Categorias", subtitle: "Gerenciar categorias", route: "/(tabs)/(gestao)/categorias", color: "#8B5CF6" },
     { icon: <LayoutGrid size={26} color="#0EA5E9" />, title: "Mesas", subtitle: "Gerenciar mesas", route: "/(tabs)/(gestao)/mesas", color: "#0EA5E9" },
     { icon: <Users size={26} color="#EC4899" />, title: "Equipe", subtitle: "Gerenciar usuários", route: "/(tabs)/(usuarios)", color: "#EC4899" },
+    { icon: <Ionicons name="bar-chart-outline" size={26} color="#14B8A6" />, title: "Relatórios", subtitle: "Vendas, fechamento do dia, CMV e mais", route: Platform.OS === "ios" ? "/relatorio-detalhe" : "/(tabs)/(relatorios)", color: "#14B8A6" },
     { icon: <Store size={26} color="#F59E0B" />, title: "Restaurante", subtitle: "Dados do estabelecimento", route: "/(tabs)/(gestao)/restaurante", color: "#F59E0B" },
     { icon: <Ionicons name="cube-outline" size={26} color="#F97316" />, title: "Estoque", subtitle: "Controle de insumos", route: "/(tabs)/(gestao)/estoque", color: "#F97316" },
     { icon: <Ionicons name="document-text-outline" size={26} color="#EF4444" />, title: "Notas Fiscais", subtitle: "NFS-e emitidas", route: "/(tabs)/(gestao)/fiscal", color: "#EF4444" },
