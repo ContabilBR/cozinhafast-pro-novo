@@ -4,6 +4,7 @@ import type { App } from "../index.js";
 import { requireAuth as customRequireAuth, requireTenant, requireRole } from "../utils/auth.js";
 import { increment } from "../utils/rate-limit.js";
 import * as schema from "../db/schema/schema.js";
+import { avisarMensagemContato } from "../services/aviso-contato.js";
 
 // Mensagens de contato (problema, sugestão ou dúvida) enviadas por quem está logado no app.
 // Restaurante, usuário, nome, papel e nome do restaurante vêm SEMPRE da sessão e do banco, nunca do
@@ -116,9 +117,28 @@ export function registerMensagensContatoRoutes(app: App) {
             plataforma,
             telaOrigem: tela,
           })
-          .returning({ id: schema.mensagensContato.id, status: schema.mensagensContato.status });
+          .returning({
+            id: schema.mensagensContato.id,
+            status: schema.mensagensContato.status,
+            createdAt: schema.mensagensContato.createdAt,
+          });
 
         app.logger.info({ mensagemId: criada.id, restauranteId }, "Mensagem de contato recebida");
+        // Aviso por e-mail para a equipe: não espera o resultado e nunca deixa uma falha escapar.
+        // O resultado é gravado na própria mensagem (email_aviso_enviado / email_aviso_erro).
+        void avisarMensagemContato(app.db as any, app.logger, {
+          id: criada.id,
+          tipo: body.tipo,
+          restauranteNome: restaurantes[0].nome,
+          usuarioNome: usuarios[0].nome,
+          usuarioPapel: usuarios[0].role,
+          versaoApp,
+          plataforma,
+          telaOrigem: tela,
+          mensagem,
+          criadaEm: criada.createdAt,
+        }).catch(() => undefined);
+
         return await reply.code(201).send({ id: criada.id, status: criada.status });
       } catch (error) {
         app.logger.error({ err: error }, "Falha ao registrar mensagem de contato");
