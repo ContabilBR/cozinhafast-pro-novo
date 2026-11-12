@@ -481,8 +481,9 @@ function fechamentoSheets(data: FechamentoDia, contexto: ContextoExportacao): Sh
 }
 
 /** Acrescenta apenas as abas novas. Não altera nenhuma célula ou formato das abas existentes. */
-export async function appendDetailedReportSheets(workbook: XLSX.WorkBook, periodo: string): Promise<void> {
-  const query = `?periodo=${encodeURIComponent(periodo)}`;
+export async function appendDetailedReportSheets(workbook: XLSX.WorkBook, periodo: string, datas?: { dataInicio: string; dataFim: string }): Promise<void> {
+  const query = `?periodo=${encodeURIComponent(periodo)}`
+    + (periodo === 'personalizado' && datas ? `&dataInicio=${datas.dataInicio}&dataFim=${datas.dataFim}` : '');
   const sections = [
     ...(periodo === 'hoje' ? [{
       name: 'Fechamento do dia',

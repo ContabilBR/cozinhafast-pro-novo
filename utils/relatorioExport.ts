@@ -48,7 +48,7 @@ export async function exportarRelatorioExcel(
   resumo: RelatorioResumo,
   periodoLabel: string,
   mesas: MesaResumoExport[] = [],
-  detalhes?: { periodo: string; role?: string }
+  detalhes?: { periodo: string; role?: string; dataInicio?: string; dataFim?: string }
 ): Promise<void> {
   const status = resumo.orders_by_status || {};
   const pedidosNoPeriodo = (status.aberta ?? 0) + (status.fechada ?? 0) + (status.cancelada ?? 0);
@@ -113,7 +113,11 @@ export async function exportarRelatorioExcel(
   XLSX.utils.book_append_sheet(wb, wsMesas, "Por Mesa");
 
   if (detalhes && (detalhes.role === "gerente" || detalhes.role === "administrador")) {
-    await appendDetailedReportSheets(wb, detalhes.periodo);
+    await appendDetailedReportSheets(
+      wb,
+      detalhes.periodo,
+      detalhes.dataInicio && detalhes.dataFim ? { dataInicio: detalhes.dataInicio, dataFim: detalhes.dataFim } : undefined,
+    );
   }
 
   // XLSX.write com type "array" devolve um ArrayBuffer — não é indexável direto,

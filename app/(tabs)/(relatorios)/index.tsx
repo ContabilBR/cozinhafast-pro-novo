@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   Alert,
   ActivityIndicator,
+  Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
@@ -19,6 +20,8 @@ import { apiGet } from "@/utils/api";
 import { formatCurrency } from "@/utils/helpers";
 import { exportarRelatorioExcel } from "@/utils/relatorioExport";
 import { exportRelatorioPDF } from "@/utils/reportPdf";
+import { formatDateBR, formatYMD } from "@/utils/exportacao/periodo";
+import DateTimePicker from "@react-native-community/datetimepicker";
 
 interface ReportSummary {
   total_revenue?: number;
@@ -44,12 +47,13 @@ interface MesaResumo {
   top_dishes: { dish_name: string; quantity_sold: number }[];
 }
 
-type PeriodoKey = "hoje" | "7dias" | "mes";
+type PeriodoKey = "hoje" | "7dias" | "mes" | "personalizado";
 
 const PERIODOS: { key: PeriodoKey; label: string }[] = [
   { key: "hoje", label: "Hoje" },
   { key: "7dias", label: "7 dias" },
   { key: "mes", label: "Este mês" },
+  { key: "personalizado", label: "Personalizado" },
 ];
 
 export default function RelatoriosScreen() {
@@ -58,6 +62,9 @@ export default function RelatoriosScreen() {
   const { user } = useAuth();
 
   const [periodo, setPeriodo] = useState<PeriodoKey>("hoje");
+  const [dataInicio, setDataInicio] = useState<Date | null>(null);
+  const [dataFim, setDataFim] = useState<Date | null>(null);
+  const [showDatePicker, setShowDatePicker] = useState<"inicio" | "fim" | null>(null);
   const [summary, setSummary] = useState<ReportSummary>({});
   const [mesas, setMesas] = useState<MesaResumo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -66,12 +73,26 @@ export default function RelatoriosScreen() {
   const [exportandoExcel, setExportandoExcel] = useState(false);
   const [exportandoPDF, setExportandoPDF] = useState(false);
 
-  const fetchData = useCallback(async (periodoAtual: PeriodoKey) => {
-    console.log("[Relatorios] Fetching reports summary, periodo:", periodoAtual);
+  const fetchData = useCallback(async () => {
+    if (periodo === "personalizado" && (!dataInicio || !dataFim)) {
+      console.log("[Relatorios] Personalizado period selected but dates not set yet, skipping fetch");
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
+
+    let query = `?periodo=${periodo}`;
+    if (periodo === "personalizado" && dataInicio && dataFim) {
+      query = `?periodo=personalizado&dataInicio=${formatYMD(dataInicio)}&dataFim=${formatYMD(dataFim)}`;
+      console.log("[Relatorios] Fetching reports with custom range:", formatYMD(dataInicio), "–", formatYMD(dataFim));
+    } else {
+      console.log("[Relatorios] Fetching reports summary, periodo:", periodo);
+    }
+
     try {
       const [resSummary, resMesas] = await Promise.all([
-        apiGet<any>(`/api/relatorios/resumo?periodo=${periodoAtual}`),
-        apiGet<any>(`/api/relatorios/mesas?periodo=${periodoAtual}`),
+        apiGet<any>(`/api/relatorios/resumo${query}`),
+        apiGet<any>(`/api/relatorios/mesas${query}`),
       ]);
       const data: ReportSummary = resSummary || {};
       console.log("[Relatorios] Loaded summary:", JSON.stringify(data).slice(0, 200));
@@ -86,25 +107,72 @@ export default function RelatoriosScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [periodo, dataInicio, dataFim]);
 
   useEffect(() => {
     setLoading(true);
-    fetchData(periodo);
-  }, [periodo, fetchData]);
+    fetchData();
+  }, [fetchData]);
 
   const handleRefresh = () => {
     console.log("[Relatorios] Manual refresh");
     setRefreshing(true);
-    fetchData(periodo);
+    fetchData();
   };
 
+  const handlePeriodoChange = (key: PeriodoKey) => {
+    console.log("[Relatorios] Period chip pressed:", key);
+    setPeriodo(key);
+    if (key !== "personalizado") {
+      setDataInicio(null);
+      setDataFim(null);
+    } else {
+      setShowDatePicker("inicio");
+    }
+  };
+
+  const handleDatePickerChange = (event: any, selectedDate?: Date) => {
+    if (event?.type === "dismissed" || !selectedDate) {
+      console.log("[Relatorios] Date picker dismissed");
+      setShowDatePicker(null);
+      return;
+    }
+    const hoje = new Date();
+    const escolhida = formatYMD(selectedDate) > formatYMD(hoje) ? hoje : selectedDate;
+    if (showDatePicker === "inicio") {
+      console.log("[Relatorios] Data início selected:", escolhida.toISOString());
+      setDataInicio(escolhida);
+      if (dataFim && formatYMD(escolhida) <= formatYMD(dataFim)) {
+        setShowDatePicker(null);
+      } else {
+        setDataFim(null);
+        setShowDatePicker("fim");
+      }
+    } else if (showDatePicker === "fim") {
+      console.log("[Relatorios] Data fim selected:", escolhida.toISOString());
+      setDataFim(dataInicio && formatYMD(escolhida) < formatYMD(dataInicio) ? dataInicio : escolhida);
+      setShowDatePicker(null);
+    }
+  };
+
+  const periodoCustomPronto = periodo !== "personalizado" || (!!dataInicio && !!dataFim);
+  const datasExport =
+    periodo === "personalizado" && dataInicio && dataFim
+      ? { dataInicio: formatYMD(dataInicio), dataFim: formatYMD(dataFim) }
+      : {};
+  const rotuloPeriodo =
+    periodo === "personalizado"
+      ? dataInicio && dataFim
+        ? summary.periodo_label || `${formatDateBR(dataInicio)} – ${formatDateBR(dataFim)}`
+        : "Personalizado"
+      : summary.periodo_label || PERIODOS.find((p) => p.key === periodo)?.label || "Hoje";
+
   const handleExportarExcel = async () => {
-    if (loading || exportandoExcel || exportandoPDF) return;
+    if (loading || exportandoExcel || exportandoPDF || !periodoCustomPronto) return;
     console.log("[Relatorios] Exportando Excel");
     setExportandoExcel(true);
     try {
-      await exportarRelatorioExcel(summary, summary.periodo_label || "Hoje", mesas, { periodo, role: user?.role });
+      await exportarRelatorioExcel(summary, rotuloPeriodo, mesas, { periodo, role: user?.role, ...datasExport });
     } catch (e: any) {
       console.error("[Relatorios] Erro ao exportar Excel:", e instanceof Error ? e.message : String(e));
       Alert.alert("Erro ao exportar", e?.message || "Não foi possível gerar o arquivo Excel. Tente novamente.");
@@ -118,12 +186,12 @@ export default function RelatoriosScreen() {
     (ordersByStatus.aberta ?? 0) + (ordersByStatus.fechada ?? 0) + (ordersByStatus.cancelada ?? 0);
 
   const handleExportarPDF = async () => {
-    if (loading || exportandoExcel || exportandoPDF) return;
+    if (loading || exportandoExcel || exportandoPDF || !periodoCustomPronto) return;
     console.log("[Relatorios] Exportando PDF");
     setExportandoPDF(true);
     try {
       await exportRelatorioPDF({
-        periodoLabel: summary.periodo_label || "Hoje",
+        periodoLabel: rotuloPeriodo,
         receitaPeriodo: summary.receita_periodo ?? 0,
         avgTicket: summary.avg_ticket ?? 0,
         totalPedidos: pedidosNoPeriodo,
@@ -184,14 +252,19 @@ export default function RelatoriosScreen() {
           <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={COLORS.primary} />
         }
       >
+        {/* Rótulo do período escolhido */}
+        <Text style={{ fontFamily: "Outfit_700Bold", fontSize: 18, color: COLORS.text }}>
+          {rotuloPeriodo}
+        </Text>
+
         {/* Filtro de período */}
-        <View style={{ flexDirection: "row", gap: 8 }}>
+        <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
           {PERIODOS.map((p) => {
             const ativo = p.key === periodo;
             return (
               <AnimatedPressable
                 key={p.key}
-                onPress={() => setPeriodo(p.key)}
+                onPress={() => handlePeriodoChange(p.key)}
                 disabled={loading}
                 style={{
                   paddingHorizontal: 14,
@@ -215,6 +288,67 @@ export default function RelatoriosScreen() {
             );
           })}
         </View>
+
+        {/* Campos De / Até do período personalizado */}
+        {periodo === "personalizado" && (
+          <View style={{ gap: 8 }}>
+            {showDatePicker !== null && (
+              <Text style={{ fontFamily: "Outfit_600SemiBold", fontSize: 13, color: COLORS.primary }}>
+                {showDatePicker === "inicio" ? "Escolha a data de início" : "Escolha a data final"}
+              </Text>
+            )}
+            <View style={{ flexDirection: "row", gap: 12 }}>
+              {([
+                { k: "inicio", label: "De", valor: dataInicio },
+                { k: "fim", label: "Até", valor: dataFim },
+              ] as const).map((c) => {
+                const ativo = showDatePicker === c.k;
+                return (
+                  <AnimatedPressable
+                    key={c.k}
+                    onPress={() => setShowDatePicker(c.k)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`${c.label}: ${c.valor ? formatDateBR(c.valor) : "Selecionar"}`}
+                    style={{
+                      flex: 1,
+                      minHeight: 56,
+                      borderRadius: 12,
+                      borderWidth: ativo ? 2 : 1,
+                      borderColor: ativo ? COLORS.primary : COLORS.border,
+                      backgroundColor: ativo ? COLORS.primaryMuted : COLORS.surface,
+                      paddingHorizontal: 12,
+                      paddingVertical: 8,
+                      flexDirection: "row",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                    }}
+                  >
+                    <View>
+                      <Text style={{ fontFamily: "Outfit_500Medium", fontSize: 12, color: ativo ? COLORS.primary : COLORS.textSecondary }}>
+                        {c.label}
+                      </Text>
+                      <Text
+                        style={{
+                          fontFamily: "Outfit_600SemiBold",
+                          fontSize: 15,
+                          color: c.valor ? COLORS.text : COLORS.textTertiary,
+                        }}
+                      >
+                        {c.valor ? formatDateBR(c.valor) : "Selecionar"}
+                      </Text>
+                    </View>
+                    <Ionicons name="calendar-outline" size={20} color={ativo ? COLORS.primary : COLORS.textSecondary} />
+                  </AnimatedPressable>
+                );
+              })}
+            </View>
+            {(!dataInicio || !dataFim) && (
+              <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 12, color: COLORS.textSecondary }}>
+                Escolha as duas datas para ver o período
+              </Text>
+            )}
+          </View>
+        )}
 
         {(user?.role === 'gerente' || user?.role === 'administrador') && (
           <View style={{ gap: 10 }}>
@@ -355,7 +489,7 @@ export default function RelatoriosScreen() {
               {error}
             </Text>
             <AnimatedPressable
-              onPress={() => fetchData(periodo)}
+              onPress={() => fetchData()}
               style={{ backgroundColor: COLORS.primary, borderRadius: 12, paddingHorizontal: 24, paddingVertical: 12 }}
             >
               <Text style={{ fontFamily: "Outfit_600SemiBold", fontSize: 15, color: "#fff" }}>
@@ -688,6 +822,19 @@ export default function RelatoriosScreen() {
           </>
         )}
       </ScrollView>
+
+      {/* Date picker for personalizado */}
+      {showDatePicker !== null && (
+        <DateTimePicker
+          key={showDatePicker}
+          value={showDatePicker === "fim" ? dataFim ?? dataInicio ?? new Date() : dataInicio ?? new Date()}
+          mode="date"
+          display={Platform.OS === "ios" ? "inline" : "default"}
+          onChange={handleDatePickerChange}
+          minimumDate={showDatePicker === "fim" && dataInicio ? dataInicio : undefined}
+          maximumDate={new Date()}
+        />
+      )}
     </View>
   );
 }

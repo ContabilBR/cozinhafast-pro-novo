@@ -20,7 +20,7 @@ import { SkeletonLine } from "@/components/SkeletonLoader";
 import { apiGet } from "@/utils/api";
 import { setMesaHistoricoId } from "@/utils/mesaHistoricoStore";
 import { formatCurrency, isAdmin } from "@/utils/helpers";
-import { hojeNoAparelho } from "@/utils/exportacao/periodo";
+import { hojeNoAparelho, formatDateBR, formatYMD } from "@/utils/exportacao/periodo";
 import { contarReservas } from "@/utils/reservasGrupo";
 import { TrendingUp, ShoppingBag, Grid3x3, Clock, RefreshCw, ChevronRight, DollarSign, ChefHat, CalendarDays, MessageCircle } from "lucide-react-native";
 import { useRealtime, type RealtimeStatus } from "@/hooks/useRealtime";
@@ -176,22 +176,6 @@ const EMPTY_RESUMO: RelatorioResumo = {
   top_dishes: [],
   orders_by_status: { aberta: 0, fechada: 0, cancelada: 0 },
 };
-
-function formatDateBR(date: Date): string {
-  const dd = String(date.getDate()).padStart(2, "0");
-  const mm = String(date.getMonth() + 1).padStart(2, "0");
-  const yyyy = date.getFullYear();
-  return `${dd}/${mm}/${yyyy}`;
-}
-
-// Data civil do aparelho no formato YYYY-MM-DD (sem horário, sem fuso).
-// O servidor interpreta esse dia inteiro (00:00 a 23:59) no horário do aparelho.
-function formatYMD(date: Date): string {
-  const dd = String(date.getDate()).padStart(2, "0");
-  const mm = String(date.getMonth() + 1).padStart(2, "0");
-  const yyyy = date.getFullYear();
-  return `${yyyy}-${mm}-${dd}`;
-}
 
 export default function DashboardScreen() {
   const COLORS = useColors();

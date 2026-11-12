@@ -42,3 +42,19 @@ export function diasDoPeriodo(p: Periodo): string[] {
   for (let d = p.inicio; d <= p.fim && dias.length < 400; d = deslocarDias(d, 1)) dias.push(d);
   return dias;
 }
+
+export function formatDateBR(date: Date): string {
+  const dd = String(date.getDate()).padStart(2, "0");
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const yyyy = date.getFullYear();
+  return `${dd}/${mm}/${yyyy}`;
+}
+
+// Data civil do aparelho no formato YYYY-MM-DD (sem horário, sem fuso).
+// O servidor interpreta esse dia inteiro (00:00 a 23:59) no horário do aparelho.
+export function formatYMD(date: Date): string {
+  const dd = String(date.getDate()).padStart(2, "0");
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const yyyy = date.getFullYear();
+  return `${yyyy}-${mm}-${dd}`;
+}
