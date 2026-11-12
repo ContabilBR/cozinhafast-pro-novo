@@ -30,14 +30,14 @@ type Filtro = "todas" | Reserva["status"];
 
 const FILTROS: { key: Filtro; label: string }[] = [
   { key: "todas", label: "Todas" },
-  { key: "confirmada", label: "Confirmadas" },
+  { key: "confirmada", label: "Reservadas" },
   { key: "sentada", label: "Sentadas" },
   { key: "cancelada", label: "Canceladas" },
   { key: "nao_compareceu", label: "Não compareceu" },
 ];
 
 const STATUS_LABEL: Record<Reserva["status"], string> = {
-  confirmada: "Confirmada",
+  confirmada: "Reservada",
   sentada: "Sentada",
   cancelada: "Cancelada",
   nao_compareceu: "Não compareceu",
