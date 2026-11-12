@@ -385,6 +385,34 @@ export const transacoesTerminal = pgTable("transacoes_terminal", {
   ckParcelas: check("ck_transacoes_terminal_parcelas", sql`parcelas IS NULL OR parcelas >= 1`),
 }));
 
+// Mensagens de contato enviadas por usuários dentro do app (problema, sugestão ou dúvida).
+// nome, papel e nome do restaurante são cópias do momento do envio. usuario_id vira nulo se o usuário
+// for apagado. email_aviso_enviado e email_aviso_erro ficam reservados para o aviso por e-mail (etapa 3).
+export const mensagensContato = pgTable("mensagens_contato", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  restauranteId: text("restaurante_id").notNull().references(() => restaurante.id, { onDelete: "restrict" }),
+  usuarioId: text("usuario_id").references(() => usuarios.id, { onDelete: "set null" }),
+  usuarioNome: text("usuario_nome").notNull(),
+  usuarioPapel: text("usuario_papel").notNull(),
+  restauranteNome: text("restaurante_nome").notNull(),
+  tipo: text("tipo").notNull(),
+  mensagem: text("mensagem").notNull(),
+  versaoApp: text("versao_app"),
+  plataforma: text("plataforma"),
+  telaOrigem: text("tela_origem"),
+  status: text("status").default("recebida").notNull(),
+  emailAvisoEnviado: boolean("email_aviso_enviado").default(false).notNull(),
+  emailAvisoErro: text("email_aviso_erro"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  idxRestauranteCreatedAt: index("idx_mensagens_contato_restaurante_created_at").on(table.restauranteId, table.createdAt),
+  idxUsuarioCreatedAt: index("idx_mensagens_contato_usuario_created_at").on(table.usuarioId, table.createdAt),
+  ckTipo: check("ck_mensagens_contato_tipo", sql`tipo IN ('problema', 'sugestao', 'duvida')`),
+  ckStatus: check("ck_mensagens_contato_status", sql`status IN ('recebida', 'em_analise', 'resolvida')`),
+  ckPlataforma: check("ck_mensagens_contato_plataforma", sql`plataforma IS NULL OR plataforma IN ('android', 'ios')`),
+}));
+
 export const notasFiscais = pgTable("notas_fiscais", {
   id: uuid("id").primaryKey().defaultRandom(),
   comandaHistoricoId: uuid("comanda_historico_id"),

@@ -28,10 +28,11 @@ import { registerEstoqueRoutes } from './routes/estoque.js';
 import { registerSuperAdminRoutes } from './routes/superadmin.js';
 import { registerReservasRoutes } from './routes/reservas.js';
 import { registerTransacoesTerminalRoutes } from './routes/transacoes-terminal.js';
+import { registerMensagensContatoRoutes } from './routes/mensagens-contato.js';
 import { registerRenovacaoDeImagens } from './utils/imagem-assinada.js';
 import { seedDatabase } from './db/seed.js';
 import { enableSelectRetry } from './db/withRetry.js';
-import { garantirColunasDeCancelamento, garantirColunasDeModoComanda, garantirColunasContinuasDeDesconto, backfillQrTokens, garantirTabelaReservas, garantirTabelaTransacoesTerminal } from './db/ensure-schema.js';
+import { garantirColunasDeCancelamento, garantirColunasDeModoComanda, garantirColunasContinuasDeDesconto, backfillQrTokens, garantirTabelaReservas, garantirTabelaTransacoesTerminal, garantirTabelaMensagensContato } from './db/ensure-schema.js';
 import { garantirRestauranteIdTexto } from './db/ensure-restaurante-id.js';
 
 // Combine schemas
@@ -109,6 +110,14 @@ try {
   // Don't exit - this is not critical
 }
 
+// Garante a tabela de mensagens de contato (problemas, sugestões e dúvidas enviados pelo app)
+try {
+  await garantirTabelaMensagensContato(app);
+} catch (error) {
+  app.logger.error({ err: error }, 'Failed to ensure mensagens_contato table');
+  // Don't exit - this is not critical
+}
+
 // Seed test admin and restaurante if test mode is enabled
 try {
   await seedTestAdmin(app);
@@ -183,6 +192,7 @@ registerEstoqueRoutes(app);
 registerSuperAdminRoutes(app);
 registerReservasRoutes(app);
 registerTransacoesTerminalRoutes(app);
+registerMensagensContatoRoutes(app);
 
 // Seed database on startup (only if not in production and explicitly enabled)
 if (process.env.NODE_ENV !== 'production' && process.env.SEED_ENABLED === 'true') {

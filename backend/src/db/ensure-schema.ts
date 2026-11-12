@@ -582,3 +582,85 @@ export async function garantirTabelaTransacoesTerminal(app: App): Promise<void> 
     // Não lança: a subida continua
   }
 }
+
+/**
+ * Garante a tabela de mensagens de contato (problemas, sugestões e dúvidas enviados pelo app).
+ *
+ * Mesma estrutura da migração 20261112031359_mensagens_contato (mesmos nomes de constraints e
+ * de índices), então as duas podem rodar em qualquer ordem: tudo usa IF NOT EXISTS.
+ * Roda numa única transação. Com a tabela já criada, só faz uma consulta de leitura.
+ * Não lança erro: se falhar, registra o código SQLSTATE e a subida continua.
+ */
+export async function garantirTabelaMensagensContato(app: App): Promise<void> {
+  const db = app.db as any;
+
+  try {
+    const existente = await db.execute(
+      sql`SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'mensagens_contato'`
+    );
+    if (linhasDe(existente).length > 0) {
+      app.logger.debug("Mensagens_contato table structure verified");
+      return;
+    }
+
+    const comandos: string[] = [
+      `CREATE TABLE IF NOT EXISTS "mensagens_contato" (
+        "id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+        "restaurante_id" text NOT NULL,
+        "usuario_id" text,
+        "usuario_nome" text NOT NULL,
+        "usuario_papel" text NOT NULL,
+        "restaurante_nome" text NOT NULL,
+        "tipo" text NOT NULL,
+        "mensagem" text NOT NULL,
+        "versao_app" text,
+        "plataforma" text,
+        "tela_origem" text,
+        "status" text DEFAULT 'recebida' NOT NULL,
+        "email_aviso_enviado" boolean DEFAULT false NOT NULL,
+        "email_aviso_erro" text,
+        "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+        "updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+        CONSTRAINT "ck_mensagens_contato_tipo" CHECK (tipo IN ('problema', 'sugestao', 'duvida')),
+        CONSTRAINT "ck_mensagens_contato_status" CHECK (status IN ('recebida', 'em_analise', 'resolvida')),
+        CONSTRAINT "ck_mensagens_contato_plataforma" CHECK (plataforma IS NULL OR plataforma IN ('android', 'ios'))
+      )`,
+      `DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conname = 'mensagens_contato_restaurante_id_restaurante_id_fk'
+          AND conrelid = 'mensagens_contato'::regclass
+        ) THEN
+          ALTER TABLE "mensagens_contato" ADD CONSTRAINT "mensagens_contato_restaurante_id_restaurante_id_fk" FOREIGN KEY ("restaurante_id") REFERENCES "restaurante"("id") ON DELETE restrict ON UPDATE no action;
+        END IF;
+      END $$`,
+      `DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conname = 'mensagens_contato_usuario_id_usuarios_id_fk'
+          AND conrelid = 'mensagens_contato'::regclass
+        ) THEN
+          ALTER TABLE "mensagens_contato" ADD CONSTRAINT "mensagens_contato_usuario_id_usuarios_id_fk" FOREIGN KEY ("usuario_id") REFERENCES "usuarios"("id") ON DELETE set null ON UPDATE no action;
+        END IF;
+      END $$`,
+      `CREATE INDEX IF NOT EXISTS "idx_mensagens_contato_restaurante_created_at" ON "mensagens_contato" USING btree ("restaurante_id","created_at")`,
+      `CREATE INDEX IF NOT EXISTS "idx_mensagens_contato_usuario_created_at" ON "mensagens_contato" USING btree ("usuario_id","created_at")`,
+    ];
+
+    await db.transaction(async (tx: any) => {
+      for (const comando of comandos) {
+        await tx.execute(sql.raw(comando));
+      }
+    });
+    app.logger.info("Created mensagens_contato table");
+  } catch (err) {
+    const sqlstate = (err as any)?.cause?.code || (err as any)?.code || "UNKNOWN";
+    app.logger.warn(
+      { codigo: sqlstate, mensagem: "Falha ao garantir tabela de mensagens de contato" },
+      "Ensure mensagens_contato table"
+    );
+    // Não lança: a subida continua
+  }
+}
