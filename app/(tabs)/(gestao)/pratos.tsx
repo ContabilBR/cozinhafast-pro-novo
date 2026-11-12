@@ -7,9 +7,7 @@ import {
   TextInput,
   Switch,
   ScrollView,
-  Platform,
   TouchableOpacity,
-  KeyboardAvoidingView,
   Pressable,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
@@ -27,6 +25,7 @@ import { formatCurrency } from "@/utils/helpers";
 import { X, UtensilsCrossed, Camera, Image as ImageIcon, ChevronDown, Search } from "lucide-react-native";
 import * as ImagePicker from "expo-image-picker";
 import type { ImageSourcePropType } from "react-native";
+import { TelaComTeclado } from "@/components/TelaComTeclado";
 import { CampoMoeda } from "@/components/CampoMoeda";
 
 function resolveImageSource(source: string | number | ImageSourcePropType | undefined): ImageSourcePropType {
@@ -714,7 +713,7 @@ export default function GestaoPratos() {
         </ScrollView>
       )}
 
-      <Modal visible={showModal} transparent animationType="slide" onRequestClose={() => setShowModal(false)}>
+      <Modal visible={showModal} transparent animationType="slide" onRequestClose={() => setShowModal(false)} statusBarTranslucent navigationBarTranslucent>
         <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" }}>
           <View
             style={{
@@ -758,13 +757,42 @@ export default function GestaoPratos() {
             </View>
 
             {/* Scrollable form */}
-            <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-              <ScrollView
-                style={{ flex: 1 }}
-                contentContainerStyle={{ padding: 20, gap: 16 }}
-                keyboardShouldPersistTaps="handled"
-                showsVerticalScrollIndicator={false}
+            <TelaComTeclado
+              contentContainerStyle={{ padding: 20, gap: 16 }}
+              rodapeStyle={{
+                paddingHorizontal: 20,
+                paddingTop: 12,
+                paddingBottom: 32,
+                borderTopWidth: 1,
+                borderTopColor: COLORS.border,
+                backgroundColor: COLORS.surface,
+              }}
+              rodape={
+              <TouchableOpacity
+                onPress={() => {
+                  console.log("[GestaoPratos] Salvar prato pressionado");
+                  handleSave();
+                }}
+                disabled={saving || uploading}
+                style={{
+                  backgroundColor: COLORS.primary,
+                  borderRadius: 14,
+                  height: 52,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  opacity: saving || uploading ? 0.7 : 1,
+                }}
               >
+                {saving || uploading ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={{ fontFamily: "Outfit_700Bold", fontSize: 16, color: "#fff" }}>
+                    {editingPrato ? "Salvar alterações" : "Adicionar prato"}
+                  </Text>
+                )}
+              </TouchableOpacity>
+              }
+            >
                 {editingPrato && canOpenFicha && <AnimatedPressable accessibilityRole="button" accessibilityLabel={`Abrir ficha técnica de ${editingPrato.nome}`} onPress={() => { setShowModal(false); router.push(`/prato/ficha-tecnica/${editingPrato.id}` as any); }} style={{ minHeight: 48, borderRadius: 12, padding: 12, backgroundColor: COLORS.primaryMuted, flexDirection: "row", alignItems: "center", gap: 8 }}>
                   <Ionicons name="clipboard-outline" size={20} color={COLORS.primary} />
                   <Text style={{ fontFamily: "Outfit_600SemiBold", fontSize: 15, color: COLORS.primary }}>Ficha técnica</Text>
@@ -1119,44 +1147,7 @@ export default function GestaoPratos() {
                     {modalError}
                   </Text>
                 ) : null}
-              </ScrollView>
-            </KeyboardAvoidingView>
-
-            {/* Fixed Save button — always visible */}
-            <View
-              style={{
-                paddingHorizontal: 20,
-                paddingTop: 12,
-                paddingBottom: 32,
-                borderTopWidth: 1,
-                borderTopColor: COLORS.border,
-                backgroundColor: COLORS.surface,
-              }}
-            >
-              <TouchableOpacity
-                onPress={() => {
-                  console.log("[GestaoPratos] Salvar prato pressionado");
-                  handleSave();
-                }}
-                disabled={saving || uploading}
-                style={{
-                  backgroundColor: COLORS.primary,
-                  borderRadius: 14,
-                  height: 52,
-                  alignItems: "center",
-                  justifyContent: "center",
-                  opacity: saving || uploading ? 0.7 : 1,
-                }}
-              >
-                {saving || uploading ? (
-                  <ActivityIndicator color="#fff" />
-                ) : (
-                  <Text style={{ fontFamily: "Outfit_700Bold", fontSize: 16, color: "#fff" }}>
-                    {editingPrato ? "Salvar alterações" : "Adicionar prato"}
-                  </Text>
-                )}
-              </TouchableOpacity>
-            </View>
+            </TelaComTeclado>
           </View>
         </View>
       </Modal>

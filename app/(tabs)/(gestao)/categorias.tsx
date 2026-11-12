@@ -16,6 +16,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useColors } from "@/hooks/useColors";
 import { useTabBarInset } from "@/hooks/useTabBarInset";
 import { AnimatedPressable } from "@/components/AnimatedPressable";
+import { TelaComTeclado } from "@/components/TelaComTeclado";
 import { CardSkeleton } from "@/components/SkeletonLoader";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { apiGet, apiPost, apiPut, apiDelete } from "@/utils/api";
@@ -558,11 +559,12 @@ export default function GestaoCategorias() {
         </ScrollView>
       )}
 
-      <Modal visible={showModal} transparent animationType="fade" onRequestClose={() => setShowModal(false)}>
+      <Modal visible={showModal} transparent animationType="fade" onRequestClose={() => setShowModal(false)} statusBarTranslucent navigationBarTranslucent>
+        <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)" }}>
+        <TelaComTeclado contentContainerStyle={{ flexGrow: 1 }}>
         <View
           style={{
-            flex: 1,
-            backgroundColor: "rgba(0,0,0,0.5)",
+            flexGrow: 1,
             alignItems: "center",
             justifyContent: "center",
             padding: 24,
@@ -652,6 +654,8 @@ export default function GestaoCategorias() {
               )}
             </AnimatedPressable>
           </View>
+        </View>
+        </TelaComTeclado>
         </View>
       </Modal>
 

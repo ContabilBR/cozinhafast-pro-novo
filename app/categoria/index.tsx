@@ -1,12 +1,13 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
   View, Text, FlatList, TextInput, TouchableOpacity,
-  Modal, Alert, ActivityIndicator, KeyboardAvoidingView, Platform
+  Modal, Alert, ActivityIndicator
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useColors } from '@/hooks/useColors';
+import { TelaComTeclado } from '@/components/TelaComTeclado';
 import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { apiGet, apiPost, apiPut, apiDelete } from '@/utils/api';
 
@@ -364,22 +365,55 @@ export default function CategoriasScreen() {
         transparent
         animationType="slide"
         onRequestClose={() => setShowModal(false)}
+        statusBarTranslucent
+        navigationBarTranslucent
       >
-        <KeyboardAvoidingView
-          style={{ flex: 1 }}
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        >
-          <TouchableOpacity
-            style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' }}
-            activeOpacity={1}
-            onPress={() => setShowModal(false)}
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.45)' }}>
+          <TelaComTeclado
+            contentContainerStyle={{ flexGrow: 1 }}
+            rodapeStyle={{
+              backgroundColor: COLORS.surface,
+              paddingHorizontal: 24, paddingBottom: 40,
+            }}
+            rodape={
+                <View style={{ flexDirection: 'row', gap: 12, marginTop: 0 }}>
+                  <TouchableOpacity
+                    onPress={() => { console.log('[Categorias] Modal Cancelar pressionado'); setShowModal(false); }}
+                    style={{
+                      flex: 1, height: 48, borderRadius: 12,
+                      borderWidth: 1, borderColor: COLORS.border,
+                      alignItems: 'center', justifyContent: 'center',
+                    }}
+                  >
+                    <Text style={{ color: COLORS.textSecondary, fontWeight: '600' }}>Cancelar</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={handleSave}
+                    disabled={saving}
+                    style={{
+                      flex: 1, height: 48, borderRadius: 12,
+                      backgroundColor: COLORS.primary,
+                      alignItems: 'center', justifyContent: 'center',
+                    }}
+                  >
+                    {saving
+                      ? <ActivityIndicator color="#fff" />
+                      : <Text style={{ color: '#fff', fontWeight: '700' }}>Salvar</Text>
+                    }
+                  </TouchableOpacity>
+                </View>
+            }
           >
-            <TouchableOpacity activeOpacity={1} onPress={() => {}}>
-              <View style={{
-                backgroundColor: COLORS.surface,
-                borderTopLeftRadius: 20, borderTopRightRadius: 20,
-                padding: 24, paddingBottom: 40,
-              }}>
+            <TouchableOpacity
+              style={{ flex: 1 }}
+              activeOpacity={1}
+              onPress={() => setShowModal(false)}
+            />
+            <View style={{
+              backgroundColor: COLORS.surface,
+              borderTopLeftRadius: 20, borderTopRightRadius: 20,
+              padding: 24, paddingBottom: 8,
+            }}>
                 <View style={{ alignItems: 'center', marginBottom: 16 }}>
                   <View style={{ width: 40, height: 4, borderRadius: 2, backgroundColor: COLORS.border }} />
                 </View>
@@ -414,36 +448,9 @@ export default function CategoriasScreen() {
                   autoCapitalize="sentences"
                   keyboardType="default"
                 />
-                <View style={{ flexDirection: 'row', gap: 12, marginTop: 8 }}>
-                  <TouchableOpacity
-                    onPress={() => { console.log('[Categorias] Modal Cancelar pressionado'); setShowModal(false); }}
-                    style={{
-                      flex: 1, height: 48, borderRadius: 12,
-                      borderWidth: 1, borderColor: COLORS.border,
-                      alignItems: 'center', justifyContent: 'center',
-                    }}
-                  >
-                    <Text style={{ color: COLORS.textSecondary, fontWeight: '600' }}>Cancelar</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    onPress={handleSave}
-                    disabled={saving}
-                    style={{
-                      flex: 1, height: 48, borderRadius: 12,
-                      backgroundColor: COLORS.primary,
-                      alignItems: 'center', justifyContent: 'center',
-                    }}
-                  >
-                    {saving
-                      ? <ActivityIndicator color="#fff" />
-                      : <Text style={{ color: '#fff', fontWeight: '700' }}>Salvar</Text>
-                    }
-                  </TouchableOpacity>
-                </View>
-              </View>
-            </TouchableOpacity>
-          </TouchableOpacity>
-        </KeyboardAvoidingView>
+            </View>
+          </TelaComTeclado>
+        </View>
       </Modal>
     </SafeAreaView>
   );
