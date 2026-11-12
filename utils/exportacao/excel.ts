@@ -5,7 +5,32 @@ import type { ColunaDef, CorBloco, RelatorioDef, TipoColuna, Valor } from './def
 // Versão do navegador do exceljs (traz seus próprios polyfills; a versão "node" não roda no app).
 // Carregada só ao gerar a planilha: uma falha da biblioteca não pode derrubar o PDF nem a tela.
 let exceljsCarregado: typeof ExcelJSTipos | null = null;
+
+// O exceljs gera ids (uuid) para as barras de dados e exige crypto.getRandomValues, que o Hermes não tem.
+// Os ids só rotulam a regra dentro do arquivo, sem função de segurança; por isso Math.random basta.
+let cryptoGarantido = false;
+function garantirGetRandomValues(): void {
+  if (cryptoGarantido) return;
+  cryptoGarantido = true;
+  try {
+    const g = globalThis as any;
+    if (g.crypto && typeof g.crypto.getRandomValues === 'function') return;
+    const preencher = (vetor: any) => {
+      for (let i = 0; i < vetor.length; i++) vetor[i] = Math.floor(Math.random() * 256);
+      return vetor;
+    };
+    if (!g.crypto) {
+      g.crypto = { getRandomValues: preencher };
+    } else {
+      g.crypto.getRandomValues = preencher;
+    }
+  } catch {
+    // propriedade somente leitura: segue sem definir
+  }
+}
+
 function carregarExcelJS(): typeof ExcelJSTipos {
+  garantirGetRandomValues();
   if (!exceljsCarregado) {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     exceljsCarregado = require('exceljs/dist/exceljs.min.js') as typeof ExcelJSTipos;
