@@ -1,9 +1,10 @@
 import React, { useState, useCallback } from "react";
-import { View, Text, ScrollView, Pressable, Alert, ActivityIndicator, TextInput } from "react-native";
+import { View, Text, Pressable, Alert, ActivityIndicator, TextInput } from "react-native";
 import { useFocusEffect } from "@react-navigation/native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
+import { TelaComTeclado } from "@/components/TelaComTeclado";
 import { useColors } from "@/hooks/useColors";
 import { useTabBarInset } from "@/hooks/useTabBarInset";
 import { apiGet, apiPost } from "@/utils/api";
@@ -90,7 +91,7 @@ export default function AssinaturaScreen() {
         <Pressable onPress={() => router.back()} style={{ marginRight: 10 }}><Ionicons name="arrow-back" size={24} color={COLORS.text} /></Pressable>
         <Text style={{ fontSize: 22, fontWeight: "700", color: COLORS.text }}>Assinatura</Text>
       </View>
-      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: tabBarInset + 16 }}>
+      <TelaComTeclado contentContainerStyle={{ padding: 16, paddingBottom: tabBarInset + 16 }}>
         <View style={{ backgroundColor: cor, borderRadius: 16, padding: 20, marginBottom: 16, alignItems: "center" }}>
           <Ionicons name={PLANO_ICONS[planoAtual] as any} size={40} color="white" />
           <Text style={{ fontSize: 24, fontWeight: "700", color: "white", marginTop: 8 }}>Plano {assinatura?.plano_detalhes?.nome || planoAtual}</Text>
@@ -131,7 +132,7 @@ export default function AssinaturaScreen() {
         )}
 
         {status === "ativa" && <Pressable onPress={cancelar} style={{ borderWidth: 1, borderColor: "#EF4444", borderRadius: 12, padding: 14, alignItems: "center", marginTop: 6 }}><Text style={{ color: "#EF4444", fontSize: 14, fontWeight: "500" }}>Cancelar assinatura</Text></Pressable>}
-      </ScrollView>
+      </TelaComTeclado>
     </View>
   );
 }

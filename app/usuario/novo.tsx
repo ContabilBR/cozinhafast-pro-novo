@@ -2,17 +2,15 @@ import React, { useState } from "react";
 import {
   View,
   Text,
-  ScrollView,
   TextInput,
   ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
   Pressable,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useColors } from "@/hooks/useColors";
+import { TelaComTeclado } from "@/components/TelaComTeclado";
 import { PasswordInput } from "@/components/PasswordInput";
 import { AnimatedPressable } from "@/components/AnimatedPressable";
 import { UserRole } from "@/types";
@@ -94,10 +92,7 @@ export default function NovoUsuarioScreen() {
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.background }} edges={["top", "left", "right"]}>
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-      >
+      <View style={{ flex: 1 }}>
         {/* Nav bar */}
         <View style={{
           flexDirection: "row",
@@ -130,10 +125,7 @@ export default function NovoUsuarioScreen() {
           </Text>
         </View>
 
-        <ScrollView
-          contentContainerStyle={{ padding: 20, paddingBottom: 48, gap: 16 }}
-          keyboardShouldPersistTaps="handled"
-        >
+        <TelaComTeclado contentContainerStyle={{ padding: 20, paddingBottom: 48, gap: 16 }}>
           <FormField label="Nome *">
             <TextInput
               value={nome}
@@ -232,8 +224,8 @@ export default function NovoUsuarioScreen() {
               <Text style={{ fontFamily: "Outfit_700Bold", fontSize: 16, color: "#fff" }}>Criar usuário</Text>
             )}
           </AnimatedPressable>
-        </ScrollView>
-      </KeyboardAvoidingView>
+        </TelaComTeclado>
+      </View>
     </SafeAreaView>
   );
 }

@@ -1,13 +1,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { TelaComTeclado } from "@/components/TelaComTeclado";
 import {
   View,
   Text,
-  ScrollView,
   TextInput,
   TouchableOpacity,
   ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
   Modal,
   Alert,
 } from 'react-native';
@@ -404,14 +402,9 @@ export default function RestauranteScreen() {
         <View style={s.navRight} />
       </View>
 
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      >
-        <ScrollView
-          style={s.scroll}
+      <View style={{ flex: 1 }}>
+        <TelaComTeclado
           contentContainerStyle={[s.scrollContent, { paddingBottom: tabBarInset + 16 }]}
-          keyboardShouldPersistTaps="handled"
         >
           {/* ── VIEW MODE ─────────────────────────────────────────────────── */}
           {mode === 'view' && (
@@ -598,8 +591,8 @@ export default function RestauranteScreen() {
               )}
             </>
           )}
-        </ScrollView>
-      </KeyboardAvoidingView>
+        </TelaComTeclado>
+      </View>
 
       {/* ── Success Modal ──────────────────────────────────────────────────── */}
       <Modal visible={showSuccess} transparent animationType="fade">

@@ -7,13 +7,12 @@ import {
   TextInput,
   ActivityIndicator,
   Alert,
-  KeyboardAvoidingView,
-  Platform,
 } from "react-native";
 import { useFocusEffect } from "@react-navigation/native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import { TelaComTeclado } from "@/components/TelaComTeclado";
 import { useColors } from "@/hooks/useColors";
 import { useTabBarInset } from "@/hooks/useTabBarInset";
 import { apiGet, apiPut } from "@/utils/api";
@@ -261,10 +260,7 @@ export default function FiscalConfigScreen() {
   }
 
   return (
-    <KeyboardAvoidingView
-      style={{ flex: 1, backgroundColor: COLORS.background }}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
-    >
+    <View style={{ flex: 1, backgroundColor: COLORS.background }}>
       <View
         style={{
           paddingTop: insets.top + 8,
@@ -288,7 +284,7 @@ export default function FiscalConfigScreen() {
         </View>
       </View>
 
-      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: tabBarInset + 16 }}>
+      <TelaComTeclado contentContainerStyle={{ padding: 16, paddingBottom: tabBarInset + 16 }}>
         <View
           style={{
             backgroundColor: prontoParaEmitir ? "#D1FAE5" : "#FEF3C7",
@@ -523,7 +519,7 @@ export default function FiscalConfigScreen() {
             </Text>
           )}
         </Pressable>
-      </ScrollView>
-    </KeyboardAvoidingView>
+      </TelaComTeclado>
+    </View>
   );
 }

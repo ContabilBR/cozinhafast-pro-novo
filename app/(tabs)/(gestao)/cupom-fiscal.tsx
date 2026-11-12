@@ -15,6 +15,7 @@ import { useFocusEffect } from "@react-navigation/native";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import { TelaComTeclado } from "@/components/TelaComTeclado";
 import { useColors } from "@/hooks/useColors";
 import { useTabBarInset } from "@/hooks/useTabBarInset";
 import { apiGet, apiPost } from "@/utils/api";
@@ -331,7 +332,7 @@ export default function CupomFiscalScreen() {
 
       {/* ---------- Etapa 2: confirmar ---------- */}
       {etapa === "confirmar" && selecionada && (
-        <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: tabBarInset + 16 }}>
+        <TelaComTeclado contentContainerStyle={{ padding: 16, paddingBottom: tabBarInset + 16 }}>
           <View
             style={{
               backgroundColor: COLORS.surface,
@@ -421,7 +422,7 @@ export default function CupomFiscalScreen() {
           <Pressable onPress={reiniciar} style={{ marginTop: 12, alignItems: "center" }}>
             <Text style={{ color: COLORS.textSecondary, fontSize: 14 }}>Trocar comanda</Text>
           </Pressable>
-        </ScrollView>
+        </TelaComTeclado>
       )}
 
       {/* ---------- Etapa 3: resultado ---------- */}

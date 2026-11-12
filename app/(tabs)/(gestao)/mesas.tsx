@@ -1,3 +1,4 @@
+import { TelaComTeclado } from "@/components/TelaComTeclado";
 import React, { useState, useCallback } from "react";
 import {
   View,
@@ -681,16 +682,10 @@ export default function GestaoMesasScreen() {
         </ScrollView>
       )}
 
-      <Modal visible={showModal} transparent animationType="fade" onRequestClose={() => setShowModal(false)}>
-        <View
-          style={{
-            flex: 1,
-            backgroundColor: "rgba(0,0,0,0.5)",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: 24,
-          }}
-        >
+      <Modal visible={showModal} transparent animationType="fade" statusBarTranslucent navigationBarTranslucent onRequestClose={() => setShowModal(false)}>
+        <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)" }}>
+          <TelaComTeclado contentContainerStyle={{ flexGrow: 1 }}>
+          <View style={{ flexGrow: 1, alignItems: "center", justifyContent: "center", padding: 24 }}>
           <View
             style={{
               backgroundColor: COLORS.surface,
@@ -915,6 +910,8 @@ export default function GestaoMesasScreen() {
               )}
             </AnimatedPressable>
           </View>
+          </View>
+          </TelaComTeclado>
         </View>
       </Modal>
 

@@ -4,6 +4,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { useFocusEffect } from "@react-navigation/native";
 import { Ionicons } from "@expo/vector-icons";
+import { TelaComTeclado } from "@/components/TelaComTeclado";
 import { useColors } from "@/hooks/useColors";
 import { useTabBarInset } from "@/hooks/useTabBarInset";
 import { AnimatedPressable } from "@/components/AnimatedPressable";
@@ -211,14 +212,15 @@ export default function EstoqueScreen() {
       )}
 
       {/* Modal Cadastro/Edição */}
-      <Modal visible={showModal} animationType="slide" transparent>
-        <View style={{ flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(0,0,0,0.5)" }}>
-          <View style={{ backgroundColor: COLORS.background, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, maxHeight: "80%" }}>
+      <Modal visible={showModal} animationType="slide" transparent statusBarTranslucent navigationBarTranslucent>
+        <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)" }}>
+          <TelaComTeclado contentContainerStyle={{ flexGrow: 1, justifyContent: "flex-end" }}>
+          <View style={{ backgroundColor: COLORS.background, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20 }}>
             <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
               <Text style={{ fontSize: 18, fontWeight: "700", color: COLORS.text }}>{editingInsumo ? "Editar Insumo" : "Novo Insumo"}</Text>
               <Pressable onPress={() => { console.log("[EstoqueScreen] modal closed"); setShowModal(false); }}><Ionicons name="close" size={24} color={COLORS.text} /></Pressable>
             </View>
-            <ScrollView>
+            <View>
               <Text style={{ fontSize: 13, color: COLORS.textSecondary, marginBottom: 4 }}>Nome *</Text>
               <TextInput value={nome} onChangeText={setNome} placeholder="Ex: Arroz" placeholderTextColor={COLORS.textSecondary}
                 style={{ backgroundColor: COLORS.surface, borderRadius: 10, padding: 12, color: COLORS.text, fontSize: 15, marginBottom: 12, borderWidth: 0.5, borderColor: COLORS.border }} />
@@ -247,15 +249,29 @@ export default function EstoqueScreen() {
               <Pressable onPress={handleSave} disabled={saving} style={{ backgroundColor: COLORS.primary, borderRadius: 12, padding: 16, alignItems: "center" }}>
                 {saving ? <ActivityIndicator color="#fff" /> : <Text style={{ color: "#fff", fontSize: 16, fontWeight: "700" }}>Salvar</Text>}
               </Pressable>
-            </ScrollView>
+            </View>
           </View>
+          </TelaComTeclado>
         </View>
       </Modal>
 
       {/* Modal Movimentação */}
-      <Modal visible={showMovModal} animationType="slide" transparent>
-        <View style={{ flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(0,0,0,0.5)" }}>
-          <View style={{ backgroundColor: COLORS.background, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20 }}>
+      <Modal visible={showMovModal} animationType="slide" transparent statusBarTranslucent navigationBarTranslucent>
+        <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)" }}>
+          <TelaComTeclado
+            contentContainerStyle={{ flexGrow: 1, justifyContent: "flex-end" }}
+            rodapeStyle={{ backgroundColor: COLORS.background, paddingHorizontal: 20, paddingBottom: 20 }}
+            rodape={
+            <Pressable onPress={handleMov} disabled={movSaving} style={{ backgroundColor: movTipo === "entrada" ? "#22C55E" : "#EF4444", borderRadius: 12, padding: 16, alignItems: "center" }}>
+              {movSaving ? <ActivityIndicator color="#fff" /> : (
+                <Text style={{ color: "#fff", fontSize: 16, fontWeight: "700" }}>
+                  {movTipo === "entrada" ? "Registrar Entrada" : "Registrar Saída"}
+                </Text>
+              )}
+            </Pressable>
+            }
+          >
+          <View style={{ backgroundColor: COLORS.background, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, paddingBottom: 0 }}>
             <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
               <Text style={{ fontSize: 18, fontWeight: "700", color: COLORS.text }}>
                 {movTipo === "entrada" ? "Entrada" : "Saída"}: {movInsumo?.nome}
@@ -277,14 +293,8 @@ export default function EstoqueScreen() {
             <TextInput value={movMotivo} onChangeText={setMovMotivo} placeholder="Ex: Compra fornecedor" placeholderTextColor={COLORS.textSecondary}
               style={{ backgroundColor: COLORS.surface, borderRadius: 10, padding: 12, color: COLORS.text, fontSize: 15, marginBottom: 16, borderWidth: 0.5, borderColor: COLORS.border }} />
 
-            <Pressable onPress={handleMov} disabled={movSaving} style={{ backgroundColor: movTipo === "entrada" ? "#22C55E" : "#EF4444", borderRadius: 12, padding: 16, alignItems: "center" }}>
-              {movSaving ? <ActivityIndicator color="#fff" /> : (
-                <Text style={{ color: "#fff", fontSize: 16, fontWeight: "700" }}>
-                  {movTipo === "entrada" ? "Registrar Entrada" : "Registrar Saída"}
-                </Text>
-              )}
-            </Pressable>
           </View>
+          </TelaComTeclado>
         </View>
       </Modal>
     </SafeAreaView>
