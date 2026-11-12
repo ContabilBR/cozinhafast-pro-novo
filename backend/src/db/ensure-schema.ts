@@ -521,8 +521,30 @@ export async function garantirTabelaTransacoesTerminal(app: App): Promise<void> 
     const existente = await db.execute(
       sql`SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'transacoes_terminal'`
     );
+    // Colunas e índice neutros de provedor (migração 20261112171745_transacoes_terminal_neutra).
+    // Tudo idempotente: o preenchimento de id_externo só toca linhas com id_externo vazio e atk preenchido.
+    const neutros: string[] = [
+      `ALTER TABLE "transacoes_terminal" ADD COLUMN IF NOT EXISTS "id_externo" text`,
+      `ALTER TABLE "transacoes_terminal" ADD COLUMN IF NOT EXISTS "dados_provedor" jsonb`,
+      `UPDATE "transacoes_terminal" SET "id_externo" = "atk" WHERE ("id_externo" IS NULL OR "id_externo" = '') AND "atk" IS NOT NULL AND "atk" <> ''`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS "transacoes_terminal_restaurante_provedor_id_externo_uq" ON "transacoes_terminal" USING btree ("restaurante_id","provedor","id_externo") WHERE id_externo IS NOT NULL`,
+    ];
+
     if (linhasDe(existente).length > 0) {
-      app.logger.debug("Transacoes_terminal table structure verified");
+      // Tabela já criada: só aplica o que falta (uma leitura quando a coluna nova já existe)
+      const coluna = await db.execute(
+        sql`SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'transacoes_terminal' AND column_name = 'id_externo'`
+      );
+      if (linhasDe(coluna).length > 0) {
+        app.logger.debug("Transacoes_terminal table structure verified");
+        return;
+      }
+      await db.transaction(async (tx: any) => {
+        for (const comando of neutros) {
+          await tx.execute(sql.raw(comando));
+        }
+      });
+      app.logger.info("Updated transacoes_terminal with provider-neutral columns");
       return;
     }
 
@@ -565,6 +587,7 @@ export async function garantirTabelaTransacoesTerminal(app: App): Promise<void> 
       `CREATE UNIQUE INDEX IF NOT EXISTS "transacoes_terminal_restaurante_atk_uq" ON "transacoes_terminal" USING btree ("restaurante_id","atk") WHERE atk IS NOT NULL`,
       `CREATE INDEX IF NOT EXISTS "idx_transacoes_terminal_restaurante_comanda" ON "transacoes_terminal" USING btree ("restaurante_id","comanda_id")`,
       `CREATE INDEX IF NOT EXISTS "idx_transacoes_terminal_restaurante_status_created_at" ON "transacoes_terminal" USING btree ("restaurante_id","status","created_at")`,
+      ...neutros,
     ];
 
     await db.transaction(async (tx: any) => {

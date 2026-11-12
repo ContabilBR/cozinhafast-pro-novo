@@ -414,6 +414,13 @@
       "when": 1794453239302,
       "tag": "20261112031359_mensagens_contato",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1794503865383,
+      "tag": "20261112171745_transacoes_terminal_neutra",
+      "breakpoints": true
     }
   ]
 }

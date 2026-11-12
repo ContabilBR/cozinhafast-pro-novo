@@ -367,7 +367,13 @@ export const transacoesTerminal = pgTable("transacoes_terminal", {
   // ATK: código da transação na Stone. É a chave de cancelamento, captura e reimpressão.
   atk: text("atk"),
   itk: text("itk"),
-  // Retorno recebido do terminal, sem interpretação, para diagnóstico
+  // Identificador da transação no provedor (Stone: o mesmo valor do atk; outros: o id que devolverem)
+  idExterno: text("id_externo"),
+  // Campos próprios de cada provedor que não cabem nas colunas comuns.
+  // SEGURANÇA: dados_provedor e retorno_bruto NUNCA podem guardar número completo de cartão,
+  // trilhas, CVV, senhas, tokens ou chaves.
+  dadosProvedor: jsonb("dados_provedor"),
+  // Retorno recebido do terminal, sem interpretação, para diagnóstico (mesma regra de segurança acima)
   retornoBruto: text("retorno_bruto"),
   retornoEm: timestamp("retorno_em", { withTimezone: true }),
   iniciadaPorId: text("iniciada_por_id"),
@@ -378,6 +384,8 @@ export const transacoesTerminal = pgTable("transacoes_terminal", {
   orderIdUnique: uniqueIndex("transacoes_terminal_order_id_uq").on(table.orderId),
   // O mesmo ATK não pode ser registrado duas vezes no restaurante (retorno entregue em duplicidade)
   atkUnique: uniqueIndex("transacoes_terminal_restaurante_atk_uq").on(table.restauranteId, table.atk).where(sql`atk IS NOT NULL`),
+  // A mesma transação do provedor não pode ser registrada duas vezes no restaurante
+  idExternoUnique: uniqueIndex("transacoes_terminal_restaurante_provedor_id_externo_uq").on(table.restauranteId, table.provedor, table.idExterno).where(sql`id_externo IS NOT NULL`),
   idxRestauranteComanda: index("idx_transacoes_terminal_restaurante_comanda").on(table.restauranteId, table.comandaId),
   idxRestauranteStatusCreatedAt: index("idx_transacoes_terminal_restaurante_status_created_at").on(table.restauranteId, table.status, table.createdAt),
   ckStatus: check("ck_transacoes_terminal_status", sql`status IN ('iniciada', 'confirmada', 'recusada', 'cancelada', 'sem_retorno')`),
