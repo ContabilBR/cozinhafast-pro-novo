@@ -35,6 +35,7 @@ export type DadosAvisoContato = {
   restauranteNome: string;
   usuarioNome: string;
   usuarioPapel: string;
+  usuarioEmail: string | null; // vem do cadastro do usuário; nunca vai para o log
   versaoApp: string | null;
   plataforma: string | null;
   telaOrigem: string | null;
@@ -60,6 +61,13 @@ function tipoDoErro(err: unknown): string {
   return `Falha ao enviar e-mail (${tipo})`.slice(0, 200);
 }
 
+// Aceita só um endereço simples e seguro (sem espaços, quebras de linha ou vírgulas)
+function emailValido(valor: string | null | undefined): valor is string {
+  if (typeof valor !== "string") return false;
+  const e = valor.trim();
+  return e.length > 0 && e.length <= 254 && /^[^\s@,;<>"]+@[^\s@,;<>"]+\.[^\s@,;<>"]+$/.test(e);
+}
+
 function montarAssunto(tipo: string, restauranteNome: string): string {
   const rotulo = ROTULO_TIPO[tipo] ?? tipo;
   const assunto = `[Cozinha Fast Pro] ${rotulo}: ${restauranteNome}`.replace(/[\r\n]+/g, " ").trim();
@@ -79,6 +87,7 @@ function montarCorpo(d: DadosAvisoContato): string {
     `Tipo: ${ROTULO_TIPO[d.tipo] ?? d.tipo}`,
     `Restaurante: ${d.restauranteNome}`,
     `Usuário: ${d.usuarioNome} (${d.usuarioPapel})`,
+    ...(emailValido(d.usuarioEmail) ? [`E-mail do usuário: ${d.usuarioEmail.trim()}`] : []),
     `Versão do app: ${d.versaoApp ?? "não informada"}`,
     `Plataforma: ${d.plataforma ?? "não informada"}`,
     `Tela de origem: ${d.telaOrigem ?? "não informada"}`,
@@ -113,6 +122,7 @@ async function enviar(d: DadosAvisoContato, usuario: string, senha: string): Pro
       transporte.sendMail({
         from: remetente,
         to: destino,
+        ...(emailValido(d.usuarioEmail) ? { replyTo: d.usuarioEmail.trim() } : {}),
         subject: montarAssunto(d.tipo, d.restauranteNome),
         text: montarCorpo(d),
       }),

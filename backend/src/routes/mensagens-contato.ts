@@ -79,7 +79,7 @@ export function registerMensagensContatoRoutes(app: App) {
 
         // Nome, papel e restaurante vêm do banco; o usuário precisa existir na tabela de usuários
         const usuarios = await app.db
-          .select({ id: schema.usuarios.id, nome: schema.usuarios.nome, role: schema.usuarios.role })
+          .select({ id: schema.usuarios.id, nome: schema.usuarios.nome, role: schema.usuarios.role, email: schema.usuarios.email })
           .from(schema.usuarios)
           .where(and(eq(schema.usuarios.id, authUser.id), eq(schema.usuarios.restauranteId, restauranteId)))
           .limit(1);
@@ -132,6 +132,7 @@ export function registerMensagensContatoRoutes(app: App) {
           restauranteNome: restaurantes[0].nome,
           usuarioNome: usuarios[0].nome,
           usuarioPapel: usuarios[0].role,
+          usuarioEmail: usuarios[0].email, // do cadastro do usuário autenticado, nunca do corpo do pedido
           versaoApp,
           plataforma,
           telaOrigem: tela,
