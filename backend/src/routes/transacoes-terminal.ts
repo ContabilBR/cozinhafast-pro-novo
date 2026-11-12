@@ -4,46 +4,45 @@ import type { App } from "../index.js";
 import { requireAuth as customRequireAuth, requireTenant, requireRole } from "../utils/auth.js";
 import * as schema from "../db/schema/schema.js";
 import { subtotalDaComanda, calcularTotalComandaMesaComDesconto } from "../services/total-comanda.js";
+import { obterProvedor, modoDoProvedor, provedorDoRestaurante, PROVEDOR_PADRAO, ProvedorDesconhecidoError } from "../services/terminal-provedores/registro.js";
+import type { FormaTerminal, ProvedorTerminal } from "../services/terminal-provedores/tipos.js";
+import { descartarCamposSensiveis, sanitizarRetornoBruto } from "../services/terminal-provedores/seguranca.js";
 
-// Pagamento na maquininha (Stone, Deeplink). Etapa 2: ciclo de vida da transação no backend.
+// Pagamento na maquininha. Ciclo de vida da transação no backend, em arquitetura neutra:
+//   - camada comum (este arquivo): comanda, valores, travas de banco, pagamento confirmado,
+//     isolamento por restaurante e idempotência. Não conhece o vocabulário de nenhum provedor.
+//   - um adaptador por provedor (services/terminal-provedores/): traduz a cobrança para o vocabulário
+//     do provedor, limita parcelas, monta a instrução de pagamento e valida o retorno. A Stone
+//     (Deeplink, "stone_deeplink") é o primeiro; o registro devolve o adaptador pelo nome.
+//   - dois modos, declarados pelo adaptador: "aparelho" (o app abre o app de pagamento do aparelho e
+//     devolve o resultado) e "nuvem" (o backend manda ao provedor e recebe por webhook/consulta;
+//     previsto, ainda sem implementação).
 //
-// Fluxo:
+// Fluxo (modo "aparelho"):
 //   1. O app chama POST /api/comandas/:id/terminal/transacoes. O backend valida a comanda, grava a
-//      transação como "iniciada" e devolve os parâmetros para o app montar a URI do terminal
-//      (valor em centavos, order_id, tipo e parcelamento no vocabulário da Stone).
-//   2. O app abre a Stone. Quando ela devolve o resultado, o app chama POST .../retorno.
-//      Se a transação foi aprovada, o backend grava o pagamento (confirmado, referencia = ATK)
-//      na MESMA transação de banco. Cartão já cobrado não pode ser recusado por regra do sistema,
-//      então o retorno NÃO valida excesso de valor: ele registra o que aconteceu.
+//      transação como "iniciada" e devolve a instrução de pagamento ("instrucao_pagamento") e, por
+//      compatibilidade, o bloco "terminal" com os mesmos dados (na Stone: valor em centavos, order_id,
+//      tipo e parcelamento no vocabulário da Stone).
+//   2. O app executa a instrução. Quando o provedor devolve o resultado, o app chama POST .../retorno.
+//      Se a transação foi aprovada, o backend grava o pagamento (confirmado, referencia = identificador
+//      da transação, "id_externo") na MESMA transação de banco. Cartão já cobrado não pode ser recusado
+//      por regra do sistema, então o retorno NÃO valida excesso de valor: ele registra o que aconteceu.
 //   3. Se o app não receber retorno (timeout, app fechado), chama POST .../sem-retorno. O retorno
 //      ainda pode chegar depois e é aceito enquanto a transação não tiver um desfecho final.
 //
 // Esta etapa NÃO fecha a comanda sozinha: o retorno informa se a conta foi quitada ("quitada") e
 // o fechamento segue pelo /fechar de sempre. Cancelamento e reimpressão ficam para outra etapa.
 //
-// Valores monetários: reais com 2 casas no banco; centavos inteiros só na resposta de "iniciar".
+// Segurança: dados_provedor e retorno_bruto nunca guardam número completo de cartão, trilhas, CVV,
+// senhas, tokens ou chaves; campos com esses nomes são descartados antes de gravar.
+//
+// Valores monetários: reais com 2 casas no banco; centavos inteiros só na instrução de pagamento.
 
 const PAPEIS_PAGAMENTO = ["garcom", "gerente", "administrador", "admin"];
 const PAPEIS_GESTAO = ["gerente", "administrador", "admin"];
 
-type FormaTerminal = "cartao_credito" | "cartao_debito" | "pix";
-
-// Vocabulário gravado na tabela (e enviado à Stone em maiúsculas pelo app)
-const TIPO_TRANSACAO: Record<FormaTerminal, "credit" | "debit" | "pix"> = {
-  cartao_credito: "credit",
-  cartao_debito: "debit",
-  pix: "pix",
-};
-
-const FORMA_PAGAMENTO: Record<string, FormaTerminal> = {
-  credit: "cartao_credito",
-  debit: "cartao_debito",
-  pix: "pix",
-};
-
-// A página de Pagamento da Stone fala em 1 a 12 parcelas; os exemplos divergem (2-18, 2-99).
-// Fica o intervalo mais restrito até a confirmação no POS.
-const MAX_PARCELAS = 12;
+// Limite de tamanho (em caracteres, já em JSON) do objeto dados_provedor
+const MAX_DADOS_PROVEDOR = 8000;
 
 const STATUS_FINAIS_NEGATIVOS = ["recusada", "cancelada"];
 
@@ -55,6 +54,15 @@ function codigoPg(err: any): string | undefined {
   return err?.code ?? err?.cause?.code;
 }
 
+// Forma de pagamento do sistema a partir do tipo gravado, pelo adaptador do provedor da transação
+function formaDaTransacao(t: any): FormaTerminal | null {
+  try {
+    return obterProvedor(t.provedor).formaPagamentoDe(t.tipoTransacao);
+  } catch {
+    return null;
+  }
+}
+
 function serializar(t: any) {
   return {
     id: t.id,
@@ -62,7 +70,7 @@ function serializar(t: any) {
     comanda_id: t.comandaId,
     pagamento_id: t.pagamentoId ?? null,
     provedor: t.provedor,
-    forma_pagamento: FORMA_PAGAMENTO[t.tipoTransacao] ?? null,
+    forma_pagamento: formaDaTransacao(t),
     tipo_transacao: t.tipoTransacao,
     tipo_parcelamento: t.tipoParcelamento ?? null,
     parcelas: t.parcelas ?? null,
@@ -70,6 +78,8 @@ function serializar(t: any) {
     status: t.status,
     atk: t.atk ?? null,
     itk: t.itk ?? null,
+    id_externo: t.idExterno ?? null,
+    modo_provedor: modoDoProvedor(t.provedor),
     retorno_em: t.retornoEm ?? null,
     iniciada_por_id: t.iniciadaPorId ?? null,
     iniciada_por_nome: t.iniciadaPorNome ?? null,
@@ -88,13 +98,17 @@ interface IniciarBody {
 
 interface RetornoBody {
   resultado: "aprovada" | "recusada" | "cancelada";
-  atk?: string;
+  id_externo?: string;
+  atk?: string; // sinônimo de id_externo (Stone)
   itk?: string;
   retorno_bruto?: string;
+  dados_provedor?: Record<string, unknown>;
 }
 
 export function registerTransacoesTerminalRoutes(app: App) {
   const db = app.db as any;
+  // Limite de parcelas do provedor atual (o schema da rota é montado uma vez, na inicialização)
+  const maxParcelasSchema = obterProvedor(PROVEDOR_PADRAO).maxParcelas;
 
   // POST /api/comandas/:id/terminal/transacoes — iniciar cobrança na maquininha
   app.fastify.post<{ Params: { id: string }; Body: IniciarBody }>(
@@ -107,7 +121,7 @@ export function registerTransacoesTerminalRoutes(app: App) {
           properties: {
             forma_pagamento: { type: "string", enum: ["cartao_credito", "cartao_debito", "pix"] },
             valor: { type: "number", minimum: 0.01 },
-            parcelas: { type: "integer", minimum: 1, maximum: MAX_PARCELAS },
+            parcelas: { type: "integer", minimum: 1, maximum: maxParcelasSchema },
             tipo_parcelamento: { type: "string", enum: ["lojista", "emissor"] },
             gorjeta: { type: "number", minimum: 0 },
           },
@@ -131,19 +145,14 @@ export function registerTransacoesTerminalRoutes(app: App) {
           return await reply.code(400).send({ error: "A gorjeta deve ser um número maior ou igual a zero." });
         }
 
-        // Parcelamento só existe no crédito. Débito e Pix seguem sem parcelas.
-        let tipoParcelamentoStone: "none" | "merchant" | "issuer" | null = null;
-        let parcelasFinal: number | null = null;
-        if (forma_pagamento === "cartao_credito") {
-          parcelasFinal = parcelas ?? 1;
-          if (parcelasFinal === 1) {
-            tipoParcelamentoStone = "none";
-          } else {
-            tipoParcelamentoStone = tipo_parcelamento === "emissor" ? "issuer" : "merchant";
-          }
-        } else if ((parcelas !== undefined && parcelas > 1) || tipo_parcelamento !== undefined) {
-          return await reply.code(400).send({ error: "Parcelamento só é permitido no cartão de crédito." });
+        const provedorNome = provedorDoRestaurante(restauranteId);
+        const provedor = obterProvedor(provedorNome);
+
+        const traducao = provedor.traduzirCobranca({ forma_pagamento, parcelas, tipo_parcelamento });
+        if (!traducao.ok) {
+          return await reply.code(400).send({ error: traducao.erro });
         }
+        const cobranca = traducao.cobranca;
 
         const valorReais = arredondar(valor);
 
@@ -193,10 +202,10 @@ export function registerTransacoesTerminalRoutes(app: App) {
             .values({
               restauranteId,
               comandaId: request.params.id,
-              provedor: "stone_deeplink",
-              tipoTransacao: TIPO_TRANSACAO[forma_pagamento],
-              tipoParcelamento: tipoParcelamentoStone,
-              parcelas: parcelasFinal,
+              provedor: provedorNome,
+              tipoTransacao: cobranca.tipoTransacao,
+              tipoParcelamento: cobranca.tipoParcelamento,
+              parcelas: cobranca.parcelas,
               valor: valorReais.toFixed(2),
               status: "iniciada",
               iniciadaPorId: authUser.id,
@@ -204,18 +213,20 @@ export function registerTransacoesTerminalRoutes(app: App) {
             })
             .returning();
 
+          const instrucao = provedor.montarInstrucao({
+            valorCentavos: Math.round(valorReais * 100),
+            orderId: Number(t.orderId),
+            cobranca,
+          });
+
           return {
             status: 201,
             body: {
               transacao: serializar(t),
-              // Parâmetros para o app montar a URI do terminal (payment-app://pay)
-              terminal: {
-                amount_centavos: Math.round(valorReais * 100),
-                order_id: Number(t.orderId),
-                transaction_type: TIPO_TRANSACAO[forma_pagamento].toUpperCase(),
-                installment_type: tipoParcelamentoStone ? tipoParcelamentoStone.toUpperCase() : null,
-                installment_count: parcelasFinal,
-              },
+              // Compatibilidade: mesmos dados que o app já lê (na Stone, os parâmetros da URI do terminal)
+              terminal: instrucao.dados,
+              // Instrução neutra: provedor, modo e dados para executar
+              instrucao_pagamento: instrucao,
               restante_antes: restante,
             },
           };
@@ -239,9 +250,11 @@ export function registerTransacoesTerminalRoutes(app: App) {
           type: "object",
           properties: {
             resultado: { type: "string", enum: ["aprovada", "recusada", "cancelada"] },
+            id_externo: { type: "string", minLength: 1, maxLength: 100 },
             atk: { type: "string", minLength: 1, maxLength: 100 },
             itk: { type: "string", maxLength: 100 },
             retorno_bruto: { type: "string", maxLength: 8000 },
+            dados_provedor: { type: "object" },
           },
           required: ["resultado"],
         },
@@ -254,12 +267,18 @@ export function registerTransacoesTerminalRoutes(app: App) {
         if (!(await requireRole(authUser, PAPEIS_PAGAMENTO, reply))) return;
         const restauranteId = requireTenant(authUser);
 
-        const { resultado, itk, retorno_bruto } = request.body;
-        const atk = request.body.atk?.trim() || undefined;
+        const { resultado, itk, dados_provedor } = request.body;
+        // id_externo prevalece; atk é aceito como sinônimo (Stone)
+        const idExterno = request.body.id_externo?.trim() || request.body.atk?.trim() || undefined;
 
-        if (resultado === "aprovada" && !atk) {
-          // O ATK é a chave do cancelamento e da reimpressão: sem ele, a aprovação não é utilizável.
-          return await reply.code(400).send({ error: "Transação aprovada exige o ATK devolvido pela maquininha." });
+        // Nada sensível é gravado: campos com nomes de cartão, trilha, CVV, senha, token ou chave são descartados
+        const retorno_bruto = request.body.retorno_bruto !== undefined ? sanitizarRetornoBruto(request.body.retorno_bruto) : undefined;
+        let dadosProvedor: unknown = undefined;
+        if (dados_provedor !== undefined && dados_provedor !== null) {
+          if (JSON.stringify(dados_provedor).length > MAX_DADOS_PROVEDOR) {
+            return await reply.code(400).send({ error: `dados_provedor excede o limite de ${MAX_DADOS_PROVEDOR} caracteres.` });
+          }
+          dadosProvedor = descartarCamposSensiveis(dados_provedor);
         }
 
         const saida: { status: number; body: any } = await db.transaction(async (tx: any) => {
@@ -271,9 +290,20 @@ export function registerTransacoesTerminalRoutes(app: App) {
           if (!encontradas.length) return { status: 404, body: { error: "Transação não encontrada" } };
           const t = encontradas[0];
 
+          let provedor: ProvedorTerminal;
+          try {
+            provedor = obterProvedor(t.provedor);
+          } catch (e) {
+            if (e instanceof ProvedorDesconhecidoError) return { status: 500, body: { error: e.message } };
+            throw e;
+          }
+          const erroRetorno = provedor.validarRetorno({ resultado, idExterno });
+          if (erroRetorno) return { status: 400, body: { error: erroRetorno } };
+          const legado = provedor.camposLegados({ idExterno, itk });
+
           // Retorno repetido (o app reenviou): responde o estado atual sem gravar de novo
           if (t.status === "confirmada") {
-            if (resultado === "aprovada" && (!t.atk || t.atk === atk)) {
+            if (resultado === "aprovada" && (!t.idExterno || t.idExterno === idExterno)) {
               return { status: 200, body: { transacao: serializar(t), repetido: true } };
             }
             app.logger.warn({ transacaoId: t.id, resultado }, "Retorno conflitante para transação já confirmada");
@@ -294,9 +324,11 @@ export function registerTransacoesTerminalRoutes(app: App) {
               .update(schema.transacoesTerminal)
               .set({
                 status: resultado,
-                atk: atk ?? t.atk,
-                itk: itk ?? t.itk,
+                idExterno: idExterno ?? t.idExterno,
+                atk: legado.atk ?? t.atk,
+                itk: legado.itk ?? t.itk,
                 retornoBruto: retorno_bruto ?? t.retornoBruto,
+                dadosProvedor: dadosProvedor ?? t.dadosProvedor,
                 retornoEm: agora,
                 updatedAt: agora,
               })
@@ -328,11 +360,11 @@ export function registerTransacoesTerminalRoutes(app: App) {
               .insert(schema.pagamentos)
               .values({
                 comandaId: t.comandaId,
-                formaPagamento: FORMA_PAGAMENTO[t.tipoTransacao] ?? "cartao_debito",
+                formaPagamento: provedor.formaPagamentoDe(t.tipoTransacao) ?? "cartao_debito",
                 status: "confirmado",
                 valor: valor.toFixed(2),
                 troco: "0",
-                referencia: atk,
+                referencia: idExterno,
                 confirmadoEm: agora,
                 restauranteId,
               })
@@ -361,9 +393,11 @@ export function registerTransacoesTerminalRoutes(app: App) {
             .set({
               status: "confirmada",
               pagamentoId,
-              atk,
-              itk: itk ?? t.itk,
+              idExterno,
+              atk: legado.atk ?? t.atk,
+              itk: legado.itk ?? t.itk,
               retornoBruto: retorno_bruto ?? t.retornoBruto,
+              dadosProvedor: dadosProvedor ?? t.dadosProvedor,
               retornoEm: agora,
               updatedAt: agora,
             })
@@ -372,8 +406,8 @@ export function registerTransacoesTerminalRoutes(app: App) {
 
           if (!comandaAberta) {
             // Cobrança aprovada, mas a comanda já não está aberta (fechada ou arquivada no meio do caminho).
-            // A transação fica confirmada com o ATK para a gestão conciliar ou estornar.
-            app.logger.warn({ transacaoId: t.id, comandaId: t.comandaId, atk }, "Transação aprovada sem comanda aberta: pagamento não registrado");
+            // A transação fica confirmada com o identificador do provedor para a gestão conciliar ou estornar.
+            app.logger.warn({ transacaoId: t.id, comandaId: t.comandaId, idExterno }, "Transação aprovada sem comanda aberta: pagamento não registrado");
             return {
               status: 200,
               body: {
@@ -390,9 +424,9 @@ export function registerTransacoesTerminalRoutes(app: App) {
         return await reply.code(saida.status).send(saida.body);
       } catch (err) {
         if (codigoPg(err) === "23505") {
-          // ATK já usado por outra transação do restaurante
-          app.logger.warn({ transacaoId: request.params.id }, "ATK duplicado ao registrar retorno do terminal");
-          return await reply.code(409).send({ error: "Este ATK já está registrado em outra transação." });
+          // Identificador já usado por outra transação do restaurante (índice único de atk ou de id_externo)
+          app.logger.warn({ transacaoId: request.params.id }, "Identificador de transação duplicado ao registrar retorno do terminal");
+          return await reply.code(409).send({ error: "Este identificador de transação já está registrado em outra transação." });
         }
         app.logger.error({ error: (err as any).message }, "Erro ao registrar retorno do terminal");
         return await reply.code(500).send({ error: "Erro interno do servidor" });
