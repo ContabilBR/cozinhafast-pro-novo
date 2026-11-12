@@ -27,13 +27,6 @@ const TEXT_TERTIARY = COLORS.textTertiary;
 const INPUT_BG = COLORS.surfaceSecondary;
 const ERROR = COLORS.danger;
 
-const DEMO_CREDENTIALS = [
-  { role: "Garçom", email: "garcom@cozinhafast.com" },
-  { role: "Cozinheiro", email: "cozinheiro@cozinhafast.com" },
-  { role: "Gerente", email: "gerente@cozinhafast.com" },
-  { role: "Administrador", email: "admin@cozinhafast.com" },
-];
-
 const ROLE_ROUTES: Record<string, string> = {
   garcom: "/(tabs)/(mesas)",
   cozinheiro: "/(tabs)/(cozinha)",
@@ -123,13 +116,6 @@ export default function AuthScreen() {
     }
   };
 
-  const fillDemo = (cred: (typeof DEMO_CREDENTIALS)[0]) => {
-    console.log("[AuthScreen] Demo credentials selected for:", cred.role);
-    setEmail(cred.email);
-    setPassword("123456");
-    setError("");
-  };
-
   if (isLoading) {
     return (
       <View style={{ flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: BG }}>
@@ -144,7 +130,7 @@ export default function AuthScreen() {
       <StatusBar style="dark" />
       <ScrollView
         style={{ flex: 1 }}
-        contentContainerStyle={{ paddingTop: insets.top + 20, paddingBottom: insets.bottom + 40, paddingHorizontal: 24 }}
+        contentContainerStyle={{ flexGrow: 1, justifyContent: "center", paddingTop: insets.top + 20, paddingBottom: insets.bottom + 40, paddingHorizontal: 24 }}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
@@ -408,60 +394,6 @@ export default function AuthScreen() {
             </AnimatedPressable>
           </Animated.View>
         )}
-
-        {/* Demo credentials */}
-        <Animated.View style={{ marginTop: 32, opacity: fadeAnim }}>
-          <Text
-            style={{
-              fontFamily: "Outfit_600SemiBold",
-              fontSize: 12,
-              color: TEXT_SECONDARY,
-              textAlign: "center",
-              marginBottom: 12,
-              textTransform: "uppercase",
-              letterSpacing: 1,
-            }}
-          >
-            Credenciais de demonstração
-          </Text>
-          <View
-            style={{
-              backgroundColor: CARD,
-              borderRadius: 16,
-              borderWidth: 1,
-              borderColor: BORDER,
-              overflow: "hidden",
-            }}
-          >
-            {DEMO_CREDENTIALS.map((cred, i) => (
-              <AnimatedPressable
-                key={cred.role}
-                onPress={() => fillDemo(cred)}
-                style={{
-                  flexDirection: "row",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  paddingHorizontal: 16,
-                  paddingVertical: 13,
-                  borderBottomWidth: i < DEMO_CREDENTIALS.length - 1 ? 1 : 0,
-                  borderBottomColor: BORDER,
-                }}
-              >
-                <View style={{ gap: 2 }}>
-                  <Text style={{ fontFamily: "Outfit_600SemiBold", fontSize: 14, color: TEXT }}>
-                    {cred.role}
-                  </Text>
-                  <Text style={{ fontFamily: "Outfit_400Regular", fontSize: 12, color: TEXT_SECONDARY }}>
-                    {cred.email}
-                  </Text>
-                </View>
-                <Text style={{ fontFamily: "Outfit_600SemiBold", fontSize: 13, color: PRIMARY }}>
-                  Usar
-                </Text>
-              </AnimatedPressable>
-            ))}
-          </View>
-        </Animated.View>
       </ScrollView>
     </View>
   );
