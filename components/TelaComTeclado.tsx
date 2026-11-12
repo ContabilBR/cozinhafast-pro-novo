@@ -1,5 +1,5 @@
 import React from "react";
-import { StyleProp, View, ViewStyle } from "react-native";
+import { RefreshControlProps, StyleProp, View, ViewStyle } from "react-native";
 import { KeyboardAwareScrollView, KeyboardStickyView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -13,6 +13,8 @@ type Props = {
   rodape?: React.ReactNode;
   /** Estilo do contêiner do rodapé. */
   rodapeStyle?: StyleProp<ViewStyle>;
+  /** Puxar-para-atualizar da rolagem (opcional). */
+  refreshControl?: React.ReactElement<RefreshControlProps>;
 };
 
 /**
@@ -20,7 +22,7 @@ type Props = {
  * em Android e iOS, celular e tablet. Fecha o teclado ao arrastar a lista e
  * mantém os toques nos botões funcionando com o teclado aberto.
  */
-export function TelaComTeclado({ children, contentContainerStyle, espacoExtra = 0, rodape, rodapeStyle }: Props) {
+export function TelaComTeclado({ children, contentContainerStyle, espacoExtra = 0, rodape, rodapeStyle, refreshControl }: Props) {
   const insets = useSafeAreaInsets();
   return (
     <View style={{ flex: 1 }}>
@@ -31,6 +33,7 @@ export function TelaComTeclado({ children, contentContainerStyle, espacoExtra = 
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
         showsVerticalScrollIndicator={false}
+        refreshControl={refreshControl}
       >
         {children}
       </KeyboardAwareScrollView>

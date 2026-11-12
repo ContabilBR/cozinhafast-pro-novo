@@ -1,3 +1,4 @@
+import { TelaComTeclado } from "@/components/TelaComTeclado";
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import {
   View,
@@ -1221,7 +1222,7 @@ export default function PedidosGarcomScreen() {
           </AnimatedPressable>
         </View>
       ) : (
-        <ScrollView
+        <TelaComTeclado
           contentContainerStyle={{
             paddingTop: 16,
             paddingBottom: 120,
@@ -1295,7 +1296,7 @@ export default function PedidosGarcomScreen() {
               />
             ))
           )}
-        </ScrollView>
+        </TelaComTeclado>
       )}
       <Toast message={toastMessage} visible={toastVisible} />
     </View>

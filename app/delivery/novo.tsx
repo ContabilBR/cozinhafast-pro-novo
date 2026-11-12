@@ -12,8 +12,6 @@ import {
   Modal,
   ImageSourcePropType,
   Animated,
-  KeyboardAvoidingView,
-  Platform,
 } from "react-native";
 import { Image } from "expo-image";
 import { useRouter } from "expo-router";
@@ -577,12 +575,10 @@ function DishSelectorModal({
       visible={visible}
       animationType="slide"
       statusBarTranslucent
+      navigationBarTranslucent
       onRequestClose={handleClose}
     >
-      <KeyboardAvoidingView
-        style={{ flex: 1, backgroundColor: COLORS.background }}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-      >
+      <View style={{ flex: 1, backgroundColor: COLORS.background }}>
         {/* Header */}
         <View
           style={{
@@ -816,7 +812,7 @@ function DishSelectorModal({
             </Text>
           </AnimatedPressable>
         </View>
-      </KeyboardAvoidingView>
+      </View>
     </Modal>
   );
 }
