@@ -3,7 +3,7 @@ import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { useColors } from '@/hooks/useColors';
-import { exportarExcel, exportarPdf } from '@/utils/exportacao/exportar';
+import { executarEtapa, exportarExcel, exportarPdf } from '@/utils/exportacao/exportar';
 import type { RelatorioDef } from '@/utils/exportacao/definicao';
 
 /** Par de botões idêntico em todas as telas de relatório. `gerar` monta a definição do relatório. */
@@ -15,7 +15,7 @@ export function BotoesExportar({ gerar }: { gerar: () => Promise<RelatorioDef> }
     if (ocupado) return;
     setOcupado(tipo); setErro('');
     try {
-      const definicao = await gerar();
+      const definicao = await executarEtapa('Falha ao montar o relatório', gerar);
       await (tipo === 'excel' ? exportarExcel(definicao) : exportarPdf(definicao));
     } catch (e: unknown) {
       setErro((e as Error)?.message || 'Não foi possível exportar. Tente novamente.');
