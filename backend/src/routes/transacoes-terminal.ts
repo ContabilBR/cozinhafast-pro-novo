@@ -149,7 +149,7 @@ export function registerTransacoesTerminalRoutes(app: App) {
         const provedor = obterProvedor(provedorNome);
 
         const traducao = provedor.traduzirCobranca({ forma_pagamento, parcelas, tipo_parcelamento });
-        if (!traducao.ok) {
+        if (!traducao.ok || !traducao.cobranca) {
           return await reply.code(400).send({ error: traducao.erro });
         }
         const cobranca = traducao.cobranca;

@@ -21,7 +21,13 @@ export interface CobrancaTraduzida {
   parcelas: number | null;
 }
 
-export type ResultadoTraducao = { ok: true; cobranca: CobrancaTraduzida } | { ok: false; erro: string };
+// Formato único (o projeto não usa strict, então uma união discriminada não é distinguida):
+// ok=true traz "cobranca"; ok=false traz "erro".
+export interface ResultadoTraducao {
+  ok: boolean;
+  cobranca?: CobrancaTraduzida;
+  erro?: string;
+}
 
 export interface EntradaInstrucao {
   valorCentavos: number;
