@@ -1,11 +1,14 @@
 // Nada sensível pode ser gravado em dados_provedor nem em retorno_bruto: número completo de cartão,
-// trilhas, CVV, senhas, tokens ou chaves. Qualquer campo com esses nomes é descartado.
+// trilhas, CVV, senhas, tokens ou chaves, nem o nome do portador. Qualquer campo com esses nomes é descartado.
+// "authorization_code" e "authorization_date_time" (conciliação) são mantidos: só a credencial
+// "authorization" (e authorizationheader/authorizationtoken) é descartada.
 
-const NOMES_EXATOS = new Set(["pan", "pin", "cvv", "cvc", "csc", "key", "cvv2", "cvc2"]);
+const NOMES_EXATOS = new Set(["pan", "pin", "cvv", "cvc", "csc", "key", "cvv2", "cvc2", "authorization"]);
 const NOMES_CONTIDOS = [
   "cardnumber", "numerocartao", "numcartao", "cartaonumero", "numerodocartao",
   "track", "trilha", "senha", "password", "passwd", "token", "secret", "segredo",
-  "chave", "apikey", "privatekey", "authorization", "codigodeseguranca", "securitycode",
+  "chave", "apikey", "privatekey", "authorizationheader", "authorizationtoken", "codigodeseguranca", "securitycode",
+  "cardholder", "nomeportador", "nomedoportador",
 ];
 const MAX_PROFUNDIDADE = 6;
 
