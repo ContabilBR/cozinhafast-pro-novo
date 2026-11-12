@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
-import { View, Text, Modal, Pressable, ScrollView, TextInput, ActivityIndicator } from "react-native";
+import { View, Text, Modal, Pressable, TextInput, ActivityIndicator } from "react-native";
+import { TelaComTeclado } from "@/components/TelaComTeclado";
 import { Ionicons } from "@expo/vector-icons";
 import { useColors } from "@/hooks/useColors";
 import {
@@ -112,9 +113,11 @@ export function CancelarItemModal({
   };
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={handleFechar}>
+    <Modal visible={visible} transparent animationType="fade" statusBarTranslucent navigationBarTranslucent onRequestClose={handleFechar}>
+      <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.45)" }}>
+      <TelaComTeclado contentContainerStyle={{ flexGrow: 1 }}>
       <Pressable
-        style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.45)", alignItems: "center", justifyContent: "center", padding: 24 }}
+        style={{ flexGrow: 1, alignItems: "center", justifyContent: "center", padding: 24 }}
         onPress={handleFechar}
       >
         <Pressable
@@ -244,7 +247,7 @@ export function CancelarItemModal({
             Motivo (obrigatório)
           </Text>
 
-          <ScrollView style={{ flexGrow: 0 }} keyboardShouldPersistTaps="handled">
+          <View>
             {MOTIVOS_CANCELAMENTO.map((m) => {
               const selecionado = motivo === m.value;
               return (
@@ -333,7 +336,7 @@ export function CancelarItemModal({
                 />
               </View>
             ) : null}
-          </ScrollView>
+          </View>
 
           {erro ? (
             <Text style={{ fontFamily: "Outfit_500Medium", fontSize: 13, color: "#EF4444", marginTop: 10 }}>{erro}</Text>
@@ -378,6 +381,8 @@ export function CancelarItemModal({
           </View>
         </Pressable>
       </Pressable>
+      </TelaComTeclado>
+      </View>
     </Modal>
   );
 }

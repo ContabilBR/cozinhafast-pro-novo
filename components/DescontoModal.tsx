@@ -1,10 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Platform,
-  Pressable, ScrollView, StyleSheet, Text, TextInput, View,
+  ActivityIndicator, Alert, Modal,
+  Pressable, StyleSheet, Text, TextInput, View,
 } from 'react-native';
 import { useColors } from '@/hooks/useColors';
 import { CampoMoeda } from '@/components/CampoMoeda';
+import { TelaComTeclado } from '@/components/TelaComTeclado';
 import {
   AplicarDescontoCorpo, AutorizacaoGerente, DescontoAtual, MotivoDesconto,
   MOTIVOS_DESCONTO, calcularTotalComDesconto,
@@ -133,12 +134,13 @@ export function DescontoModal({ visible, subtotal, descontoAtual, exigeAutorizac
     }
   };
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={fechar}>
-      <KeyboardAvoidingView style={s.overlay} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+    <Modal visible={visible} transparent animationType="fade" statusBarTranslucent navigationBarTranslucent onRequestClose={fechar}>
+      <View style={s.fundo}>
+      <TelaComTeclado contentContainerStyle={s.overlay}>
         <Pressable style={StyleSheet.absoluteFill} onPress={fechar} accessibilityLabel="Fechar desconto" disabled={enviando} />
         <View style={[s.card, { backgroundColor: COLORS.surface }]}>
           <Text style={[s.title, { color: COLORS.text }]}>Desconto e cortesia</Text>
-          <ScrollView keyboardShouldPersistTaps="handled" style={s.scroll} contentContainerStyle={s.content}>
+          <View style={[s.scroll, s.content]}>
             <Text style={[s.label, { color: COLORS.textSecondary }]}>Tipo</Text>
             {TIPOS.map((t) => (
               <Pressable key={t.value} disabled={enviando} onPress={() => { setTipo(t.value); setErro(''); }}
@@ -209,7 +211,7 @@ export function DescontoModal({ visible, subtotal, descontoAtual, exigeAutorizac
                   style={[s.input, { color: COLORS.text, borderColor: COLORS.border, backgroundColor: COLORS.surfaceSecondary }]} />
               </View>
             )}
-          </ScrollView>
+          </View>
           {erro ? <Text accessibilityRole="alert" style={[s.error, { color: COLORS.danger }]}>{erro}</Text> : null}
           {temDesconto && (
             <Pressable onPress={remover} disabled={acaoDesabilitada} accessibilityRole="button"
@@ -227,13 +229,15 @@ export function DescontoModal({ visible, subtotal, descontoAtual, exigeAutorizac
             </Pressable>
           </View>
         </View>
-      </KeyboardAvoidingView>
+      </TelaComTeclado>
+      </View>
     </Modal>
   );
 }
 
 const s = StyleSheet.create({
-  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'center', alignItems: 'center', padding: 24 },
+  fundo: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)' },
+  overlay: { flexGrow: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
   card: { width: '100%', maxWidth: 380, maxHeight: '90%', borderRadius: 18, padding: 20, shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.18, shadowRadius: 20, elevation: 10 },
   title: { fontSize: 19, fontFamily: 'Outfit_700Bold', marginBottom: 12 },
   scroll: { flexShrink: 1 },

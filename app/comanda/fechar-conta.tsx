@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
-import { View, Text, ScrollView, Pressable, Alert, ActivityIndicator, TextInput } from "react-native";
+import { View, Text, Pressable, Alert, ActivityIndicator, TextInput } from "react-native";
+import { TelaComTeclado } from "@/components/TelaComTeclado";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -257,7 +258,7 @@ export default function FecharContaScreen() {
         <Pressable onPress={etapaAnterior}><Ionicons name="arrow-back" size={24} color={COLORS.text} /></Pressable>
         <Text style={{ fontSize: 20, fontWeight: "700", color: COLORS.text }}>Fechar conta</Text>
       </View>
-      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 120 }}>
+      <TelaComTeclado contentContainerStyle={{ padding: 16, paddingBottom: 120 }}>
         <View style={{ flexDirection: "row", justifyContent: "center", gap: 8, marginBottom: 16 }}>
           {ETAPAS.map((e, i) => (
             <View key={e} style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
@@ -416,7 +417,7 @@ export default function FecharContaScreen() {
           {restante <= 0 && <Pressable onPress={fecharComanda} style={{ ...btnPrimary, marginTop: 10, backgroundColor: "#22C55E" }}><Text style={{ color: "white", fontSize: 16, fontWeight: "600" }}>Fechar comanda</Text></Pressable>}
           </>)}
         </>)}
-      </ScrollView>
+      </TelaComTeclado>
     </View>
   );
 }

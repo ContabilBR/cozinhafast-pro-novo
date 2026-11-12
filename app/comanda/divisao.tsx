@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
-import { View, Text, ScrollView, Pressable, Alert, TextInput, ActivityIndicator } from "react-native";
+import { View, Text, Pressable, Alert, TextInput, ActivityIndicator } from "react-native";
+import { TelaComTeclado } from "@/components/TelaComTeclado";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -56,7 +57,7 @@ export default function DivisaoScreen() {
         <Pressable onPress={() => { console.log("[DivisaoScreen] Back pressed"); router.back(); }}><Ionicons name="arrow-back" size={24} color={COLORS.text} /></Pressable>
         <Text style={{ fontSize: 20, fontWeight: "700", color: COLORS.text }}>Dividir conta</Text>
       </View>
-      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 120 }}>
+      <TelaComTeclado contentContainerStyle={{ padding: 16, paddingBottom: 120 }}>
         <View style={{ backgroundColor: COLORS.surface, borderRadius: 12, padding: 14, borderWidth: 0.5, borderColor: COLORS.surfaceSecondary, marginBottom: 16, alignItems: "center" }}>
           <Text style={{ fontSize: 13, color: COLORS.textSecondary }}>Total da comanda</Text>
           <Text style={{ fontSize: 28, fontWeight: "700", color: COLORS.primary, marginTop: 4 }}>{formatCurrency(totalComanda)}</Text>
@@ -122,7 +123,7 @@ export default function DivisaoScreen() {
             )}
           </View>
         )}
-      </ScrollView>
+      </TelaComTeclado>
     </View>
   );
 }

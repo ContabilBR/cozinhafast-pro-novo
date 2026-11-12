@@ -1,6 +1,7 @@
 // force rebuild v3
 import React, { useState, useEffect } from "react";
-import { View, Text, ScrollView, Pressable, Alert, ActivityIndicator, TextInput } from "react-native";
+import { View, Text, Pressable, Alert, ActivityIndicator, TextInput } from "react-native";
+import { TelaComTeclado } from "@/components/TelaComTeclado";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -87,7 +88,7 @@ export default function PagamentoScreen() {
         <Pressable onPress={() => { console.log("[PagamentoScreen] Back pressed"); router.back(); }}><Ionicons name="arrow-back" size={24} color={COLORS.text} /></Pressable>
         <Text style={{ fontSize: 20, fontWeight: "700", color: COLORS.text }}>Pagamento</Text>
       </View>
-      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 120 }}>
+      <TelaComTeclado contentContainerStyle={{ padding: 16, paddingBottom: 120 }}>
         <View style={{ backgroundColor: COLORS.surface, borderRadius: 12, padding: 14, borderWidth: 0.5, borderColor: COLORS.surfaceSecondary, marginBottom: 16 }}>
           <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 4 }}><Text style={{ fontSize: 13, color: COLORS.textSecondary }}>Total da comanda</Text><Text style={{ fontSize: 13, color: COLORS.text }}>{formatCurrency(totalComanda)}</Text></View>
           <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 4 }}><Text style={{ fontSize: 13, color: COLORS.textSecondary }}>Já pago</Text><Text style={{ fontSize: 13, color: "#22C55E" }}>{formatCurrency(totalPago)}</Text></View>
@@ -135,7 +136,7 @@ export default function PagamentoScreen() {
         <Pressable onPress={submit} disabled={saving} style={{ backgroundColor: saving ? COLORS.textTertiary : COLORS.primary, borderRadius: 12, padding: 16, alignItems: "center", marginTop: 8 }}>
           {saving ? <ActivityIndicator color="white" /> : <Text style={{ color: "white", fontSize: 16, fontWeight: "600" }}>Registrar pagamento</Text>}
         </Pressable>
-      </ScrollView>
+      </TelaComTeclado>
     </View>
   );
 }
