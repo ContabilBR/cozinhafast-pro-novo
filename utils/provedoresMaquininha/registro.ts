@@ -1,5 +1,6 @@
-import type { ExecutorProvedor, ModoProvedor } from "./tipos";
+import type { ExecutorProvedor, InterpretadorProvedor, ModoProvedor } from "./tipos";
 import { executorStone } from "./stone";
+import { interpretarRetornoStone } from "./stone-retorno";
 
 export const PROVEDOR_STONE = "stone_deeplink";
 
@@ -17,4 +18,14 @@ export function obterExecutor(provedor: string | null | undefined, modo?: ModoPr
 // Nome de exibição para textos; sem provedor conhecido, usa o da Stone (comportamento anterior).
 export function nomeExibicaoProvedor(provedor: string | null | undefined): string {
   return (obterExecutor(provedor) ?? executorStone).nomeExibicao;
+}
+
+const INTERPRETADORES: Record<string, InterpretadorProvedor> = {
+  [PROVEDOR_STONE]: interpretarRetornoStone,
+};
+
+// Interpretador do retorno; sem provedor guardado (registros antigos), usa o da Stone.
+export function obterInterpretador(provedor: string | null | undefined): InterpretadorProvedor | undefined {
+  const nome = provedor || PROVEDOR_STONE;
+  return Object.prototype.hasOwnProperty.call(INTERPRETADORES, nome) ? INTERPRETADORES[nome] : undefined;
 }
