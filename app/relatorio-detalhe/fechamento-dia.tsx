@@ -164,13 +164,13 @@ export default function FechamentoDiaScreen() {
     <ReportNote>Horário do aparelho · Relatório somente de leitura</ReportNote>
     <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
       {[
+        { label: 'Hoje', disabled: selecionada >= hoje, action: () => mudarData(hojeNoAparelho()) },
         { label: 'Dia anterior', disabled: false, action: () => mudarData(deslocarDia(selecionada, -1)) },
         { label: 'Próximo dia', disabled: selecionada >= hoje, action: () => mudarData(deslocarDia(selecionada, 1)) },
-        { label: 'Hoje', disabled: false, action: () => mudarData(hojeNoAparelho()) },
       ].map(button => <AnimatedPressable key={button.label} accessibilityRole="button"
         accessibilityLabel={button.label === 'Hoje' ? 'Selecionar o dia de hoje' : `Selecionar ${button.label.toLowerCase()}`}
         accessibilityState={{ disabled: button.disabled }} disabled={button.disabled} onPress={button.action}
-        style={[reportStyles.chip, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+        style={[reportStyles.chip, { backgroundColor: colors.surface, borderColor: colors.border }, button.disabled && { opacity: 0.4 }]}>
         <Text style={[reportStyles.label, { fontSize: 13, color: colors.primary }]}>{button.label}</Text>
       </AnimatedPressable>)}
     </View>
