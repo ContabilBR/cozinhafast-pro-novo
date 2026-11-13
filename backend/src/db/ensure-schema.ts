@@ -88,13 +88,17 @@ export async function garantirColunasDeCancelamento(app: App): Promise<number> {
  *
  * Cria, só se faltarem, o tipo `modo_comanda` e as colunas:
  *  - restaurante.modo_comanda (NOT NULL, padrão 'mesa': restaurantes existentes ficam em "mesa");
- *  - comandas.rotulo e comandas_historico.rotulo (texto, opcional).
+ *  - comandas.rotulo e comandas_historico.rotulo (texto, opcional);
+ *  - restaurante.fuso_horario (texto NOT NULL, padrão 'America/Sao_Paulo') e restaurante.fuso_horario_confirmado
+ *    (boolean NOT NULL, padrão false).
  * Idempotente: confere o information_schema antes e usa IF NOT EXISTS, então convive com
  * colunas já criadas à mão no banco e com uma eventual migração do Drizzle.
  * Devolve quantas colunas foram criadas (0 quando o banco já estava em dia).
  */
 const COLUNAS_MODO_COMANDA: Array<[tabela: string, coluna: string, definicao: string]> = [
   ["restaurante", "modo_comanda", "modo_comanda NOT NULL DEFAULT 'mesa'"],
+  ["restaurante", "fuso_horario", "text NOT NULL DEFAULT 'America/Sao_Paulo'"],
+  ["restaurante", "fuso_horario_confirmado", "boolean NOT NULL DEFAULT false"],
   ["comandas", "rotulo", "text"],
   ["comandas_historico", "rotulo", "text"],
 ];
@@ -111,7 +115,7 @@ export async function garantirColunasDeModoComanda(app: App): Promise<number> {
         sql`SELECT table_name, column_name
             FROM information_schema.columns
             WHERE table_schema = current_schema()
-              AND ((table_name = 'restaurante' AND column_name = 'modo_comanda')
+              AND ((table_name = 'restaurante' AND column_name IN ('modo_comanda', 'fuso_horario', 'fuso_horario_confirmado'))
                 OR (table_name IN ('comandas', 'comandas_historico') AND column_name = 'rotulo'))`
       );
       existentes = linhasDe(result);
@@ -517,8 +521,30 @@ export async function garantirTabelaTransacoesTerminal(app: App): Promise<void> 
     const existente = await db.execute(
       sql`SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'transacoes_terminal'`
     );
+    // Colunas e índice neutros de provedor (migração 20261112171745_transacoes_terminal_neutra).
+    // Tudo idempotente: o preenchimento de id_externo só toca linhas com id_externo vazio e atk preenchido.
+    const neutros: string[] = [
+      `ALTER TABLE "transacoes_terminal" ADD COLUMN IF NOT EXISTS "id_externo" text`,
+      `ALTER TABLE "transacoes_terminal" ADD COLUMN IF NOT EXISTS "dados_provedor" jsonb`,
+      `UPDATE "transacoes_terminal" SET "id_externo" = "atk" WHERE ("id_externo" IS NULL OR "id_externo" = '') AND "atk" IS NOT NULL AND "atk" <> ''`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS "transacoes_terminal_restaurante_provedor_id_externo_uq" ON "transacoes_terminal" USING btree ("restaurante_id","provedor","id_externo") WHERE id_externo IS NOT NULL`,
+    ];
+
     if (linhasDe(existente).length > 0) {
-      app.logger.debug("Transacoes_terminal table structure verified");
+      // Tabela já criada: só aplica o que falta (uma leitura quando a coluna nova já existe)
+      const coluna = await db.execute(
+        sql`SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'transacoes_terminal' AND column_name = 'id_externo'`
+      );
+      if (linhasDe(coluna).length > 0) {
+        app.logger.debug("Transacoes_terminal table structure verified");
+        return;
+      }
+      await db.transaction(async (tx: any) => {
+        for (const comando of neutros) {
+          await tx.execute(sql.raw(comando));
+        }
+      });
+      app.logger.info("Updated transacoes_terminal with provider-neutral columns");
       return;
     }
 
@@ -561,6 +587,7 @@ export async function garantirTabelaTransacoesTerminal(app: App): Promise<void> 
       `CREATE UNIQUE INDEX IF NOT EXISTS "transacoes_terminal_restaurante_atk_uq" ON "transacoes_terminal" USING btree ("restaurante_id","atk") WHERE atk IS NOT NULL`,
       `CREATE INDEX IF NOT EXISTS "idx_transacoes_terminal_restaurante_comanda" ON "transacoes_terminal" USING btree ("restaurante_id","comanda_id")`,
       `CREATE INDEX IF NOT EXISTS "idx_transacoes_terminal_restaurante_status_created_at" ON "transacoes_terminal" USING btree ("restaurante_id","status","created_at")`,
+      ...neutros,
     ];
 
     await db.transaction(async (tx: any) => {
@@ -574,6 +601,88 @@ export async function garantirTabelaTransacoesTerminal(app: App): Promise<void> 
     app.logger.warn(
       { codigo: sqlstate, mensagem: "Falha ao garantir tabela de transações de terminal" },
       "Ensure transacoes_terminal table"
+    );
+    // Não lança: a subida continua
+  }
+}
+
+/**
+ * Garante a tabela de mensagens de contato (problemas, sugestões e dúvidas enviados pelo app).
+ *
+ * Mesma estrutura da migração 20261112031359_mensagens_contato (mesmos nomes de constraints e
+ * de índices), então as duas podem rodar em qualquer ordem: tudo usa IF NOT EXISTS.
+ * Roda numa única transação. Com a tabela já criada, só faz uma consulta de leitura.
+ * Não lança erro: se falhar, registra o código SQLSTATE e a subida continua.
+ */
+export async function garantirTabelaMensagensContato(app: App): Promise<void> {
+  const db = app.db as any;
+
+  try {
+    const existente = await db.execute(
+      sql`SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'mensagens_contato'`
+    );
+    if (linhasDe(existente).length > 0) {
+      app.logger.debug("Mensagens_contato table structure verified");
+      return;
+    }
+
+    const comandos: string[] = [
+      `CREATE TABLE IF NOT EXISTS "mensagens_contato" (
+        "id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+        "restaurante_id" text NOT NULL,
+        "usuario_id" text,
+        "usuario_nome" text NOT NULL,
+        "usuario_papel" text NOT NULL,
+        "restaurante_nome" text NOT NULL,
+        "tipo" text NOT NULL,
+        "mensagem" text NOT NULL,
+        "versao_app" text,
+        "plataforma" text,
+        "tela_origem" text,
+        "status" text DEFAULT 'recebida' NOT NULL,
+        "email_aviso_enviado" boolean DEFAULT false NOT NULL,
+        "email_aviso_erro" text,
+        "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+        "updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+        CONSTRAINT "ck_mensagens_contato_tipo" CHECK (tipo IN ('problema', 'sugestao', 'duvida')),
+        CONSTRAINT "ck_mensagens_contato_status" CHECK (status IN ('recebida', 'em_analise', 'resolvida')),
+        CONSTRAINT "ck_mensagens_contato_plataforma" CHECK (plataforma IS NULL OR plataforma IN ('android', 'ios'))
+      )`,
+      `DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conname = 'mensagens_contato_restaurante_id_restaurante_id_fk'
+          AND conrelid = 'mensagens_contato'::regclass
+        ) THEN
+          ALTER TABLE "mensagens_contato" ADD CONSTRAINT "mensagens_contato_restaurante_id_restaurante_id_fk" FOREIGN KEY ("restaurante_id") REFERENCES "restaurante"("id") ON DELETE restrict ON UPDATE no action;
+        END IF;
+      END $$`,
+      `DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conname = 'mensagens_contato_usuario_id_usuarios_id_fk'
+          AND conrelid = 'mensagens_contato'::regclass
+        ) THEN
+          ALTER TABLE "mensagens_contato" ADD CONSTRAINT "mensagens_contato_usuario_id_usuarios_id_fk" FOREIGN KEY ("usuario_id") REFERENCES "usuarios"("id") ON DELETE set null ON UPDATE no action;
+        END IF;
+      END $$`,
+      `CREATE INDEX IF NOT EXISTS "idx_mensagens_contato_restaurante_created_at" ON "mensagens_contato" USING btree ("restaurante_id","created_at")`,
+      `CREATE INDEX IF NOT EXISTS "idx_mensagens_contato_usuario_created_at" ON "mensagens_contato" USING btree ("usuario_id","created_at")`,
+    ];
+
+    await db.transaction(async (tx: any) => {
+      for (const comando of comandos) {
+        await tx.execute(sql.raw(comando));
+      }
+    });
+    app.logger.info("Created mensagens_contato table");
+  } catch (err) {
+    const sqlstate = (err as any)?.cause?.code || (err as any)?.code || "UNKNOWN";
+    app.logger.warn(
+      { codigo: sqlstate, mensagem: "Falha ao garantir tabela de mensagens de contato" },
+      "Ensure mensagens_contato table"
     );
     // Não lança: a subida continua
   }

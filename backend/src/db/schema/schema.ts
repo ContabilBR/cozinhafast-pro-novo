@@ -76,6 +76,9 @@ export const restaurante = pgTable("restaurante", {
   ativo: boolean("ativo").default(true).notNull(),
   // Como o restaurante controla o consumo: "mesa" (uma comanda por mesa) ou "individual" (várias comandas por mesa, cada uma com nome)
   modoComanda: modoComandaEnum("modo_comanda").default("mesa").notNull(),
+  // Fuso horário do restaurante (nome IANA do Brasil) e se um administrador ou gerente já o definiu/confirmou
+  fusoHorario: text("fuso_horario").default("America/Sao_Paulo").notNull(),
+  fusoHorarioConfirmado: boolean("fuso_horario_confirmado").default(false).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
@@ -364,7 +367,13 @@ export const transacoesTerminal = pgTable("transacoes_terminal", {
   // ATK: código da transação na Stone. É a chave de cancelamento, captura e reimpressão.
   atk: text("atk"),
   itk: text("itk"),
-  // Retorno recebido do terminal, sem interpretação, para diagnóstico
+  // Identificador da transação no provedor (Stone: o mesmo valor do atk; outros: o id que devolverem)
+  idExterno: text("id_externo"),
+  // Campos próprios de cada provedor que não cabem nas colunas comuns.
+  // SEGURANÇA: dados_provedor e retorno_bruto NUNCA podem guardar número completo de cartão,
+  // trilhas, CVV, senhas, tokens ou chaves.
+  dadosProvedor: jsonb("dados_provedor"),
+  // Retorno recebido do terminal, sem interpretação, para diagnóstico (mesma regra de segurança acima)
   retornoBruto: text("retorno_bruto"),
   retornoEm: timestamp("retorno_em", { withTimezone: true }),
   iniciadaPorId: text("iniciada_por_id"),
@@ -375,11 +384,41 @@ export const transacoesTerminal = pgTable("transacoes_terminal", {
   orderIdUnique: uniqueIndex("transacoes_terminal_order_id_uq").on(table.orderId),
   // O mesmo ATK não pode ser registrado duas vezes no restaurante (retorno entregue em duplicidade)
   atkUnique: uniqueIndex("transacoes_terminal_restaurante_atk_uq").on(table.restauranteId, table.atk).where(sql`atk IS NOT NULL`),
+  // A mesma transação do provedor não pode ser registrada duas vezes no restaurante
+  idExternoUnique: uniqueIndex("transacoes_terminal_restaurante_provedor_id_externo_uq").on(table.restauranteId, table.provedor, table.idExterno).where(sql`id_externo IS NOT NULL`),
   idxRestauranteComanda: index("idx_transacoes_terminal_restaurante_comanda").on(table.restauranteId, table.comandaId),
   idxRestauranteStatusCreatedAt: index("idx_transacoes_terminal_restaurante_status_created_at").on(table.restauranteId, table.status, table.createdAt),
   ckStatus: check("ck_transacoes_terminal_status", sql`status IN ('iniciada', 'confirmada', 'recusada', 'cancelada', 'sem_retorno')`),
   ckValorPositivo: check("ck_transacoes_terminal_valor_positivo", sql`valor > 0`),
   ckParcelas: check("ck_transacoes_terminal_parcelas", sql`parcelas IS NULL OR parcelas >= 1`),
+}));
+
+// Mensagens de contato enviadas por usuários dentro do app (problema, sugestão ou dúvida).
+// nome, papel e nome do restaurante são cópias do momento do envio. usuario_id vira nulo se o usuário
+// for apagado. email_aviso_enviado e email_aviso_erro ficam reservados para o aviso por e-mail (etapa 3).
+export const mensagensContato = pgTable("mensagens_contato", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  restauranteId: text("restaurante_id").notNull().references(() => restaurante.id, { onDelete: "restrict" }),
+  usuarioId: text("usuario_id").references(() => usuarios.id, { onDelete: "set null" }),
+  usuarioNome: text("usuario_nome").notNull(),
+  usuarioPapel: text("usuario_papel").notNull(),
+  restauranteNome: text("restaurante_nome").notNull(),
+  tipo: text("tipo").notNull(),
+  mensagem: text("mensagem").notNull(),
+  versaoApp: text("versao_app"),
+  plataforma: text("plataforma"),
+  telaOrigem: text("tela_origem"),
+  status: text("status").default("recebida").notNull(),
+  emailAvisoEnviado: boolean("email_aviso_enviado").default(false).notNull(),
+  emailAvisoErro: text("email_aviso_erro"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  idxRestauranteCreatedAt: index("idx_mensagens_contato_restaurante_created_at").on(table.restauranteId, table.createdAt),
+  idxUsuarioCreatedAt: index("idx_mensagens_contato_usuario_created_at").on(table.usuarioId, table.createdAt),
+  ckTipo: check("ck_mensagens_contato_tipo", sql`tipo IN ('problema', 'sugestao', 'duvida')`),
+  ckStatus: check("ck_mensagens_contato_status", sql`status IN ('recebida', 'em_analise', 'resolvida')`),
+  ckPlataforma: check("ck_mensagens_contato_plataforma", sql`plataforma IS NULL OR plataforma IN ('android', 'ios')`),
 }));
 
 export const notasFiscais = pgTable("notas_fiscais", {

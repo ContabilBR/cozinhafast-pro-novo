@@ -243,7 +243,12 @@ export function registerSuperAdminRoutes(app: App) {
           !responsavelEmail ||
           !responsavelSenha
         ) {
-          app.logger.warn({ body: request.body }, "Missing required fields");
+          const missingFields = [];
+          if (!nome) missingFields.push("nome");
+          if (!responsavelNome) missingFields.push("responsavelNome");
+          if (!responsavelEmail) missingFields.push("responsavelEmail");
+          if (!responsavelSenha) missingFields.push("responsavelSenha");
+          app.logger.warn({ responsavelEmail, missingFields }, "Missing required fields");
           return reply
             .code(400)
             .send({ error: "Missing required fields" });
@@ -368,7 +373,7 @@ export function registerSuperAdminRoutes(app: App) {
           return await reply.code(409).send({ error: "CNPJ ou e-mail já cadastrado" });
         }
         app.logger.error(
-          { err, responsavelEmail, body: request.body },
+          { err, responsavelEmail },
           "Failed to create restaurant"
         );
         throw err;

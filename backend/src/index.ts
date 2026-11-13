@@ -13,6 +13,7 @@ import { registerUsuariosRoutes } from './routes/usuarios.js';
 import { registerRelatoriosRoutes } from './routes/relatorios.js';
 import { registerGarconRoutes } from './routes/garcons.js';
 import { registerHistoricoRoutes } from './routes/historico.js';
+import { registerComandasDiaRoutes } from './routes/comandas-dia.js';
 import { registerRestauranteRoutes } from './routes/restaurante.js';
 import { registerRestauranteSignupRoutes } from './routes/restaurante-signup.js';
 import { registerPagamentoRoutes } from './routes/pagamentos.js';
@@ -26,10 +27,11 @@ import { registerCardapioPublicoRoutes } from './routes/cardapio-publico.js';
 import { registerEstoqueRoutes } from './routes/estoque.js';
 import { registerSuperAdminRoutes } from './routes/superadmin.js';
 import { registerReservasRoutes } from './routes/reservas.js';
+import { registerTransacoesTerminalRoutes } from './routes/transacoes-terminal.js';
+import { registerMensagensContatoRoutes } from './routes/mensagens-contato.js';
 import { registerRenovacaoDeImagens } from './utils/imagem-assinada.js';
-import { seedDatabase } from './db/seed.js';
 import { enableSelectRetry } from './db/withRetry.js';
-import { garantirColunasDeCancelamento, garantirColunasDeModoComanda, garantirColunasContinuasDeDesconto, backfillQrTokens, garantirTabelaReservas, garantirTabelaTransacoesTerminal } from './db/ensure-schema.js';
+import { garantirColunasDeCancelamento, garantirColunasDeModoComanda, garantirColunasContinuasDeDesconto, backfillQrTokens, garantirTabelaReservas, garantirTabelaTransacoesTerminal, garantirTabelaMensagensContato } from './db/ensure-schema.js';
 import { garantirRestauranteIdTexto } from './db/ensure-restaurante-id.js';
 
 // Combine schemas
@@ -107,6 +109,14 @@ try {
   // Don't exit - this is not critical
 }
 
+// Garante a tabela de mensagens de contato (problemas, sugestões e dúvidas enviados pelo app)
+try {
+  await garantirTabelaMensagensContato(app);
+} catch (error) {
+  app.logger.error({ err: error }, 'Failed to ensure mensagens_contato table');
+  // Don't exit - this is not critical
+}
+
 // Seed test admin and restaurante if test mode is enabled
 try {
   await seedTestAdmin(app);
@@ -166,6 +176,7 @@ registerUsuariosRoutes(app);
 registerRelatoriosRoutes(app);
 registerGarconRoutes(app);
 registerHistoricoRoutes(app);
+registerComandasDiaRoutes(app);
 registerRestauranteRoutes(app);
 registerRestauranteSignupRoutes(app);
 registerPagamentoRoutes(app);
@@ -179,11 +190,10 @@ registerCardapioPublicoRoutes(app);
 registerEstoqueRoutes(app);
 registerSuperAdminRoutes(app);
 registerReservasRoutes(app);
+registerTransacoesTerminalRoutes(app);
+registerMensagensContatoRoutes(app);
 
-// Seed database on startup (only if not in production and explicitly enabled)
-if (process.env.NODE_ENV !== 'production' && process.env.SEED_ENABLED === 'true') {
-  await seedDatabase(app);
-}
+// A criação automática dos usuários de demonstração (seed) está desativada: nada é criado no início.
 
 try {
   app.logger.info('Starting application...');

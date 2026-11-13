@@ -227,7 +227,7 @@ export function registerFiscalRoutes(app: App) {
             updateData.mensagemSefaz = JSON.stringify(resultado);
           }
 
-          await db.update(schema.notasFiscais).set(updateData).where(eq(schema.notasFiscais.id, notaFiscal.id));
+          await db.update(schema.notasFiscais).set(updateData).where(and(eq(schema.notasFiscais.id, notaFiscal.id), eq(schema.notasFiscais.restauranteId, restauranteId)));
           app.logger.info({ notaId: notaFiscal.id, status: updateData.status }, "NFSe created successfully");
           return await reply.code(200).send({ ...notaFiscal, ...updateData, ref });
 
@@ -235,7 +235,7 @@ export function registerFiscalRoutes(app: App) {
           await db.update(schema.notasFiscais).set({
             status: "erro",
             mensagemSefaz: focusErr.message
-          }).where(eq(schema.notasFiscais.id, notaFiscal.id));
+          }).where(and(eq(schema.notasFiscais.id, notaFiscal.id), eq(schema.notasFiscais.restauranteId, restauranteId)));
           app.logger.error({ err: focusErr, notaId: notaFiscal.id }, "Focus API error");
           return await reply.code(502).send({ error: "Erro ao comunicar com Focus NFe", detail: focusErr.message, cnpjUsado: cnpjLimpo, ref, stack: focusErr.stack?.slice(0, 300) });
         }
@@ -312,7 +312,7 @@ export function registerFiscalRoutes(app: App) {
           }
 
           if (Object.keys(updateData).length > 0) {
-            await db.update(schema.notasFiscais).set(updateData).where(eq(schema.notasFiscais.id, nota.id));
+            await db.update(schema.notasFiscais).set(updateData).where(and(eq(schema.notasFiscais.id, nota.id), eq(schema.notasFiscais.restauranteId, restauranteId)));
           }
 
           app.logger.info({ notaId: nota.id, status: updateData.status || nota.status }, "NFSe status updated");
@@ -402,7 +402,7 @@ export function registerFiscalRoutes(app: App) {
         await db.update(schema.notasFiscais).set({
           status: "cancelada",
           mensagemSefaz: "Cancelada: " + justificativa
-        }).where(eq(schema.notasFiscais.id, nota.id));
+        }).where(and(eq(schema.notasFiscais.id, nota.id), eq(schema.notasFiscais.restauranteId, restauranteId)));
 
         app.logger.info({ notaId: nota.id }, "NFSe cancelled successfully");
         return await reply.code(200).send({ status: "cancelada", focusResponse: resultado });

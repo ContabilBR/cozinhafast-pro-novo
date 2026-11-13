@@ -17,7 +17,7 @@ import { and, eq, sql } from "drizzle-orm";
 import * as schema from "../db/schema/schema.js";
 import type { App } from "../index.js";
 import { realtimeHub } from "../realtime/hub.js";
-import { subtotalDaComanda, totalDelivery } from "./total-comanda.js";
+import { subtotalDaComanda, totalDelivery, calcularTotalComandaMesa, calcularTotalComandaMesaComDesconto } from "./total-comanda.js";
 
 export const MOTIVOS_CANCELAMENTO = [
   "erro_lancamento",
@@ -44,22 +44,30 @@ export interface EntradaCancelamento {
   motivo: MotivoCancelamento;
   detalhe: string | null;
   canceladoPor: { id: string; nome: string; role: string };
+  quantidade?: number;
+  autorizadorGerente?: { id: string; nome: string; role: string };
 }
 
 export type ResultadoCancelamento =
   | {
       tipo: "cancelado";
       pedidoId: string;
+      pedidoCanceladoId: string;
       comandaId: string;
       canceladoAposInicio: boolean;
       subtotalComanda: number;
       totalComanda: number;
+      parcial: boolean;
+      quantidadeCancelada: number;
+      quantidadeRestante: number;
+      autorizadoPorNome: string | null;
     }
   | { tipo: "nao_encontrado" }
   | { tipo: "comanda_nao_aberta" }
   | { tipo: "ja_cancelado" }
   | { tipo: "ja_entregue" }
-  | { tipo: "requer_gestor" };
+  | { tipo: "requer_gestor" }
+  | { tipo: "quantidade_invalida"; quantidadeMaxima: number };
 
 type HubDeEventos = Pick<typeof realtimeHub, "publish">;
 
@@ -68,16 +76,32 @@ export async function cancelarPedido(
   entrada: EntradaCancelamento,
   hub: HubDeEventos = realtimeHub
 ): Promise<ResultadoCancelamento> {
-  const { restauranteId, pedidoId, motivo, detalhe, canceladoPor } = entrada;
+  const { restauranteId, pedidoId, motivo, detalhe, canceladoPor, quantidade, autorizadorGerente } = entrada;
 
   const dados = await (app.db as any).transaction(async (tx: any) => {
     // 1) Acha o pedido dentro do restaurante (pedido de outro restaurante = não encontrado)
     const achado = await tx
-      .select({ comandaId: schema.pedidos.comandaId })
+      .select({
+        comandaId: schema.pedidos.comandaId,
+        quantidade: schema.pedidos.quantidade,
+        precoUnitario: schema.pedidos.precoUnitario,
+        observacao: schema.pedidos.observacao,
+        createdAt: schema.pedidos.createdAt,
+        iniciadoEm: schema.pedidos.iniciadoEm,
+        prontoEm: schema.pedidos.prontoEm,
+      })
       .from(schema.pedidos)
       .where(and(eq(schema.pedidos.id, pedidoId), eq(schema.pedidos.restauranteId, restauranteId)));
     if (!achado.length) return { resultado: { tipo: "nao_encontrado" } as ResultadoCancelamento };
+
     const comandaId: string = achado[0].comandaId;
+    const quantidadeOriginal = achado[0].quantidade;
+
+    // Validar quantidade se foi fornecida
+    const quantidadeCancelar = quantidade ?? quantidadeOriginal;
+    if (quantidadeCancelar < 1 || quantidadeCancelar > quantidadeOriginal) {
+      return { resultado: { tipo: "quantidade_invalida", quantidadeMaxima: quantidadeOriginal } as ResultadoCancelamento };
+    }
 
     // 2) Trava a comanda (se o fechamento já a apagou, o pedido também não existe mais)
     const comandas = await tx
@@ -87,6 +111,8 @@ export async function cancelarPedido(
         gorjeta: schema.comandas.gorjeta,
         mesaNumero: schema.comandas.mesaNumero,
         tipo: schema.comandas.tipo,
+        descontoValor: schema.comandas.descontoValor,
+        descontoTipo: schema.comandas.descontoTipo,
       })
       .from(schema.comandas)
       .where(and(eq(schema.comandas.id, comandaId), eq(schema.comandas.restauranteId, restauranteId)))
@@ -115,39 +141,94 @@ export async function cancelarPedido(
     if (pedido.status === "entregue") return { resultado: { tipo: "ja_entregue" } as ResultadoCancelamento };
 
     const aposInicio = pedido.status === "em_preparo" || pedido.status === "pronto";
+
+    // Determine who will be recorded as canceling (gerente autorizador or canceladoPor)
+    const quemCancelou = autorizadorGerente ?? canceladoPor;
+
     if (aposInicio && !ehGestor(canceladoPor.role)) {
-      return { resultado: { tipo: "requer_gestor" } as ResultadoCancelamento };
+      // Garçom canceling em_preparo/pronto without autorizador = require manager
+      if (!autorizadorGerente) {
+        return { resultado: { tipo: "requer_gestor" } as ResultadoCancelamento };
+      }
     }
 
-    // 4) Cancela o item, registrando quem, quando e por quê
-    await tx
-      .update(schema.pedidos)
-      .set({
-        status: "cancelado",
-        canceladoEm: new Date(),
-        canceladoPorId: canceladoPor.id,
-        canceladoPorNome: canceladoPor.nome,
-        canceladoPorRole: canceladoPor.role,
-        motivoCancelamento: motivo,
-        motivoCancelamentoDetalhe: detalhe,
-        canceladoAposInicio: aposInicio,
-      })
-      .where(eq(schema.pedidos.id, pedidoId));
+    // 4) Determine if partial or total cancellation
+    const parcial = quantidadeCancelar < quantidadeOriginal;
+    const quantidadeRestante = quantidadeOriginal - quantidadeCancelar;
+    let pedidoCanceladoId = pedidoId;
+
+    if (parcial) {
+      // 4a) Partial cancellation: create new canceled line, reduce original quantity
+
+      // First, reduce the original item quantity and clear its kitchen timings
+      await tx
+        .update(schema.pedidos)
+        .set({ quantidade: quantidadeRestante })
+        .where(and(eq(schema.pedidos.id, pedidoId), eq(schema.pedidos.restauranteId, restauranteId)));
+
+      // Then create new canceled item (copy of original with canceled quantity)
+      const [novoItem] = await tx
+        .insert(schema.pedidos)
+        .values({
+          comandaId: achado[0].comandaId,
+          pratoId: pedido.pratoId,
+          quantidade: quantidadeCancelar,
+          precoUnitario: achado[0].precoUnitario,
+          observacao: achado[0].observacao,
+          status: "cancelado" as any,
+          restauranteId,
+          createdAt: achado[0].createdAt,
+          iniciadoEm: achado[0].iniciadoEm,
+          prontoEm: achado[0].prontoEm,
+          canceladoEm: new Date(),
+          canceladoPorId: quemCancelou.id,
+          canceladoPorNome: quemCancelou.nome,
+          canceladoPorRole: quemCancelou.role,
+          motivoCancelamento: motivo,
+          motivoCancelamentoDetalhe: detalhe,
+          canceladoAposInicio: aposInicio,
+        })
+        .returning();
+
+      pedidoCanceladoId = novoItem.id;
+    } else {
+      // 4b) Total cancellation: mark original item as canceled
+      await tx
+        .update(schema.pedidos)
+        .set({
+          status: "cancelado",
+          canceladoEm: new Date(),
+          canceladoPorId: quemCancelou.id,
+          canceladoPorNome: quemCancelou.nome,
+          canceladoPorRole: quemCancelou.role,
+          motivoCancelamento: motivo,
+          motivoCancelamentoDetalhe: detalhe,
+          canceladoAposInicio: aposInicio,
+        })
+        .where(and(eq(schema.pedidos.id, pedidoId), eq(schema.pedidos.restauranteId, restauranteId)));
+    }
 
     // 5) Recalcula o total gravado na comanda (sem os itens cancelados)
     const subtotal = await subtotalDaComanda(tx, comandaId);
     let total: number;
+    let descontoEfetivo: number | undefined;
     if (comanda.tipo === "delivery") {
       // Para delivery: subtotal + taxa de entrega (gorjeta não se aplica)
       total = await totalDelivery(tx, comandaId);
     } else {
       const gorjeta = parseFloat(String(comanda.gorjeta || "0"));
-      total = subtotal + gorjeta;
+      const result = calcularTotalComandaMesaComDesconto(subtotal, gorjeta, comanda.descontoTipo, comanda.descontoValor);
+      total = result.total;
+      descontoEfetivo = result.descontoEfetivo;
     }
     await tx
       .update(schema.comandas)
-      .set({ subtotal: subtotal.toString(), total: total.toFixed(2) })
-      .where(eq(schema.comandas.id, comandaId));
+      .set({
+        subtotal: subtotal.toString(),
+        total: total.toFixed(2),
+        ...(descontoEfetivo !== undefined && { descontoValor: descontoEfetivo.toFixed(2) })
+      })
+      .where(and(eq(schema.comandas.id, comandaId), eq(schema.comandas.restauranteId, restauranteId)));
 
     // Bug 4: Se for delivery, atualizar o valor do pagamento pendente para refletir o novo total
     if (comanda.tipo === "delivery") {
@@ -156,7 +237,8 @@ export async function cancelarPedido(
         .set({ valor: total.toFixed(2) })
         .where(and(
           eq(schema.pagamentos.comandaId, comandaId),
-          eq(schema.pagamentos.status, "pendente" as any)
+          eq(schema.pagamentos.status, "pendente" as any),
+          eq(schema.pagamentos.restauranteId, restauranteId)
         ));
     }
 
@@ -186,12 +268,17 @@ export async function cancelarPedido(
       resultado: {
         tipo: "cancelado",
         pedidoId,
+        pedidoCanceladoId,
         comandaId,
         canceladoAposInicio: aposInicio,
         subtotalComanda: subtotal,
         totalComanda: total,
+        parcial,
+        quantidadeCancelada: quantidadeCancelar,
+        quantidadeRestante: parcial ? quantidadeRestante : 0,
+        autorizadoPorNome: autorizadorGerente?.nome ?? null,
       } as ResultadoCancelamento,
-      evento: { comandaId, mesaNumero: comanda.mesaNumero ?? null, pratoNome, aposInicio, tipo: comanda.tipo, clienteNome },
+      evento: { comandaId, mesaNumero: comanda.mesaNumero ?? null, pratoNome, aposInicio, tipo: comanda.tipo, clienteNome, parcial, quantidadeCancelada: quantidadeCancelar, quantidadeRestante: parcial ? quantidadeRestante : 0, pedidoOriginalId: pedidoId, pedidoCanceladoId },
     };
   });
 
@@ -200,9 +287,22 @@ export async function cancelarPedido(
   // Aviso em tempo real (a cozinha precisa parar o preparo) depois da transação confirmada
   if (resultado.tipo === "cancelado") {
     try {
+      // For partial cancellations, first publish update to original item
+      if (resultado.parcial) {
+        hub.publish(restauranteId, {
+          type: "pedido.updated",
+          entityId: resultado.pedidoId,
+          occurredAt: new Date().toISOString(),
+          payload: {
+            quantidade: resultado.quantidadeRestante,
+          },
+        });
+      }
+
+      // Publish cancellation event for the canceled line
       hub.publish(restauranteId, {
         type: "pedido.status_changed",
-        entityId: pedidoId,
+        entityId: resultado.pedidoCanceladoId,
         occurredAt: new Date().toISOString(),
         payload: {
           status: "cancelado",
@@ -213,6 +313,10 @@ export async function cancelarPedido(
           motivo,
           comanda_tipo: dados.evento.tipo || "mesa",
           entrega_cliente_nome: dados.evento.clienteNome || null,
+          parcial: resultado.parcial,
+          quantidade_cancelada: resultado.quantidadeCancelada,
+          quantidade_restante: resultado.quantidadeRestante,
+          pedido_origem_id: dados.evento.pedidoOriginalId,
         },
       });
     } catch (err) {

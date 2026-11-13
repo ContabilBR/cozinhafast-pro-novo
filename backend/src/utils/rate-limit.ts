@@ -18,16 +18,68 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000).unref();
 
+let jaFezDiagnostico = false;
+
 export function getClientKey(request: any): string {
-  // O tráfego passa por um proxy reverso da plataforma antes de chegar aqui,
-  // então priorizamos X-Forwarded-For; se não vier preenchido, caímos para
-  // request.ip (que nesse caso provavelmente é o IP do proxy, não do cliente
-  // real — ainda assim melhor que nenhum limite).
-  const forwarded = request.headers["x-forwarded-for"];
-  if (typeof forwarded === "string" && forwarded.length > 0) {
-    return forwarded.split(",")[0].trim();
+  // O tráfego passa por um proxy reverso da plataforma antes de chegar aqui.
+  // O proxy confiável ADICIONA o IP real no FINAL de X-Forwarded-For.
+  // Usamos TRUSTED_PROXY_HOPS para contar quantos proxys há antes de nós;
+  // daí pegamos a entrada contada a partir do fim da lista.
+
+  const trustedProxyHopsStr = (process.env.TRUSTED_PROXY_HOPS || "").trim();
+  let trustedProxyHops = 1;
+  if (/^[1-5]$/.test(trustedProxyHopsStr)) {
+    trustedProxyHops = parseInt(trustedProxyHopsStr, 10);
   }
-  return request.ip;
+
+  const forwarded = request.headers["x-forwarded-for"];
+  let xffEntries = 0;
+  let chaveIgualAoIpDaConexao = true;
+
+  if (forwarded) {
+    // Se for array, juntar com ","
+    let xffString = Array.isArray(forwarded) ? forwarded.join(",") : forwarded;
+
+    if (typeof xffString === "string" && xffString.length > 0) {
+      const entries = xffString.split(",").map(e => e.trim()).filter(e => e.length > 0);
+      xffEntries = entries.length;
+
+      if (entries.length >= trustedProxyHops) {
+        const index = entries.length - trustedProxyHops;
+        const chaveCandidata = entries[index].slice(0, 100);
+
+        if (chaveCandidata.length > 0) {
+          chaveIgualAoIpDaConexao = false;
+          try {
+            if (!jaFezDiagnostico) {
+              jaFezDiagnostico = true;
+              request.log?.info(
+                { xffEntries, trustedProxyHops, chaveIgualAoIpDaConexao },
+                "rate-limit: diagnostico de IP do cliente"
+              );
+            }
+          } catch (_) {
+            // Ignorar qualquer erro de logging
+          }
+          return chaveCandidata;
+        }
+      }
+    }
+  }
+
+  try {
+    if (!jaFezDiagnostico) {
+      jaFezDiagnostico = true;
+      request.log?.info(
+        { xffEntries, trustedProxyHops, chaveIgualAoIpDaConexao },
+        "rate-limit: diagnostico de IP do cliente"
+      );
+    }
+  } catch (_) {
+    // Ignorar qualquer erro de logging
+  }
+
+  return String(request.ip || "").slice(0, 100);
 }
 
 /**

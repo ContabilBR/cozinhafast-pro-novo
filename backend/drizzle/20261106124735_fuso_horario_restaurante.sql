@@ -1,0 +1,2 @@
+ALTER TABLE "restaurante" ADD COLUMN IF NOT EXISTS "fuso_horario" text DEFAULT 'America/Sao_Paulo' NOT NULL;--> statement-breakpoint
+ALTER TABLE "restaurante" ADD COLUMN IF NOT EXISTS "fuso_horario_confirmado" boolean DEFAULT false NOT NULL;

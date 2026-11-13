@@ -53,6 +53,7 @@ export function registerRealtimeRoutes(app: App) {
 
           // Check token in both session tables and get restaurante_id
           let restauranteId: string | null = null;
+          let userId: string | null = null;
           try {
             // First, try custom auth: usuariosSession joined with usuarios
             const usuariosSessions = await db
@@ -60,6 +61,7 @@ export function registerRealtimeRoutes(app: App) {
                 userId: schema.usuariosSession.userId,
                 expiresAt: schema.usuariosSession.expiresAt,
                 restauranteId: schema.usuarios.restauranteId,
+                ativo: schema.usuarios.ativo,
               })
               .from(schema.usuariosSession)
               .innerJoin(
@@ -78,7 +80,18 @@ export function registerRealtimeRoutes(app: App) {
                 clearTimeout(timeoutId);
                 return;
               }
+
+              // Check if user is inactive
+              if (sess.ativo === false) {
+                app.logger.warn({ restauranteId: sess.restauranteId, usuarioId: sess.userId }, "Inactive user in WebSocket");
+                socket.send(JSON.stringify({ error: "Invalid token" }));
+                socket.close();
+                clearTimeout(timeoutId);
+                return;
+              }
+
               restauranteId = sess.restauranteId;
+              userId = sess.userId;
               app.logger.debug({ token: token.substring(0, 10) }, "Authenticated via custom session");
             }
 
@@ -129,6 +142,22 @@ export function registerRealtimeRoutes(app: App) {
               socket.close();
               clearTimeout(timeoutId);
               return;
+            }
+
+            // Check if restaurant is inactive (but exempt platform restaurant)
+            if (restauranteId !== '00000000000000') {
+              const restauranteCheck = await db
+                .select({ ativo: schema.restaurante.ativo })
+                .from(schema.restaurante)
+                .where(eq(schema.restaurante.id, restauranteId))
+                .limit(1);
+              if (restauranteCheck.length > 0 && restauranteCheck[0].ativo === false) {
+                app.logger.warn({ restauranteId, usuarioId: userId }, "Inactive restaurant in WebSocket");
+                socket.send(JSON.stringify({ error: "Invalid token" }));
+                socket.close();
+                clearTimeout(timeoutId);
+                return;
+              }
             }
           } catch (queryErr: any) {
             app.logger.error({ err: queryErr }, "Error querying token");

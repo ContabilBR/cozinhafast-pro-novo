@@ -1,10 +1,11 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import * as schema from "../db/schema/schema.js";
 import type { App } from "../index.js";
 import { requireAuth as customRequireAuth, requireTenant, requireRole } from "../utils/auth.js";
 import { validarRestauranteParaNfce } from "../utils/fiscal-payloads.js";
 import { cnpjValido, idEhCnpj } from "../utils/cnpj.js";
+import { FUSOS_BRASIL } from "../utils/fusos-brasil.js";
 
 // Papéis que podem trocar o modo de comandas do restaurante
 const PAPEIS_TROCA_MODO_COMANDA = ["administrador", "admin", "gerente", "manager", "superadmin", "super_admin"];
@@ -38,6 +39,12 @@ interface UpdateRestauranteBody {
 const REGIMES_VALIDOS = ["simples_nacional", "simples_excesso", "regime_normal", "mei"];
 
 const MODOS_COMANDA = ["mesa", "individual"] as const;
+
+// O resultado de tx.execute vem como array ou como { rows }, conforme o driver
+function linhasDe(resultado: any): any[] {
+  if (Array.isArray(resultado)) return resultado;
+  return resultado?.rows ?? [];
+}
 
 const UFS_VALIDAS = [
   "AC","AL","AP","AM","BA","CE","DF","ES","GO","MA","MT","MS","MG",
@@ -138,6 +145,8 @@ function serializar(r: any) {
     telefone: r.telefone,
     email: r.email,
     modo_comanda: r.modoComanda,
+    fuso_horario: r.fusoHorario,
+    fuso_horario_confirmado: r.fusoHorarioConfirmado,
     created_at: r.createdAt.toISOString(),
     updated_at: r.updatedAt.toISOString(),
   };
@@ -167,6 +176,8 @@ const RESTAURANTE_PROPS = {
   telefone: { type: "string", nullable: true },
   email: { type: "string", nullable: true },
   modo_comanda: { type: "string", enum: ["mesa", "individual"] },
+  fuso_horario: { type: "string" },
+  fuso_horario_confirmado: { type: "boolean" },
   created_at: { type: "string", format: "date-time" },
   updated_at: { type: "string", format: "date-time" },
 } as const;
@@ -407,51 +418,137 @@ export function registerRestauranteRoutes(app: App) {
           return await reply.code(400).send({ error: "modo_comanda invalido. Valores aceitos: " + MODOS_COMANDA.join(", ") });
         }
 
-        const atual = await app.db
-          .select({ modoComanda: schema.restaurante.modoComanda })
-          .from(schema.restaurante)
-          .where(eq(schema.restaurante.id, tenantId))
-          .limit(1);
+        // Tudo dentro de UMA transação, com a linha do restaurante travada (FOR UPDATE). As aberturas de
+        // comanda em andamento (FOR SHARE em services/abrir-comanda.ts) terminam antes da contagem, e as
+        // novas esperam a troca terminar. Sem a trava, uma abertura entre a contagem e a gravação passaria
+        // e deixaria no modo individual uma comanda sem nome. Esta rota nunca trava mesas (só lê comandas).
+        const resultado = await (app.db as any).transaction(async (tx: any) => {
+          const travado = linhasDe(
+            await tx.execute(sql`SELECT modo_comanda FROM restaurante WHERE id = ${tenantId} FOR UPDATE`)
+          );
+          if (travado.length === 0) return { tipo: "nao_encontrado" as const };
 
-        if (atual.length === 0) {
+          const modoAtual = String(travado[0].modo_comanda);
+
+          // Mesmo modo: nada a fazer
+          if (modoAtual === novoModo) return { tipo: "igual" as const };
+
+          // Comandas de delivery não entram na conta: só as de mesa travam a troca
+          const abertas = await tx
+            .select({ id: schema.comandas.id })
+            .from(schema.comandas)
+            .where(
+              and(
+                eq(schema.comandas.restauranteId, tenantId),
+                eq(schema.comandas.status, "aberta" as any),
+                eq(schema.comandas.tipo, "mesa" as any)
+              )
+            )
+            .limit(1);
+
+          if (abertas.length > 0) return { tipo: "comandas_abertas" as const };
+
+          await tx
+            .update(schema.restaurante)
+            .set({ modoComanda: novoModo as any, updatedAt: new Date() })
+            .where(eq(schema.restaurante.id, tenantId));
+
+          return { tipo: "trocado" as const, de: modoAtual };
+        });
+
+        if (resultado.tipo === "nao_encontrado") {
           return await reply.code(404).send({ error: "Nenhum dado cadastrado" });
         }
 
-        // Mesmo modo: nada a fazer
-        if (atual[0].modoComanda === novoModo) {
+        if (resultado.tipo === "igual") {
           return await reply.code(200).send({ modo_comanda: novoModo });
         }
 
-        // Comandas de delivery não entram na conta: só as de mesa travam a troca
-        const abertas = await app.db
-          .select({ id: schema.comandas.id })
-          .from(schema.comandas)
-          .where(
-            and(
-              eq(schema.comandas.restauranteId, tenantId),
-              eq(schema.comandas.status, "aberta" as any),
-              eq(schema.comandas.tipo, "mesa" as any)
-            )
-          )
-          .limit(1);
-
-        if (abertas.length > 0) {
+        if (resultado.tipo === "comandas_abertas") {
           app.logger.warn({ tenantId }, "Cannot change modo_comanda with open mesa comandas");
           return await reply
             .code(409)
             .send({ error: "Feche ou cancele as comandas abertas antes de mudar o modo de comanda." });
         }
 
-        await app.db
-          .update(schema.restaurante)
-          .set({ modoComanda: novoModo as any, updatedAt: new Date() })
-          .where(eq(schema.restaurante.id, tenantId));
-
-        app.logger.info({ tenantId, de: atual[0].modoComanda, para: novoModo }, "modo_comanda changed");
+        app.logger.info({ tenantId, de: resultado.de, para: novoModo }, "modo_comanda changed");
 
         return await reply.code(200).send({ modo_comanda: novoModo });
       } catch (error) {
         app.logger.error({ err: error }, "Failed to change modo_comanda");
+        return await reply.code(500).send({ error: "Internal server error" });
+      }
+    }
+  );
+
+  // PUT /api/restaurante/fuso-horario - administrador, admin ou gerente definem o fuso do restaurante
+  app.fastify.put<{ Body: { fuso_horario: string } }>(
+    "/api/restaurante/fuso-horario",
+    {
+      schema: {
+        description: "Set the time zone of the restaurant (administrador, admin or gerente; Brazilian time zones only)",
+        tags: ["restaurante"],
+        body: { type: "object", required: ["fuso_horario"], properties: { fuso_horario: { type: "string" } } },
+        response: {
+          200: {
+            type: "object",
+            properties: { fuso_horario: { type: "string" }, fuso_horario_confirmado: { type: "boolean" } },
+          },
+          400: { type: "object", properties: { error: { type: "string" } } },
+          401: { type: "object", properties: { error: { type: "string" } } },
+          403: { type: "object", properties: { error: { type: "string" } } },
+          404: { type: "object", properties: { error: { type: "string" } } },
+        },
+      },
+    },
+    async (
+      request: FastifyRequest<{ Body: { fuso_horario: string } }>,
+      reply: FastifyReply
+    ) => {
+      const authUser = await customRequireAuth(app, request, reply);
+      if (!authUser) return;
+      const papel = String(authUser.role ?? "").trim().toLowerCase();
+      if (!PAPEIS_TROCA_MODO_COMANDA.includes(papel)) {
+        app.logger.warn({ userId: authUser.id, papel }, "fuso_horario: troca recusada, papel sem permissão");
+        return await reply.code(403).send({ error: "Você não tem permissão para esta ação." });
+      }
+
+      try {
+        let tenantId: string;
+        try {
+          tenantId = requireTenant(authUser);
+        } catch {
+          return await reply.code(404).send({ error: "Nenhum dado cadastrado" });
+        }
+
+        const novoFuso = String(request.body.fuso_horario ?? "").trim();
+        if (!(FUSOS_BRASIL as readonly string[]).includes(novoFuso)) {
+          return await reply.code(400).send({ error: "Fuso horário inválido. Informe um fuso do Brasil." });
+        }
+
+        const resultado = await (app.db as any).transaction(async (tx: any) => {
+          const atual = linhasDe(
+            await tx.execute(sql`SELECT fuso_horario FROM restaurante WHERE id = ${tenantId} FOR UPDATE`)
+          );
+          if (atual.length === 0) return null;
+
+          await tx
+            .update(schema.restaurante)
+            .set({ fusoHorario: novoFuso, fusoHorarioConfirmado: true, updatedAt: new Date() })
+            .where(eq(schema.restaurante.id, tenantId));
+
+          return { de: String(atual[0].fuso_horario) };
+        });
+
+        if (!resultado) {
+          return await reply.code(404).send({ error: "Nenhum dado cadastrado" });
+        }
+
+        app.logger.info({ tenantId, de: resultado.de, para: novoFuso }, "fuso_horario changed");
+
+        return await reply.code(200).send({ fuso_horario: novoFuso, fuso_horario_confirmado: true });
+      } catch (error) {
+        app.logger.error({ err: error }, "Failed to change fuso_horario");
         return await reply.code(500).send({ error: "Internal server error" });
       }
     }
