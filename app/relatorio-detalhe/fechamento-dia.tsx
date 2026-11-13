@@ -9,8 +9,8 @@ import {
 import { useColors } from '@/hooks/useColors';
 import { formatCurrency } from '@/utils/helpers';
 import { MOTIVOS_DESCONTO } from '@/utils/desconto';
-import { SeletorPeriodo, periodoDoEstado, periodoInicial } from '@/components/SeletorPeriodo';
-import { BotoesExportar } from '@/components/BotoesExportar';
+import { ExportarFechamentoSheet } from '@/components/ExportarFechamentoSheet';
+import type { Periodo } from '@/utils/exportacao/definicao';
 import { carregarContexto } from '@/utils/exportacao/exportar';
 import { carregarFechamentos, montarFechamento } from '@/utils/exportacao/fechamento';
 
@@ -148,9 +148,8 @@ export default function FechamentoDiaScreen() {
   // Nunca mostra valores do dia anterior durante a troca de data.
   const data = state.data?.data === selecionada ? state.data : null;
   const frameState = { ...state, loading: state.loading || (!!state.data && !data) };
-  const [periodoExport, setPeriodoExport] = useState(periodoInicial);
-  const gerarExportacao = async () => {
-    const periodo = periodoDoEstado(periodoExport);
+  const [exportando, setExportando] = useState(false);
+  const gerarExportacao = async (periodo: Periodo) => {
     const [contexto, dias] = await Promise.all([carregarContexto(), carregarFechamentos(periodo)]);
     return montarFechamento(dias, periodo, contexto);
   };
@@ -174,9 +173,12 @@ export default function FechamentoDiaScreen() {
         <Text style={[reportStyles.label, { fontSize: 13, color: colors.primary }]}>{button.label}</Text>
       </AnimatedPressable>)}
     </View>
-    <ReportTitle>Exportar</ReportTitle>
-    <SeletorPeriodo value={periodoExport} onChange={setPeriodoExport} />
-    <BotoesExportar gerar={gerarExportacao} />
+    <AnimatedPressable accessibilityRole="button" accessibilityLabel="Exportar relatório" onPress={() => setExportando(true)}
+      style={[reportStyles.chip, { backgroundColor: colors.surface, borderColor: colors.border, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, borderWidth: 1, borderRadius: 12, minHeight: 46 }]}>
+      <Ionicons name="share-outline" size={18} color={colors.primary} />
+      <Text style={{ color: colors.text, fontWeight: '600', fontSize: 14 }}>Exportar relatório</Text>
+    </AnimatedPressable>
+    <ExportarFechamentoSheet visible={exportando} onClose={() => setExportando(false)} diaExibido={selecionada} gerar={gerarExportacao} />
   </View>;
   const conciliacao = data?.pagamentos.conciliacao;
   const conferido = !!data && !!conciliacao && [conciliacao.comandas_pago_menor, conciliacao.valor_faltante,
