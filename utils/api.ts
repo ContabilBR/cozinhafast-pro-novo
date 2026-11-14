@@ -2,7 +2,7 @@ import { Platform } from "react-native";
 import * as SecureStore from "expo-secure-store";
 import { fusoDoAparelho } from "@/utils/fusoAparelho";
 
-export const BACKEND_URL = "https://j74mf38wgua3d4qd5mqbjjvza88n2qcp.app.specular.dev";
+export const BACKEND_URL = "https://prod-proj-vybakydnnjqvqgpvqsu2h-liwg5h36mq-ey.a.run.app";
 export const AUTH_TOKEN_KEY = "cozinhafast_token";
 
 // In-memory token cache — set immediately on login/restore so every
