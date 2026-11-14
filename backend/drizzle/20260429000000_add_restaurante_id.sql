@@ -1,17 +1,7 @@
-BEGIN;
-
--- Add restaurante_id columns to all tenant-aware tables
--- These are added as NULLABLE first to handle existing data
--- The NOT NULL constraint will be applied after data is backfilled
-ALTER TABLE mesas ADD COLUMN IF NOT EXISTS restaurante_id uuid;
-ALTER TABLE categorias ADD COLUMN IF NOT EXISTS restaurante_id uuid;
-ALTER TABLE categoria_pratos ADD COLUMN IF NOT EXISTS restaurante_id uuid;
-ALTER TABLE pratos ADD COLUMN IF NOT EXISTS restaurante_id uuid;
-ALTER TABLE comandas ADD COLUMN IF NOT EXISTS restaurante_id uuid;
-ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS restaurante_id uuid;
-ALTER TABLE profiles ADD COLUMN IF NOT EXISTS restaurante_id uuid;
-ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS restaurante_id uuid;
-ALTER TABLE comandas_historico ADD COLUMN IF NOT EXISTS restaurante_id uuid;
-ALTER TABLE pedidos_historico ADD COLUMN IF NOT EXISTS restaurante_id uuid;
-
-COMMIT;
+-- No-op on purpose.
+-- This hand-written migration carries a 2025 timestamp in meta/_journal.json, so the
+-- incrementally migrated dev database always skipped it. Its work (restaurante_id columns,
+-- backfill, per-restaurant uniques and indexes) is done by 20260727223043_black_queen_noir
+-- and the migrations after it. Running it on a fresh database made those later
+-- migrations fail (e.g. DROP CONSTRAINT "mesas_numero_unique" does not exist).
+SELECT 1;
