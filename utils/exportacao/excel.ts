@@ -29,7 +29,7 @@ function garantirGetRandomValues(): void {
   }
 }
 
-function carregarExcelJS(): typeof ExcelJSTipos {
+export function carregarExcelJS(): typeof ExcelJSTipos {
   garantirGetRandomValues();
   if (!exceljsCarregado) {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
