@@ -31,7 +31,7 @@ import { registerTransacoesTerminalRoutes } from './routes/transacoes-terminal.j
 import { registerMensagensContatoRoutes } from './routes/mensagens-contato.js';
 import { registerRenovacaoDeImagens } from './utils/imagem-assinada.js';
 import { enableSelectRetry } from './db/withRetry.js';
-import { garantirColunasDeCancelamento, garantirColunasDeModoComanda, garantirColunasContinuasDeDesconto, backfillQrTokens, garantirTabelaReservas, garantirTabelaTransacoesTerminal, garantirTabelaMensagensContato } from './db/ensure-schema.js';
+import { garantirColunasDeCancelamento, garantirColunasDeModoComanda, garantirColunasContinuasDeDesconto, backfillQrTokens, garantirTabelaReservas, garantirTabelaTransacoesTerminal, garantirTabelaMensagensContato, garantirIndiceUnicoPratoInsumos } from './db/ensure-schema.js';
 import { garantirRestauranteIdTexto } from './db/ensure-restaurante-id.js';
 
 // Combine schemas
@@ -114,6 +114,14 @@ try {
   await garantirTabelaMensagensContato(app);
 } catch (error) {
   app.logger.error({ err: error }, 'Failed to ensure mensagens_contato table');
+  // Don't exit - this is not critical
+}
+
+// Garante o índice único de prato_insumos, sem apagar nada (avisa no log se houver duplicatas)
+try {
+  await garantirIndiceUnicoPratoInsumos(app);
+} catch (error) {
+  app.logger.error({ err: error }, 'Failed to ensure prato_insumos unique index');
   // Don't exit - this is not critical
 }
 

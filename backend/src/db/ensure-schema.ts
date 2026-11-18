@@ -687,3 +687,50 @@ export async function garantirTabelaMensagensContato(app: App): Promise<void> {
     // Não lança: a subida continua
   }
 }
+
+/**
+ * Garante o índice único de prato_insumos (um insumo só aparece uma vez na ficha de cada prato),
+ * sem arriscar a subida: o banco pode já ter pares repetidos e o índice único falharia.
+ * Com o índice já criado, faz só uma consulta leve. Sem o índice, conta os pares repetidos:
+ * zero cria o índice; mais que zero NÃO cria e avisa no log (só números, nunca nomes).
+ * Nunca apaga nem altera registros. Não lança erro: se falhar, registra o código SQLSTATE e a
+ * subida continua.
+ */
+export async function garantirIndiceUnicoPratoInsumos(app: App): Promise<void> {
+  const db = app.db as any;
+
+  try {
+    const existente = await db.execute(
+      sql`SELECT 1 FROM pg_indexes WHERE schemaname = current_schema() AND tablename = 'prato_insumos' AND indexname = 'prato_insumos_prato_insumo_uq'`
+    );
+    if (linhasDe(existente).length > 0) {
+      app.logger.debug("Prato_insumos unique index verified");
+      return;
+    }
+
+    const contagem = await db.execute(
+      sql`SELECT count(*)::int AS pares FROM (SELECT 1 FROM "prato_insumos" GROUP BY "prato_id", "insumo_id" HAVING count(*) > 1) AS repetidos`
+    );
+    const pares = Number(linhasDe(contagem)[0]?.pares ?? 0);
+
+    if (pares > 0) {
+      app.logger.warn(
+        { paresRepetidos: pares },
+        "O índice único de prato_insumos não foi criado por haver duplicatas; elas precisam ser resolvidas manualmente"
+      );
+      return;
+    }
+
+    await db.execute(
+      sql.raw(`CREATE UNIQUE INDEX IF NOT EXISTS "prato_insumos_prato_insumo_uq" ON "prato_insumos" USING btree ("prato_id","insumo_id")`)
+    );
+    app.logger.info("Created prato_insumos unique index");
+  } catch (err) {
+    const sqlstate = (err as any)?.cause?.code || (err as any)?.code || "UNKNOWN";
+    app.logger.warn(
+      { codigo: sqlstate, mensagem: "Falha ao garantir índice único de prato_insumos" },
+      "Ensure prato_insumos unique index"
+    );
+    // Não lança: a subida continua
+  }
+}
