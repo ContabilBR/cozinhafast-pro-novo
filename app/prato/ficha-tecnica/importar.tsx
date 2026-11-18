@@ -226,7 +226,38 @@ function Importar({ token }: { token: string }) {
       if (!valid(id)) return;
       if (warning) setNotice('Não foi possível carregar os catálogos. O modelo contém apenas os cabeçalhos; consulte os nomes e unidades no app.');
       const workbook = XLSX.utils.book_new();
-      for (const [name, rows] of [['Ficha técnica', [['Prato', 'Insumo', 'Quantidade', 'Unidade']]], ['Pratos', pratos], ['Insumos', insumos]] as [string, string[][]][]) {
+      const instrucoes: string[][] = [
+        'Como preencher a ficha técnica',
+        '',
+        'O que é: a ficha técnica diz quais insumos cada prato usa e em que quantidade, por porção. Ela alimenta o custo e a margem dos pratos.',
+        '',
+        'Passo a passo',
+        '1. Vá para a aba Ficha técnica e preencha uma linha para cada insumo de cada prato.',
+        '2. Se um prato usa três insumos, escreva o nome do prato nas três linhas.',
+        '3. Salve o arquivo, volte ao app, toque em Escolher arquivo Excel e depois em Conferir.',
+        '4. Revise a prévia e confirme a importação.',
+        '',
+        'Colunas da aba Ficha técnica',
+        'Prato: nome do prato, igual ao cadastrado no app. Maiúsculas e acentos não fazem diferença.',
+        'Insumo: nome do insumo, igual ao cadastrado no Estoque.',
+        'Quantidade: quanto do insumo é usado em uma porção do prato. Use um número maior que zero, com até 3 casas decimais, por exemplo 0,25. Não escreva a unidade nesta coluna.',
+        'Unidade: a mesma unidade do insumo no Estoque, por exemplo kg. A importação não converte unidades.',
+        '',
+        'Exemplo (não será importado)',
+        'Feijoada | Feijão preto | 0,25 | kg',
+        'Feijoada | Linguiça | 0,15 | kg',
+        '',
+        'Regras importantes',
+        'Pratos e insumos precisam estar cadastrados antes. As abas Pratos (consulta) e Insumos (consulta) listam os nomes e unidades cadastrados hoje: copie de lá para evitar erros de digitação.',
+        'Se o prato já tem o insumo na ficha, a quantidade é atualizada. Se não tem, o insumo é adicionado. Nada é apagado.',
+        'Cada arquivo aceita até 500 linhas de dados.',
+        'Não apague nem renomeie os cabeçalhos da aba Ficha técnica. As abas Instruções, Pratos (consulta) e Insumos (consulta) são ignoradas na importação.',
+        'Você pode criar outras abas de ficha, desde que tenham as colunas Prato, Insumo, Quantidade e Unidade na primeira linha. Todas serão lidas.',
+      ].map(t => [t]);
+      const instrucoesSheet = XLSX.utils.aoa_to_sheet(instrucoes);
+      instrucoesSheet['!cols'] = [{ wch: 110 }];
+      XLSX.utils.book_append_sheet(workbook, instrucoesSheet, 'Instruções');
+      for (const [name, rows] of [['Ficha técnica', [['Prato', 'Insumo', 'Quantidade', 'Unidade']]], ['Pratos (consulta)', pratos], ['Insumos (consulta)', insumos]] as [string, string[][]][]) {
         const sheet = XLSX.utils.aoa_to_sheet(rows);
         sheet['!cols'] = rows[0].map(() => ({ wch: 28 }));
         XLSX.utils.book_append_sheet(workbook, sheet, name);
