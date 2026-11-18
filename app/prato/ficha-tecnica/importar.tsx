@@ -76,6 +76,12 @@ const msgSemAba = 'Não encontrei uma aba com as colunas Prato, Insumo, Quantida
 const cabecalhos = ['prato', 'insumo', 'quantidade', 'unidade'];
 const normaliza = (v: unknown) => String(v ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
 const texto = (v: unknown) => String(v ?? '').replace(/[\t\r\n]+/g, ' ').trim();
+// Quantidade numérica: usa o valor real da célula (não o texto formatado), com até 3 casas, sem zeros à direita, vírgula decimal e sem separador de milhar.
+function quantidadeNumerica(n: number): string | null {
+  if (!Number.isFinite(n)) return null;
+  const fixo = n.toFixed(3).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
+  return (fixo === '-0' ? '0' : fixo).replace('.', ',');
+}
 // Percorre todas as abas; só entram as que têm os quatro cabeçalhos na primeira linha não vazia.
 function lerFichas(workbook: XLSX.WorkBook): { erro: string } | { linhas: string[]; abas: string[] } {
   const linhas: string[] = [];
@@ -85,6 +91,8 @@ function lerFichas(workbook: XLSX.WorkBook): { erro: string } | { linhas: string
     const sheet = workbook.Sheets[nome];
     if (!sheet) continue;
     const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, raw: false, defval: '', blankrows: false });
+    // Mesma leitura com valores reais, na mesma ordem de linhas e colunas
+    const brutas = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, raw: true, defval: '', blankrows: false });
     const inicio = rows.findIndex(row => row.some(c => texto(c) !== ''));
     if (inicio < 0) continue;
     const nomes = rows[inicio].map(normaliza);
@@ -92,8 +100,11 @@ function lerFichas(workbook: XLSX.WorkBook): { erro: string } | { linhas: string
     if (idx.some(i => i < 0)) continue;
     comCabecalho = true;
     let usada = false;
-    for (const row of rows.slice(inicio + 1)) {
+    for (let r = inicio + 1; r < rows.length; r++) {
+      const row = rows[r];
       const valores = idx.map(i => texto(row[i]));
+      const bruto = brutas[r]?.[idx[2]];
+      if (typeof bruto === 'number') valores[2] = quantidadeNumerica(bruto) ?? valores[2];
       if (valores.every(v => v === '')) continue;
       if (valores.every((v, i) => normaliza(v) === cabecalhos[i])) continue;
       linhas.push(valores.join('\t'));
