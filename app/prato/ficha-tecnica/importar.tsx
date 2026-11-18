@@ -7,6 +7,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as XLSX from 'xlsx';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
+import * as DocumentPicker from 'expo-document-picker';
 import { useAuth } from '@/contexts/AuthContext';
 import { useColors } from '@/hooks/useColors';
 import { TelaComTeclado } from '@/components/TelaComTeclado';
@@ -67,6 +68,44 @@ function readResponse(raw: unknown, count: number): Resposta {
   if (seen.size !== count || summary.total !== count || summary.novas !== totals.nova || summary.atualizam !== totals.atualiza || summary.sem_alteracao !== totals.sem_alteracao || summary.com_erro !== totals.erro) throw new Error('Resumo inconsistente. Confira novamente antes de importar.');
   return { resumo: summary as Resumo, resultados };
 }
+const MAX_ARQUIVO = 5 * 1024 * 1024;
+const MAX_LINHAS = 500;
+const msgLotes = 'Divida a planilha em lotes de no máximo 500 linhas de dados e confira cada lote separadamente.';
+const msgLeitura = 'Não foi possível ler o arquivo. Confira se é uma planilha Excel válida.';
+const msgSemAba = 'Não encontrei uma aba com as colunas Prato, Insumo, Quantidade e Unidade. Use o modelo em Excel.';
+const cabecalhos = ['prato', 'insumo', 'quantidade', 'unidade'];
+const normaliza = (v: unknown) => String(v ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
+const texto = (v: unknown) => String(v ?? '').replace(/[\t\r\n]+/g, ' ').trim();
+// Percorre todas as abas; só entram as que têm os quatro cabeçalhos na primeira linha não vazia.
+function lerFichas(workbook: XLSX.WorkBook): { erro: string } | { linhas: string[]; abas: string[] } {
+  const linhas: string[] = [];
+  const abas: string[] = [];
+  let comCabecalho = false;
+  for (const nome of workbook.SheetNames) {
+    const sheet = workbook.Sheets[nome];
+    if (!sheet) continue;
+    const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, raw: false, defval: '', blankrows: false });
+    const inicio = rows.findIndex(row => row.some(c => texto(c) !== ''));
+    if (inicio < 0) continue;
+    const nomes = rows[inicio].map(normaliza);
+    const idx = cabecalhos.map(h => nomes.indexOf(h));
+    if (idx.some(i => i < 0)) continue;
+    comCabecalho = true;
+    let usada = false;
+    for (const row of rows.slice(inicio + 1)) {
+      const valores = idx.map(i => texto(row[i]));
+      if (valores.every(v => v === '')) continue;
+      if (valores.every((v, i) => normaliza(v) === cabecalhos[i])) continue;
+      linhas.push(valores.join('\t'));
+      usada = true;
+    }
+    if (usada) abas.push(nome);
+  }
+  if (!comCabecalho) return { erro: msgSemAba };
+  if (!linhas.length) return { erro: 'O arquivo não tem linhas de dados.' };
+  if (linhas.length > MAX_LINHAS) return { erro: `O arquivo tem ${linhas.length} linhas de dados. ${msgLotes}` };
+  return { linhas, abas };
+}
 class RequestError extends Error {
   constructor(public status: number, public body: unknown, message: string) { super(message); }
 }
@@ -92,7 +131,7 @@ function Importar({ token }: { token: string }) {
   const [text, setText] = useState('');
   const [preview, setPreview] = useState<Previa | null>(null);
   const [onlyErrors, setOnlyErrors] = useState(false);
-  const [busy, setBusy] = useState<'modelo' | 'conferir' | 'importar' | null>(null);
+  const [busy, setBusy] = useState<'modelo' | 'conferir' | 'importar' | 'arquivo' | null>(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [success, setSuccess] = useState<Resumo | null>(null);
@@ -206,6 +245,50 @@ function Importar({ token }: { token: string }) {
       lock.current = false; if (active.current) setBusy(null);
     }
   };
+  const pickFile = async () => {
+    if (lock.current || !active.current) return;
+    lock.current = true; setBusy('arquivo'); setError(''); setNotice('');
+    const id = version.current;
+    let uri: string | null = null;
+    // Não registrar em log o nome nem o conteúdo do arquivo: podem ter dados do restaurante.
+    try {
+      const picked = await DocumentPicker.getDocumentAsync({
+        type: ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/vnd.ms-excel', 'application/vnd.ms-excel.sheet.macroEnabled.12', '.xlsx', '.xls'],
+        copyToCacheDirectory: true, multiple: false,
+      });
+      if (picked.canceled || !picked.assets?.length) return;
+      const asset = picked.assets[0];
+      if (Platform.OS !== 'web') uri = asset.uri;
+      if (!valid(id)) return;
+      let size = asset.size;
+      if (typeof size !== 'number' && Platform.OS !== 'web') {
+        const info = await FileSystem.getInfoAsync(asset.uri).catch(() => null);
+        size = info && info.exists ? info.size : undefined;
+      }
+      if (typeof size === 'number' && size > MAX_ARQUIVO) { setError('O arquivo é grande demais. Use um arquivo de até 5 MB.'); return; }
+      let workbook: XLSX.WorkBook;
+      try {
+        if (Platform.OS === 'web') {
+          const buffer = asset.file ? await asset.file.arrayBuffer() : await (await fetch(asset.uri)).arrayBuffer();
+          if (buffer.byteLength > MAX_ARQUIVO) { if (valid(id)) setError('O arquivo é grande demais. Use um arquivo de até 5 MB.'); return; }
+          workbook = XLSX.read(buffer, { type: 'array' });
+        } else {
+          const base64 = await FileSystem.readAsStringAsync(asset.uri, { encoding: FileSystem.EncodingType.Base64 });
+          workbook = XLSX.read(base64, { type: 'base64' });
+        }
+      } catch { if (valid(id)) setError(msgLeitura); return; }
+      if (!valid(id)) return;
+      const resultado = lerFichas(workbook);
+      if ('erro' in resultado) { setError(resultado.erro); return; }
+      changeText(resultado.linhas.join('\n'));
+      const n = resultado.linhas.length, k = resultado.abas.length;
+      setNotice(`Arquivo lido: ${n} ${n === 1 ? 'linha' : 'linhas'} de ${k} ${k === 1 ? 'aba' : 'abas'} (${resultado.abas.join(', ')}). Toque em Conferir para revisar.`);
+    } catch { if (valid(id)) setError(msgLeitura); }
+    finally {
+      if (uri) await FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
+      lock.current = false; if (active.current) setBusy(null);
+    }
+  };
   const importRows = async () => {
     const pending = dialog;
     setDialog(null);
@@ -247,7 +330,7 @@ function Importar({ token }: { token: string }) {
         <View style={{ gap: 10 }}>
           <Text style={[styles.heading, { color: colors.text }]}>1. Prepare a planilha</Text>
           <Text style={bodyStyle}>Use uma linha por insumo, com as colunas Prato, Insumo, Quantidade e Unidade. Os nomes precisam corresponder aos cadastros; maiúsculas e acentos não fazem diferença.</Text>
-          <Text style={bodyStyle}>A unidade deve ser a mesma do insumo no Estoque, por exemplo, kg. A importação nunca apaga: apenas adiciona insumos às fichas ou atualiza quantidades.</Text>
+          <Text style={bodyStyle}>A unidade deve ser a mesma do insumo no Estoque, por exemplo, kg. A importação nunca apaga: apenas adiciona insumos às fichas ou atualiza quantidades. Você pode escolher o arquivo preenchido na etapa 2 ou colar as linhas copiadas.</Text>
           {button('Baixar modelo em Excel', () => { void model(); }, true)}
           {!!notice && <Text accessibilityRole="alert" style={[styles.body, { color: colors.textSecondary }]}>{notice}</Text>}
         </View>
@@ -257,7 +340,8 @@ function Importar({ token }: { token: string }) {
           {button('Abrir lista de pratos', () => router.replace('/(tabs)/(gestao)/pratos' as any))}
         </View> : <>
           <View onLayout={event => { inputTop.current = event.nativeEvent.layout.y; }} style={{ gap: 10 }}>
-            <Text style={[styles.heading, { color: colors.text }]}>2. Cole e confira</Text>
+            <Text style={[styles.heading, { color: colors.text }]}>2. Escolha o arquivo ou cole, e confira</Text>
+            {button('Escolher arquivo Excel', () => { void pickFile(); }, true)}
             <Text style={bodyStyle}>Cole aqui as linhas copiadas da planilha (colunas: Prato, Insumo, Quantidade, Unidade)</Text>
             <TextInput ref={input} accessibilityLabel="Cole aqui as linhas copiadas da planilha (colunas: Prato, Insumo, Quantidade, Unidade)" multiline scrollEnabled textAlignVertical="top" editable={!busy} value={text} onChangeText={changeText} autoCorrect={false} autoCapitalize="none" placeholder="Cole as linhas da planilha aqui" placeholderTextColor={colors.textSecondary} style={[styles.input, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surface }]} />
             <Text style={[styles.note, { color: colors.textSecondary }]}>Até 500 linhas por lote. Aceita tabulações ou ponto e vírgula. A vírgula é mantida nas quantidades decimais.</Text>
@@ -287,7 +371,7 @@ function Importar({ token }: { token: string }) {
             {writes === 0 && errors > 0 && button('Corrigir e conferir de novo', correct, true)}
           </View>}
         </>}
-        {!!busy && <View style={styles.row}><ActivityIndicator color={colors.primary} /><Text style={bodyStyle}>{busy === 'modelo' ? 'Preparando modelo...' : busy === 'conferir' ? 'Conferindo linhas...' : 'Importando fichas técnicas...'}</Text></View>}
+        {!!busy && <View style={styles.row}><ActivityIndicator color={colors.primary} /><Text style={bodyStyle}>{busy === 'modelo' ? 'Preparando modelo...' : busy === 'arquivo' ? 'Lendo arquivo...' : busy === 'conferir' ? 'Conferindo linhas...' : 'Importando fichas técnicas...'}</Text></View>}
         {!!error && <Text accessibilityRole="alert" style={[styles.body, { color: colors.danger }]}>{error}</Text>}
       </TelaComTeclado>
     </View>
