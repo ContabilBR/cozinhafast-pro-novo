@@ -313,9 +313,18 @@ export function registerEstoqueRoutes(app: App) {
       const [existing] = await db.select().from(schema.pratoInsumos).where(and(eq(schema.pratoInsumos.pratoId, pratoId), eq(schema.pratoInsumos.insumoId, insumo_id)));
       if (existing) return await reply.code(400).send({ error: "Este insumo já está vinculado a este prato." });
 
-      const [item] = await db.insert(schema.pratoInsumos).values({
-        pratoId, insumoId: insumo_id, quantidadeUsada: quantidade, restauranteId,
-      }).returning();
+      let item: any;
+      try {
+        [item] = await db.insert(schema.pratoInsumos).values({
+          pratoId, insumoId: insumo_id, quantidadeUsada: quantidade, restauranteId,
+        }).returning();
+      } catch (insertErr: any) {
+        const codigo = insertErr?.cause?.code || insertErr?.code;
+        if (codigo === "23505") {
+          return await reply.code(409).send({ error: "Este insumo já está vinculado a este prato." });
+        }
+        throw insertErr;
+      }
 
       return await reply.code(201).send(item);
     } catch (err: any) {
