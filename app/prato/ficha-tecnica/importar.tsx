@@ -1,5 +1,5 @@
 import React, { useCallback, useRef, useState } from 'react';
-import { ActivityIndicator, Keyboard, Platform, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Clipboard, Keyboard, Platform, Share, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
@@ -26,6 +26,8 @@ type Previa = { origens: Origem[]; enviadas: Origem[]; linhas: Linha[]; resposta
 const endpoint = '/api/estoque/ficha-tecnica/importar';
 const columnError = 'A linha precisa ter 4 colunas: Prato, Insumo, Quantidade, Unidade';
 const labels: Record<Status, string> = { nova: 'Nova', atualiza: 'Vai atualizar', sem_alteracao: 'Sem alteração', erro: 'Erro' };
+const msgInsumoFalta = 'Insumo não encontrado.';
+const msgPratoFalta = 'Prato não encontrado.';
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const cell = (value: string) => {
   const trimmed = value.trim();
@@ -184,7 +186,8 @@ function Importar({ token }: { token: string }) {
     } finally { controllers.current.delete(controller); }
   };
   const valid = (id: number) => active.current && version.current === id;
-  const publishPreview = (value: Previa | null) => { currentPreview.current = value; setPreview(value); };
+  const [listaAberta, setListaAberta] = useState(false);
+  const publishPreview = (value: Previa | null) => { currentPreview.current = value; setPreview(value); setListaAberta(false); };
   const changeText = (value: string) => {
     version.current++;
     setText(value); publishPreview(null); setDialog(null); setSuccess(null); setError(''); setNotice('');
@@ -323,6 +326,39 @@ function Importar({ token }: { token: string }) {
   const errors = (preview?.resposta.resumo.com_erro ?? 0) + localErrors;
   const writes = (preview?.resposta.resumo.novas ?? 0) + (preview?.resposta.resumo.atualizam ?? 0);
   const resultMap = new Map(preview?.resposta.resultados.map(row => [preview.enviadas[row.linha - 1].numero, row]));
+  // Resumo dos erros e listas do que falta cadastrar, calculados só a partir da prévia atual.
+  const resumoErros = (() => {
+    if (!preview) return [] as { mensagem: string; quantidade: number }[];
+    const contagem = new Map<string, number>();
+    preview.origens.forEach(row => {
+      const result = resultMap.get(row.numero);
+      if (row.dados && result?.status !== 'erro') return;
+      const mensagem = row.dados ? result?.mensagem || 'Não foi possível validar esta linha. Corrija e confira novamente.' : columnError;
+      contagem.set(mensagem, (contagem.get(mensagem) ?? 0) + 1);
+    });
+    return [...contagem.entries()].map(([mensagem, quantidade]) => ({ mensagem, quantidade })).sort((a, b) => b.quantidade - a.quantidade);
+  })();
+  const faltantes = (mensagem: string, campo: 'insumo' | 'prato') => {
+    const vistos = new Map<string, { nome: string; unidade: string }>();
+    if (preview) preview.origens.forEach(row => {
+      const result = resultMap.get(row.numero);
+      if (!row.dados || result?.status !== 'erro' || result.mensagem !== mensagem) return;
+      const nome = row.dados[campo].trim();
+      const chave = normaliza(nome);
+      if (nome && !vistos.has(chave)) vistos.set(chave, { nome, unidade: row.dados.unidade });
+    });
+    return [...vistos.entries()].sort((a, b) => a[0].localeCompare(b[0], 'pt-BR')).map(([, v]) => v);
+  };
+  const insumosFaltam = faltantes(msgInsumoFalta, 'insumo');
+  const pratosFaltam = faltantes(msgPratoFalta, 'prato');
+  const compartilharLista = async (titulo: string, itens: string[]) => {
+    const mensagem = [titulo, ...itens].join('\n');
+    try {
+      await Share.share({ message: mensagem });
+    } catch {
+      if (Platform.OS === 'web') { try { Clipboard.setString(mensagem); } catch { /* sem área de transferência */ } }
+    }
+  };
   const bodyStyle = [styles.body, { color: colors.text }];
   const button = (label: string, action: () => void, secondary = false) => <AnimatedPressable accessibilityRole="button" accessibilityLabel={label} disabled={!!busy} onPress={action} style={[styles.button, { backgroundColor: secondary ? colors.primaryMuted : colors.primary }]}><Text style={[styles.bold, { color: secondary ? colors.primary : '#fff' }]}>{label}</Text></AnimatedPressable>;
   const correct = () => { setDialog(null); publishPreview(null); input.current?.focus(); };
@@ -358,6 +394,26 @@ function Importar({ token }: { token: string }) {
             <View style={styles.grid}>
               {([['Novas', preview.resposta.resumo.novas], ['Atualizam', preview.resposta.resumo.atualizam], ['Sem alteração', preview.resposta.resumo.sem_alteracao], ['Com erro', errors]] as const).map(([label, value]) => <View key={label} style={[styles.stat, { backgroundColor: colors.surface, borderColor: colors.border }]}><Text style={[styles.heading, { color: colors.text }]}>{value}</Text><Text style={bodyStyle}>{label}</Text></View>)}
             </View>
+            {resumoErros.length > 0 && <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <Text style={[styles.heading, { color: colors.text }]}>Resumo dos erros</Text>
+              {resumoErros.map(item => <View key={item.mensagem} style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8 }}>
+                <Ionicons name="warning-outline" size={20} color={colors.warning} />
+                <Text accessibilityLabel={`${item.mensagem} ${item.quantidade} ${item.quantidade === 1 ? 'linha' : 'linhas'}`} style={[bodyStyle, { flex: 1 }]}>{item.mensagem} · {item.quantidade} {item.quantidade === 1 ? 'linha' : 'linhas'}</Text>
+              </View>)}
+            </View>}
+            {insumosFaltam.length > 0 && <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <Text style={[styles.heading, { color: colors.text }]}>Insumos para cadastrar no Estoque ({insumosFaltam.length})</Text>
+              <Text style={bodyStyle}>A importação não cria insumos. Cadastre estes no Estoque com a mesma unidade e confira de novo. Unidades aceitas no Estoque: kg, g, l, ml, un, cx, pct e dz.</Text>
+              {insumosFaltam.length > 10 && <AnimatedPressable accessibilityRole="button" accessibilityLabel={listaAberta ? 'Ocultar lista' : 'Ver lista'} onPress={() => setListaAberta(v => !v)} style={[styles.button, { backgroundColor: colors.primaryMuted }]}><Text style={[styles.bold, { color: colors.primary }]}>{listaAberta ? 'Ocultar lista' : 'Ver lista'}</Text></AnimatedPressable>}
+              {(insumosFaltam.length <= 10 || listaAberta) && insumosFaltam.map(item => <Text key={`${item.nome}`} selectable style={bodyStyle}>{item.nome} · {item.unidade}</Text>)}
+              {<AnimatedPressable accessibilityRole="button" accessibilityLabel="Compartilhar lista" onPress={() => { void compartilharLista('Insumos para cadastrar no Estoque', insumosFaltam.map(i => `${i.nome} · ${i.unidade}`)); }} style={[styles.button, { backgroundColor: colors.primaryMuted }]}><Text style={[styles.bold, { color: colors.primary }]}>Compartilhar lista</Text></AnimatedPressable>}
+            </View>}
+            {pratosFaltam.length > 0 && <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <Text style={[styles.heading, { color: colors.text }]}>Pratos para cadastrar</Text>
+              <Text style={bodyStyle}>A importação não cria pratos. Cadastre estes na lista de pratos e confira de novo.</Text>
+              {pratosFaltam.map(item => <Text key={item.nome} selectable style={bodyStyle}>{item.nome}</Text>)}
+              {<AnimatedPressable accessibilityRole="button" accessibilityLabel="Compartilhar lista" onPress={() => { void compartilharLista('Pratos para cadastrar', pratosFaltam.map(i => i.nome)); }} style={[styles.button, { backgroundColor: colors.primaryMuted }]}><Text style={[styles.bold, { color: colors.primary }]}>Compartilhar lista</Text></AnimatedPressable>}
+            </View>}
             <View style={styles.row}><Text style={bodyStyle}>Mostrar só erros</Text><Switch accessibilityLabel="Mostrar só erros" value={onlyErrors} onValueChange={setOnlyErrors} trackColor={{ true: colors.primary }} /></View>
             {preview.origens.filter(row => !onlyErrors || !row.dados || resultMap.get(row.numero)?.status === 'erro').map(row => {
               const result = resultMap.get(row.numero);
