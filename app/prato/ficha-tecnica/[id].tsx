@@ -8,6 +8,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useColors } from '@/hooks/useColors';
 import { AnimatedPressable } from '@/components/AnimatedPressable';
 import { TelaComTeclado } from '@/components/TelaComTeclado';
+import { CampoMoeda, centavosParaTexto, textoParaCentavos } from '@/components/CampoMoeda';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { apiDelete, apiGet, apiPost, apiPut } from '@/utils/api';
 import { aguardarTodas } from '@/utils/promessasSettled';
@@ -89,6 +90,10 @@ function Ficha({ id }: { id: string }) {
   const [busy, setBusy] = useState(false);
   const [remover, setRemover] = useState<Vinculo | null>(null);
   const [feedback, setFeedback] = useState('');
+  const [custoPanel, setCustoPanel] = useState<{ item: Vinculo; atual: number | null } | null>(null);
+  const [custoTexto, setCustoTexto] = useState('');
+  const [custoErro, setCustoErro] = useState('');
+  const [outrosPratos, setOutrosPratos] = useState<string[] | null>(null);
   const active = useRef(false);
   const version = useRef(0);
   const mutation = useRef(false);
@@ -115,7 +120,7 @@ function Ficha({ id }: { id: string }) {
   }, [id, endpoint]);
   useFocusEffect(useCallback(() => {
     active.current = true; void load();
-    return () => { active.current = false; version.current++; setPanel(null); setRemover(null); };
+    return () => { active.current = false; version.current++; setPanel(null); setRemover(null); setCustoPanel(null); };
   }, [load]));
 
   const map = new Map(dados?.insumos.map(i => [i.id, i]));
@@ -143,6 +148,35 @@ function Ficha({ id }: { id: string }) {
       else await apiPost(endpoint, { insumo_id: selected.id, quantidade: quantity });
       if (active.current) { setPanel(null); setFeedback('Ficha técnica salva.'); await load(); }
     } catch (e) { if (active.current) setFormError(erroApi(e, 'Não foi possível salvar o insumo.')); }
+    finally { mutation.current = false; if (active.current) setBusy(false); }
+  };
+  const openCusto = (item: Vinculo) => {
+    if (mutation.current || loading) return;
+    const atual = map.get(item.insumoId)?.custo ?? null;
+    setCustoPanel({ item, atual }); setCustoTexto(atual == null ? '' : centavosParaTexto(Math.round(atual * 100)));
+    setCustoErro(''); setOutrosPratos(null); setFeedback('');
+  };
+  const saveCusto = async () => {
+    if (mutation.current || !custoPanel) return;
+    const valor = custoTexto.trim().replace(',', '.');
+    if (!valor) { setCustoErro('Informe o custo do insumo.'); return; }
+    if (valor.startsWith('-')) { setCustoErro('O custo não pode ser negativo.'); return; }
+    if (!/^\d+(\.\d{1,2})?$/.test(valor) || textoParaCentavos(valor) <= 0) { setCustoErro('Informe um custo válido em reais, com no máximo 2 casas decimais.'); return; }
+    const custoUnitario = (textoParaCentavos(valor) / 100).toFixed(2);
+    const insumoId = custoPanel.item.insumoId;
+    mutation.current = true; setBusy(true); setCustoErro('');
+    try {
+      if (outrosPratos === null) {
+        let lista: unknown;
+        try { lista = await apiGet<unknown>(`/api/insumos/${encodeURIComponent(insumoId)}/pratos`); }
+        catch (e) { if (active.current) setCustoErro(erroApi(e, 'Não foi possível verificar em quais pratos este insumo é usado. O custo não foi alterado.')); return; }
+        if (!Array.isArray(lista)) { if (active.current) setCustoErro('Não foi possível verificar em quais pratos este insumo é usado. O custo não foi alterado.'); return; }
+        const outros = lista.filter(p => object(p) && typeof p.id === 'string' && p.id !== id).map(p => String((p as Record<string, unknown>).nome ?? 'Prato sem nome'));
+        if (outros.length > 0) { if (active.current) setOutrosPratos(outros); return; }
+      }
+      await apiPut(`/api/insumos/${encodeURIComponent(insumoId)}`, { custoUnitario });
+      if (active.current) { setCustoPanel(null); setOutrosPratos(null); setFeedback('Custo do insumo atualizado.'); await load(); }
+    } catch (e) { if (active.current) setCustoErro(erroApi(e, 'Não foi possível salvar o custo do insumo.')); }
     finally { mutation.current = false; if (active.current) setBusy(false); }
   };
   const remove = async () => {
@@ -181,6 +215,7 @@ function Ficha({ id }: { id: string }) {
               <View style={styles.row}><Text style={muted}>Custo da linha</Text><Text style={[styles.bold, { color: colors.text }]}>{cost == null ? '—' : formatCurrency(item.quantidade * cost)}</Text></View>
               <Text style={[styles.body, { color: colors.primary }]}>Alterar quantidade</Text>
             </AnimatedPressable>
+            <AnimatedPressable accessibilityRole="button" accessibilityLabel={`Alterar custo de ${item.insumoNome}`} disabled={busy} onPress={() => openCusto(item)} style={[styles.remove, { borderTopColor: colors.border }]}><Ionicons name="cash-outline" size={18} color={colors.primary} /><Text style={[styles.body, { color: colors.primary }]}>Alterar custo</Text></AnimatedPressable>
             <AnimatedPressable accessibilityRole="button" accessibilityLabel={`Remover ${item.insumoNome} da ficha técnica`} disabled={busy} onPress={() => setRemover(item)} style={[styles.remove, { borderTopColor: colors.border }]}><Ionicons name="trash-outline" size={18} color={colors.danger} /><Text style={[styles.body, { color: colors.danger }]}>Remover insumo</Text></AnimatedPressable>
           </View>;
         })}
@@ -219,6 +254,34 @@ function Ficha({ id }: { id: string }) {
             {selected && <><Text style={[styles.bold, { color: colors.text }]}>Quantidade</Text><View style={{ flexDirection: 'row', gap: 12, alignItems: 'center' }}><TextInput accessibilityLabel={`Quantidade em ${selected.unidade}`} value={qtd} onChangeText={setQtd} keyboardType="decimal-pad" placeholder="0,000" placeholderTextColor={colors.textSecondary} style={[input, { flex: 1 }]} editable={!busy} maxLength={30} /><Text style={text}>{selected.unidade}</Text></View><Text style={muted}>Quantidade na mesma unidade do insumo (por exemplo, {selected.unidade})</Text></>}
             {!!formError && <Text accessibilityRole="alert" style={[styles.body, { color: colors.danger }]}>{formError}</Text>}
           </View>
+        </View>
+      </TelaComTeclado>
+      </View>
+    </Modal>
+    <Modal visible={!!custoPanel} transparent animationType="slide" onRequestClose={() => { if (!busy) setCustoPanel(null); }} statusBarTranslucent navigationBarTranslucent>
+      <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)' }}>
+      <TelaComTeclado
+        contentContainerStyle={{ flexGrow: 1, justifyContent: 'flex-end' }}
+        rodapeStyle={{ backgroundColor: colors.surface, paddingHorizontal: 20, paddingBottom: Math.max(insets.bottom, 20), gap: 12 }}
+        rodape={<>
+          {busy ? <ActivityIndicator color={colors.primary} /> : button(outrosPratos ? 'Confirmar e salvar' : 'Salvar', () => { void saveCusto(); })}
+          <AnimatedPressable accessibilityRole="button" accessibilityLabel="Cancelar" disabled={busy} onPress={() => setCustoPanel(null)} style={styles.button}><Text style={muted}>Cancelar</Text></AnimatedPressable>
+        </>}
+      >
+        <View accessibilityViewIsModal style={[styles.panel, { backgroundColor: colors.surface, paddingBottom: 12 }]}>
+          <View style={styles.row}><Text style={[styles.title, { color: colors.text }]}>Alterar custo</Text><AnimatedPressable accessibilityRole="button" accessibilityLabel="Fechar painel" disabled={busy} onPress={() => setCustoPanel(null)} style={styles.back}><Ionicons name="close" size={24} color={colors.text} /></AnimatedPressable></View>
+          {custoPanel && <View style={{ gap: 12 }}>
+            <Text style={[styles.bold, { color: colors.text }]}>{custoPanel.item.insumoNome}</Text>
+            <Text style={muted}>Unidade: {custoPanel.item.insumoUnidade}</Text>
+            <Text style={muted}>Custo atual: {custoPanel.atual == null ? 'indisponível' : `${formatCurrency(custoPanel.atual)} por ${custoPanel.item.insumoUnidade}`}</Text>
+            <Text style={[styles.bold, { color: colors.text }]}>Novo custo (R$)</Text>
+            <CampoMoeda accessibilityLabel={`Novo custo por ${custoPanel.item.insumoUnidade}`} value={custoTexto} onChangeText={t => { setCustoTexto(t); setCustoErro(''); }} placeholder="0,00" placeholderTextColor={colors.textSecondary} style={input} editable={!busy} />
+            {outrosPratos && <View accessibilityRole="alert" style={{ gap: 4 }}>
+              <Text style={[styles.bold, { color: colors.warning }]}>Este custo vale para o insumo e também altera {outrosPratos.length} {outrosPratos.length === 1 ? 'outro prato' : 'outros pratos'}:</Text>
+              {outrosPratos.map((n, i) => <Text key={`${i}:${n}`} style={text}>• {n}</Text>)}
+            </View>}
+            {!!custoErro && <Text accessibilityRole="alert" style={[styles.body, { color: colors.danger }]}>{custoErro}</Text>}
+          </View>}
         </View>
       </TelaComTeclado>
       </View>
