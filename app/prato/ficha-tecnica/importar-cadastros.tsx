@@ -39,6 +39,7 @@ const MAX_ARQUIVO = 5 * 1024 * 1024;
 const MAX_LINHAS = 500;
 const msgLeitura = 'Não foi possível ler o arquivo. Confira se é uma planilha Excel válida.';
 const msgSemAba = 'Nenhuma aba do modelo foi encontrada. Use o modelo baixado nesta tela.';
+const msgAntigo = 'Este arquivo é do modelo da tela Importar fichas técnicas. Use o modelo baixado nesta tela.';
 const msgMudou = 'Os dados mudaram desde a conferência. Confira novamente antes de importar.';
 const msgInsumoFalta = 'Insumo não encontrado.';
 const msgPratoFalta = 'Prato não encontrado.';
@@ -60,10 +61,11 @@ function numerico(n: number, casas: number): string | null {
   return (fixo === '-0' ? '0' : fixo).replace('.', ',');
 }
 
-type Leitura = { erro: string } | { lido: Lido; abas: string[] };
+type Leitura = { erro: string } | { lido: Lido; abas: string[]; antigo: boolean };
 function lerArquivo(workbook: XLSX.WorkBook): Leitura {
   const lido: Lido = { pratos: [], insumos: [], fichas: [] };
   const abas: string[] = [];
+  let antigo = false;
   for (const nome of workbook.SheetNames) {
     const sheet = workbook.Sheets[nome];
     if (!sheet || !sheet['!ref']) continue;
@@ -75,9 +77,11 @@ function lerArquivo(workbook: XLSX.WorkBook): Leitura {
     const nomes = rows[inicio].map(normaliza);
     const col = (...opcoes: string[]) => nomes.findIndex(n => opcoes.includes(n));
     const iPrato = col('prato'), iInsumo = col('insumo'), iPreco = col('preco'), iUnidade = col('unidade'), iQtd = col('quantidade');
+    // Prato, Insumo, Quantidade e Unidade juntos: é o modelo antigo da tela Importar fichas técnicas.
+    if (iPrato >= 0 && iInsumo >= 0 && iQtd >= 0 && iUnidade >= 0) { antigo = true; continue; }
     let tipo: Aba | null = null;
     if (iPrato >= 0 && iPreco >= 0) tipo = 'pratos';
-    else if (iInsumo >= 0 && iUnidade >= 0) tipo = 'insumos';
+    else if (iInsumo >= 0 && iUnidade >= 0 && iQtd < 0) tipo = 'insumos';
     else if (iPrato >= 0 && iInsumo >= 0 && iQtd >= 0 && iUnidade < 0) tipo = 'fichas';
     if (!tipo) continue;
     const iCategoria = col('categoria'), iDescricao = col('descricao'), iTempo = col('tempo de preparo (min)', 'tempo de preparo');
@@ -114,11 +118,11 @@ function lerArquivo(workbook: XLSX.WorkBook): Leitura {
     }
     abas.push(nome);
   }
-  if (!abas.length) return { erro: msgSemAba };
+  if (!abas.length) return { erro: antigo ? msgAntigo : msgSemAba };
   for (const k of ['pratos', 'insumos', 'fichas'] as Aba[]) {
     if (lido[k].length > MAX_LINHAS) return { erro: `A aba ${nomesAba[k]} tem ${lido[k].length} linhas de dados. O máximo é ${MAX_LINHAS} por aba. Divida o arquivo em lotes menores.` };
   }
-  return { lido, abas };
+  return { lido, abas, antigo };
 }
 
 class RequestError extends Error {
@@ -331,7 +335,7 @@ function Importar({ token }: { token: string }) {
       const resultado = lerArquivo(workbook);
       if ('erro' in resultado) { setError(resultado.erro); return; }
       trocarArquivo(resultado.lido);
-      setNotice(`Arquivo lido: ${plural(resultado.lido.pratos.length, 'prato', 'pratos')}, ${plural(resultado.lido.insumos.length, 'insumo', 'insumos')} e ${plural(resultado.lido.fichas.length, 'linha', 'linhas')} de ficha. Toque em Conferir para revisar.`);
+      setNotice(`Arquivo lido: ${plural(resultado.lido.pratos.length, 'prato', 'pratos')}, ${plural(resultado.lido.insumos.length, 'insumo', 'insumos')} e ${plural(resultado.lido.fichas.length, 'linha', 'linhas')} de ficha. Toque em Conferir para revisar.${resultado.antigo ? ` ${msgAntigo}` : ''}`);
     } catch { if (valid(id)) setError(msgLeitura); }
     finally {
       if (uri) await FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
