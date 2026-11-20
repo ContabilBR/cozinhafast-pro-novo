@@ -52,6 +52,41 @@ export function registerEstoqueRoutes(app: App) {
     }
   );
 
+  // GET /api/insumos/:id/pratos — pratos do mesmo restaurante que usam o insumo (somente leitura)
+  app.fastify.get(
+    "/api/insumos/:id/pratos",
+    { schema: {} } as any,
+    async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      try {
+        const session = await customRequireAuth(app, request, reply);
+        if (!session) return;
+        const restauranteId = requireTenant(session);
+        const { id } = request.params;
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+          return await reply.code(400).send({ error: "Insumo inválido" });
+        }
+
+        const [insumo] = await db.select({ id: schema.insumos.id }).from(schema.insumos)
+          .where(and(eq(schema.insumos.id, id), eq(schema.insumos.restauranteId, restauranteId)));
+        if (!insumo) return await reply.code(404).send({ error: "Insumo não encontrado" });
+
+        const lista = await db.select({ id: schema.pratos.id, nome: schema.pratos.nome })
+          .from(schema.pratoInsumos)
+          .innerJoin(schema.pratos, eq(schema.pratoInsumos.pratoId, schema.pratos.id))
+          .where(and(
+            eq(schema.pratoInsumos.insumoId, id),
+            eq(schema.pratoInsumos.restauranteId, restauranteId),
+            eq(schema.pratos.restauranteId, restauranteId)
+          ))
+          .orderBy(schema.pratos.nome);
+        return await reply.code(200).send(lista);
+      } catch (err: any) {
+        if (err.statusCode) return await reply.code(err.statusCode).send({ error: err.message });
+        return await reply.code(500).send({ error: "Erro interno" });
+      }
+    }
+  );
+
   // POST /api/insumos — criar insumo
   app.fastify.post(
     "/api/insumos",
