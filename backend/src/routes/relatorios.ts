@@ -3,7 +3,7 @@ import { eq, sum, count, gte, lt, and, sql, not, gt } from "drizzle-orm";
 import * as schema from "../db/schema/schema.js";
 import type { App } from "../index.js";
 import { requireAuth as customRequireAuth, requireTenant, requireRole } from "../utils/auth.js";
-import { carregarHistoricoCustoInsumos } from "../utils/custo-insumo-historico.js";
+import { carregarHistoricoCustoFichas } from "../utils/custo-insumo-historico.js";
 import { obterFusoDaRequisicao, inicioDoDiaLocal, diaLocalDeInstante, fusoSql, type DiaLocal } from "../utils/fuso.js";
 
 type Periodo = "hoje" | "7dias" | "mes" | "personalizado";
@@ -4534,8 +4534,8 @@ LIMIT 5
               SELECT
                 pi.prato_id,
                 COUNT(i.id) AS quantidade_insumos,
-                SUM(pi.quantidade_usada * COALESCE(i.custo_unitario, 0)) AS custo_ficha,
-                ARRAY_REMOVE(ARRAY_AGG(DISTINCT CASE WHEN i.custo_unitario IS NULL OR i.custo_unitario <= 0 THEN i.nome ELSE NULL END), NULL) AS insumos_sem_custo
+                SUM(pi.quantidade_usada * COALESCE(pi.custo_unitario, i.custo_unitario, 0)) AS custo_ficha,
+                ARRAY_REMOVE(ARRAY_AGG(DISTINCT CASE WHEN COALESCE(pi.custo_unitario, i.custo_unitario) IS NULL OR COALESCE(pi.custo_unitario, i.custo_unitario) <= 0 THEN i.nome ELSE NULL END), NULL) AS insumos_sem_custo
               FROM ${schema.pratoInsumos} pi
               LEFT JOIN ${schema.insumos} i ON pi.insumo_id = i.id AND i.restaurante_id = pi.restaurante_id
               WHERE pi.restaurante_id = ${restauranteId}
@@ -4616,15 +4616,15 @@ LIMIT 5
         // Ficha técnica de cada prato, com a quantidade usada de cada insumo (consulta separada, como no CMV teórico).
         const fichaResult: any = await (app.db as any).execute(
           sql`
-            SELECT pi.prato_id, pi.insumo_id, pi.quantidade_usada, i.custo_unitario
+            SELECT pi.prato_id, pi.insumo_id, pi.quantidade_usada, COALESCE(pi.custo_unitario, i.custo_unitario) AS custo_unitario
             FROM ${schema.pratoInsumos} pi
             INNER JOIN ${schema.insumos} i ON i.id = pi.insumo_id AND i.restaurante_id = pi.restaurante_id
             WHERE pi.restaurante_id = ${restauranteId}
           `
         ) as any[];
 
-        // Histórico de custo dos insumos: UMA consulta por requisição.
-        const historicoCusto = await carregarHistoricoCustoInsumos(app, restauranteId);
+        // Histórico de custo das linhas da ficha: UMA consulta por requisição.
+        const historicoCusto = await carregarHistoricoCustoFichas(app, restauranteId);
 
         const fichaMap = new Map<string, Array<{ insumoId: string; qtdUsada: number; custo: number }>>();
         for (const f of fichaResult) {
@@ -4651,7 +4651,7 @@ LIMIT 5
           const guardado = custoFichaCache.get(chave);
           if (guardado !== undefined) return guardado;
           const custo = (fichaMap.get(pratoId) || []).reduce(
-            (soma, i) => soma + i.qtdUsada * (historicoCusto.custoNoDia(i.insumoId, dia) ?? i.custo),
+            (soma, i) => soma + i.qtdUsada * (historicoCusto.custoNoDia(pratoId, i.insumoId, dia) ?? i.custo),
             0
           );
           custoFichaCache.set(chave, custo);
@@ -4843,7 +4843,7 @@ LIMIT 5
           com_ficha: comFicha,
           sem_ficha: semFicha,
           custo_incompleto: custoIncompleto,
-          observacao_custo: "Custo calculado com o custo que cada insumo tinha na data de cada venda. Pratos sem ficha ou com custo incompleto não entram nos totais de custo e margem.",
+          observacao_custo: "Custo calculado com o custo que cada insumo tinha na própria ficha de cada prato, na data de cada venda. Pratos sem ficha ou com custo incompleto não entram nos totais de custo e margem.",
         });
       } catch (error) {
         app.logger.error({}, "Failed to get margem-pratos report");
@@ -4935,7 +4935,7 @@ LIMIT 5
         // QUERY 2: Recipe costs (ficha técnica)
         const fichaResult: any = await (app.db as any).execute(
           sql`
-            SELECT pi.prato_id, pi.insumo_id, i.id, i.nome, i.unidade::text, pi.quantidade_usada, i.custo_unitario
+            SELECT pi.prato_id, pi.insumo_id, i.id, i.nome, i.unidade::text, pi.quantidade_usada, COALESCE(pi.custo_unitario, i.custo_unitario) AS custo_unitario
             FROM ${schema.pratoInsumos} pi
             INNER JOIN ${schema.insumos} i ON i.id = pi.insumo_id AND i.restaurante_id = pi.restaurante_id
             WHERE pi.restaurante_id = ${restauranteId}
@@ -5013,12 +5013,12 @@ LIMIT 5
           pratoClassMap.set(pratoId, { classe, custoUnitario, insumosSemCusto });
         }
 
-        // Histórico de custo dos insumos: UMA consulta por requisição; o resto sai da memória.
-        // A classificação do prato (com ficha / custo incompleto) continua usando o custo atual.
-        const historicoCusto = await carregarHistoricoCustoInsumos(app, restauranteId);
+        // Histórico de custo das linhas da ficha: UMA consulta por requisição; o resto sai da memória.
+        // A classificação do prato (com ficha / custo incompleto) usa o custo próprio da linha (ou o do insumo, se a linha não tiver).
+        const historicoCusto = await carregarHistoricoCustoFichas(app, restauranteId);
 
-        const custoInsumoNoDia = (ins: { insumoId: string; custo: number }, dia: string): number =>
-          historicoCusto.custoNoDia(ins.insumoId, dia) ?? ins.custo;
+        const custoInsumoNoDia = (pratoId: string | null, ins: { insumoId: string; custo: number }, dia: string): number =>
+          historicoCusto.custoNoDia(String(pratoId), ins.insumoId, dia) ?? ins.custo;
 
         // Custo da ficha de um prato por dia de venda, guardado por prato e dia.
         const custoFichaCache = new Map<string, number>();
@@ -5027,7 +5027,7 @@ LIMIT 5
           const guardado = custoFichaCache.get(chave);
           if (guardado !== undefined) return guardado;
           const insumos = fichaMap.get(pratoId) || [];
-          const custo = insumos.reduce((sum, i) => sum + (i.qtdUsada * custoInsumoNoDia(i, dia)), 0);
+          const custo = insumos.reduce((sum, i) => sum + (i.qtdUsada * custoInsumoNoDia(pratoId, i, dia)), 0);
           custoFichaCache.set(chave, custo);
           return custo;
         };
@@ -5262,7 +5262,7 @@ LIMIT 5
           const dias = Array.from((vendasPratoDia.get(pratoId) || new Map()).entries()) as Array<[string, { qtd: number; cort: number }]>;
           for (const insumo of insumos) {
             const key = insumo.insumoId;
-            const custosDia = dias.map(([dia]) => custoInsumoNoDia(insumo, dia));
+            const custosDia = dias.map(([dia]) => custoInsumoNoDia(pratoId, insumo, dia));
             const primeiro = custosDia.length > 0 ? custosDia[0] : insumo.custo;
             if (!porInsumoMap.has(key)) {
               porInsumoMap.set(key, { consumo: 0, custo: 0, unidade: insumo.unidade, custoUnitario: primeiro, variou: false });
@@ -5429,7 +5429,7 @@ LIMIT 5
           sem_ficha: formattedSemFicha,
           custo_incompleto: formattedCustoIncompleto,
           perdas: formattedPerdas,
-          observacao_custo: "CMV teórico calculado pela ficha técnica com o custo que cada insumo tinha na data de cada venda (histórico de custos). Não considera desperdício nem variação de estoque.",
+          observacao_custo: "CMV teórico calculado pela ficha técnica com o custo que cada insumo tinha na própria ficha de cada prato, na data de cada venda (histórico de custos da ficha). Não considera desperdício nem variação de estoque.",
         });
       } catch (error) {
         app.logger.error({ err: error }, "Failed to get cmv-teorico report");

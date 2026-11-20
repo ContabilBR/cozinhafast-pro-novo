@@ -1,10 +1,11 @@
 /**
- * Custo do insumo por dia, a partir do histórico (tabela insumo_custo_historico).
+ * Custo de cada insumo na ficha de cada prato, por dia, a partir do histórico da linha da ficha
+ * (tabela prato_insumo_custo_historico).
  *
- * Regra de vigência: para um insumo e um dia, vale o registro mais recente cujo início, convertido
- * para o dia no fuso de Brasília, seja igual ou anterior a esse dia. Se o dia for anterior ao primeiro
- * registro, vale o primeiro. Se o insumo não tiver registro, a função devolve null e quem chama usa
- * o custo atual do insumo.
+ * Regra de vigência: para um prato, um insumo e um dia, vale o registro mais recente cujo início,
+ * convertido para o dia no fuso de Brasília, seja igual ou anterior a esse dia. Se o dia for anterior
+ * ao primeiro registro, vale o primeiro. Se a linha não tiver registro, a função devolve null e quem
+ * chama usa o custo próprio da linha (prato_insumos.custo_unitario) e, se não houver, o custo atual do insumo.
  *
  * O histórico do restaurante inteiro é carregado em uma única consulta; depois disso as respostas
  * saem da memória.
@@ -14,9 +15,9 @@ import * as schema from "../db/schema/schema.js";
 import type { App } from "../index.js";
 import { FUSO_PADRAO, fusoSql } from "./fuso.js";
 
-export interface HistoricoCustoInsumos {
-  /** Custo do insumo no dia ("YYYY-MM-DD"), ou null se o insumo não tem nenhum registro. */
-  custoNoDia(insumoId: string, dia: string): number | null;
+export interface HistoricoCustoFichas {
+  /** Custo do insumo na ficha do prato no dia ("YYYY-MM-DD"), ou null se a linha não tem nenhum registro. */
+  custoNoDia(pratoId: string, insumoId: string, dia: string): number | null;
 }
 
 interface Vigencia {
@@ -24,44 +25,45 @@ interface Vigencia {
   custo: number;
 }
 
-export async function carregarHistoricoCustoInsumos(
+export async function carregarHistoricoCustoFichas(
   app: App,
   restauranteId: string
-): Promise<HistoricoCustoInsumos> {
+): Promise<HistoricoCustoFichas> {
   let linhas: any[] = [];
   try {
     const resultado: any = await (app.db as any).execute(
       sql`
-        SELECT h.insumo_id,
+        SELECT h.prato_id,
+               h.insumo_id,
                h.custo,
                (h.vigencia_inicio AT TIME ZONE ${fusoSql(FUSO_PADRAO)})::date::text AS dia
-        FROM ${schema.insumoCustoHistorico} h
+        FROM ${schema.pratoInsumoCustoHistorico} h
         WHERE h.restaurante_id = ${restauranteId}
-        ORDER BY h.insumo_id, h.vigencia_inicio ASC, h.id ASC
+        ORDER BY h.prato_id, h.insumo_id, h.vigencia_inicio ASC, h.id ASC
       `
     );
     linhas = Array.isArray(resultado) ? resultado : resultado?.rows ?? [];
   } catch (err) {
-    // Sem histórico (por exemplo, tabela ainda inexistente): os relatórios usam o custo atual do insumo.
-    app.logger.warn({ err, restauranteId }, "Histórico de custo dos insumos indisponível; usando o custo atual dos insumos");
+    // Sem histórico (por exemplo, tabela ainda inexistente): os relatórios usam o custo próprio da linha ou o do insumo.
+    app.logger.warn({ err, restauranteId }, "Histórico de custo das fichas técnicas indisponível; usando o custo da linha ou do insumo");
     linhas = [];
   }
 
   // Em ordem crescente de início; em empate de início, o último registro vence.
-  const porInsumo = new Map<string, Vigencia[]>();
+  const porLinha = new Map<string, Vigencia[]>();
   for (const l of linhas) {
-    const id = String(l.insumo_id);
-    let lista = porInsumo.get(id);
+    const id = `${l.prato_id}|${l.insumo_id}`;
+    let lista = porLinha.get(id);
     if (!lista) {
       lista = [];
-      porInsumo.set(id, lista);
+      porLinha.set(id, lista);
     }
     lista.push({ dia: String(l.dia), custo: Number(l.custo) });
   }
 
   return {
-    custoNoDia(insumoId: string, dia: string): number | null {
-      const lista = porInsumo.get(insumoId);
+    custoNoDia(pratoId: string, insumoId: string, dia: string): number | null {
+      const lista = porLinha.get(`${pratoId}|${insumoId}`);
       if (!lista || lista.length === 0) return null;
       // Último registro com dia <= dia pedido (busca binária; "YYYY-MM-DD" ordena como texto).
       let lo = 0;
