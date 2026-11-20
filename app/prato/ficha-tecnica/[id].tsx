@@ -16,7 +16,7 @@ import { formatCurrency } from '@/utils/helpers';
 
 type Prato = { id: string; nome: string; preco: number };
 type Insumo = { id: string; nome: string; unidade: string; custo: number | null; ativo: boolean };
-type Vinculo = { id: string; insumoId: string; insumoNome: string; insumoUnidade: string; quantidade: number };
+type Vinculo = { id: string; insumoId: string; insumoNome: string; insumoUnidade: string; quantidade: number; custo: number | null };
 type Dados = { prato: Prato; itens: Vinculo[]; insumos: Insumo[]; aviso: string };
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 function numero(v: unknown): number | null {
@@ -42,7 +42,7 @@ function lerFicha(raw: unknown): Vinculo[] {
   return list.map(row => {
     if (!object(row) || typeof row.id !== 'string' || !row.id || ids.has(row.id) || typeof row.insumoId !== 'string' || !row.insumoId || typeof row.insumoNome !== 'string' || typeof row.insumoUnidade !== 'string' || numero(row.quantidadeUsada) === null) throw new Error('Ficha técnica inválida.');
     ids.add(row.id);
-    return { id: row.id, insumoId: row.insumoId, insumoNome: row.insumoNome, insumoUnidade: row.insumoUnidade, quantidade: numero(row.quantidadeUsada)! };
+    return { id: row.id, insumoId: row.insumoId, insumoNome: row.insumoNome, insumoUnidade: row.insumoUnidade, quantidade: numero(row.quantidadeUsada)!, custo: numero(row.custoUnitario) };
   });
 }
 function lerInsumos(raw: unknown): Insumo[] {
@@ -93,7 +93,10 @@ function Ficha({ id }: { id: string }) {
   const [custoPanel, setCustoPanel] = useState<{ item: Vinculo; atual: number | null } | null>(null);
   const [custoTexto, setCustoTexto] = useState('');
   const [custoErro, setCustoErro] = useState('');
-  const [outrosPratos, setOutrosPratos] = useState<string[] | null>(null);
+  const [outrosPratos, setOutrosPratos] = useState<{ id: string; nome: string }[] | null>(null);
+  const [aplicarOutros, setAplicarOutros] = useState(false);
+  const [buscandoOutros, setBuscandoOutros] = useState(false);
+  const [marcados, setMarcados] = useState<string[]>([]);
   const active = useRef(false);
   const version = useRef(0);
   const mutation = useRef(false);
@@ -112,7 +115,7 @@ function Ficha({ id }: { id: string }) {
       try {
         if (insumos.status !== 'fulfilled') throw new Error();
         next.insumos = lerInsumos(insumos.value);
-      } catch { next.aviso = 'Não foi possível carregar os insumos do estoque. Custos e margem indisponíveis. Tente atualizar.'; }
+      } catch { next.aviso = 'Não foi possível carregar os insumos do estoque. Custos sem valor próprio na ficha ficam indisponíveis. Tente atualizar.'; }
       setDados(next);
     } catch {
       if (active.current && request === version.current) { setDados(null); setError('Não foi possível carregar a ficha técnica. Tente novamente.'); }
@@ -127,11 +130,12 @@ function Ficha({ id }: { id: string }) {
   const used = new Set(dados?.itens.map(i => i.insumoId));
   const available = dados?.insumos.filter(i => i.ativo && !used.has(i.id)) ?? [];
   const selected = panel?.item ? { id: panel.item.insumoId, nome: panel.item.insumoNome, unidade: panel.item.insumoUnidade } : available.find(i => i.id === selectedId);
-  const missing = dados?.itens.some(i => map.get(i.insumoId)?.custo == null) ?? false;
-  const zero = dados?.itens.filter(i => map.get(i.insumoId)?.custo === 0).length ?? 0;
-  const total = dados?.itens.reduce((sum, i) => sum + i.quantidade * (map.get(i.insumoId)?.custo ?? 0), 0) ?? 0;
+  const custoDe = (i: Vinculo) => i.custo ?? map.get(i.insumoId)?.custo ?? null;
+  const missing = dados?.itens.some(i => custoDe(i) == null) ?? false;
+  const zero = dados?.itens.filter(i => custoDe(i) === 0).length ?? 0;
+  const total = dados?.itens.reduce((sum, i) => sum + i.quantidade * (custoDe(i) ?? 0), 0) ?? 0;
   const hasItems = !!dados?.itens.length;
-  const costKnown = !dados?.aviso && !missing;
+  const costKnown = !missing;
   const margin = dados ? dados.prato.preco - total : 0;
   const openPanel = (item: Vinculo | null) => {
     if (mutation.current || loading) return;
@@ -152,31 +156,50 @@ function Ficha({ id }: { id: string }) {
   };
   const openCusto = (item: Vinculo) => {
     if (mutation.current || loading) return;
-    const atual = map.get(item.insumoId)?.custo ?? null;
+    const atual = custoDe(item);
     setCustoPanel({ item, atual }); setCustoTexto(atual == null ? '' : centavosParaTexto(Math.round(atual * 100)));
-    setCustoErro(''); setOutrosPratos(null); setFeedback('');
+    setCustoErro(''); setOutrosPratos(null); setAplicarOutros(false); setMarcados([]); setFeedback('');
   };
+  const alternarOutros = async () => {
+    if (!custoPanel || busy || buscandoOutros) return;
+    if (aplicarOutros) { setAplicarOutros(false); return; }
+    setAplicarOutros(true); setCustoErro('');
+    if (outrosPratos !== null) return;
+    setBuscandoOutros(true);
+    try {
+      const lista = await apiGet<unknown>(`/api/insumos/${encodeURIComponent(custoPanel.item.insumoId)}/pratos`);
+      if (!Array.isArray(lista)) throw new Error();
+      if (!active.current) return;
+      setOutrosPratos(lista.filter(p => object(p) && typeof p.id === 'string' && p.id !== id).map(p => ({ id: String((p as Record<string, unknown>).id), nome: String((p as Record<string, unknown>).nome ?? 'Prato sem nome') })));
+    } catch (e) { if (active.current) { setAplicarOutros(false); setCustoErro(erroApi(e, 'Não foi possível buscar os outros pratos que usam este insumo.')); } }
+    finally { if (active.current) setBuscandoOutros(false); }
+  };
+  const alternarMarcado = (pid: string) => setMarcados(m => m.includes(pid) ? m.filter(x => x !== pid) : [...m, pid]);
   const saveCusto = async () => {
     if (mutation.current || !custoPanel) return;
     const valor = custoTexto.trim().replace(',', '.');
     if (!valor) { setCustoErro('Informe o custo do insumo.'); return; }
     if (valor.startsWith('-')) { setCustoErro('O custo não pode ser negativo.'); return; }
-    if (!/^\d+(\.\d{1,2})?$/.test(valor) || textoParaCentavos(valor) <= 0) { setCustoErro('Informe um custo válido em reais, com no máximo 2 casas decimais.'); return; }
-    const custoUnitario = (textoParaCentavos(valor) / 100).toFixed(2);
+    if (!/^\d+(\.\d{1,2})?$/.test(valor)) { setCustoErro('Informe um custo válido em reais, com no máximo 2 casas decimais.'); return; }
+    const custo = (textoParaCentavos(valor) / 100).toFixed(2);
     const insumoId = custoPanel.item.insumoId;
+    const outros = aplicarOutros && outrosPratos ? marcados.filter(m => outrosPratos.some(p => p.id === m)) : [];
     mutation.current = true; setBusy(true); setCustoErro('');
+    let esteAlterado = false;
     try {
-      if (outrosPratos === null) {
-        let lista: unknown;
-        try { lista = await apiGet<unknown>(`/api/insumos/${encodeURIComponent(insumoId)}/pratos`); }
-        catch (e) { if (active.current) setCustoErro(erroApi(e, 'Não foi possível verificar em quais pratos este insumo é usado. O custo não foi alterado.')); return; }
-        if (!Array.isArray(lista)) { if (active.current) setCustoErro('Não foi possível verificar em quais pratos este insumo é usado. O custo não foi alterado.'); return; }
-        const outros = lista.filter(p => object(p) && typeof p.id === 'string' && p.id !== id).map(p => String((p as Record<string, unknown>).nome ?? 'Prato sem nome'));
-        if (outros.length > 0) { if (active.current) setOutrosPratos(outros); return; }
+      await apiPut(`${endpoint}/${encodeURIComponent(insumoId)}/custo`, { custo });
+      esteAlterado = true;
+      if (outros.length > 0) await apiPost('/api/estoque/ficha-tecnica/aplicar-custo', { insumo_id: insumoId, prato_ids: outros, custo });
+      if (active.current) { setCustoPanel(null); setOutrosPratos(null); setFeedback(outros.length > 0 ? `Custo atualizado neste prato e em ${outros.length} ${outros.length === 1 ? 'outro prato' : 'outros pratos'}.` : 'Custo atualizado neste prato.'); await load(); }
+    } catch (e) {
+      if (active.current) {
+        if (esteAlterado) {
+          setCustoErro(`${erroApi(e, 'Não foi possível aplicar o custo aos outros pratos.')} O custo deste prato foi alterado, mas os outros pratos não foram alterados.`);
+          setCustoPanel(c => c ? { ...c, atual: Number(custo) } : c);
+          void load();
+        } else setCustoErro(erroApi(e, 'Não foi possível salvar o custo do insumo.'));
       }
-      await apiPut(`/api/insumos/${encodeURIComponent(insumoId)}`, { custoUnitario });
-      if (active.current) { setCustoPanel(null); setOutrosPratos(null); setFeedback('Custo do insumo atualizado.'); await load(); }
-    } catch (e) { if (active.current) setCustoErro(erroApi(e, 'Não foi possível salvar o custo do insumo.')); }
+    }
     finally { mutation.current = false; if (active.current) setBusy(false); }
   };
   const remove = async () => {
@@ -206,7 +229,7 @@ function Ficha({ id }: { id: string }) {
         {!!dados.aviso && <Text accessibilityRole="alert" style={[styles.body, { color: colors.warning }]}>{dados.aviso}</Text>}
         {!hasItems && <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}><Text style={text}>Este prato ainda não tem ficha técnica.</Text></View>}
         {dados.itens.map(item => {
-          const cost = map.get(item.insumoId)?.custo;
+          const cost = custoDe(item);
           return <View key={item.id} style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
             <AnimatedPressable accessibilityRole="button" accessibilityLabel={`Alterar quantidade de ${item.insumoNome}`} disabled={busy} onPress={() => openPanel(item)} style={{ gap: 6, paddingVertical: 4 }}>
               <Text style={[styles.bold, { color: colors.text }]}>{item.insumoNome}</Text>
@@ -229,7 +252,7 @@ function Ficha({ id }: { id: string }) {
       <View style={styles.row}><Text style={[styles.bold, { color: colors.text }]}>Margem</Text><Text style={[styles.bold, { color: colors.text, flexShrink: 1, textAlign: 'right' }]}>{!hasItems ? 'Sem custo calculado' : !costKnown ? 'Indisponível' : `${formatCurrency(margin)} · ${dados.prato.preco === 0 ? '—' : `${(margin / dados.prato.preco * 100).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`}`}</Text></View>
       {zero > 0 && <Text accessibilityRole="alert" style={[styles.note, { color: colors.warning }]}>{zero} insumo(s) sem custo cadastrado. A margem pode estar maior do que a real.</Text>}
       {missing && !dados.aviso && <Text style={[styles.note, { color: colors.warning }]}>Há insumos com custo indisponível. Atualize o cadastro no Estoque.</Text>}
-      <Text style={[styles.note, { color: colors.textSecondary }]}>Custo calculado com o custo atual dos insumos. Não guarda histórico.</Text>
+      <Text style={[styles.note, { color: colors.textSecondary }]}>Custo calculado com o custo desta ficha. O histórico de custos desta ficha é guardado.</Text>
     </View>}
     <Modal visible={!!panel} transparent animationType="slide" onRequestClose={() => { if (!busy) setPanel(null); }} statusBarTranslucent navigationBarTranslucent>
       <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)' }}>
@@ -264,7 +287,7 @@ function Ficha({ id }: { id: string }) {
         contentContainerStyle={{ flexGrow: 1, justifyContent: 'flex-end' }}
         rodapeStyle={{ backgroundColor: colors.surface, paddingHorizontal: 20, paddingBottom: Math.max(insets.bottom, 20), gap: 12 }}
         rodape={<>
-          {busy ? <ActivityIndicator color={colors.primary} /> : button(outrosPratos ? 'Confirmar e salvar' : 'Salvar', () => { void saveCusto(); })}
+          {busy ? <ActivityIndicator color={colors.primary} /> : button('Salvar', () => { void saveCusto(); })}
           <AnimatedPressable accessibilityRole="button" accessibilityLabel="Cancelar" disabled={busy} onPress={() => setCustoPanel(null)} style={styles.button}><Text style={muted}>Cancelar</Text></AnimatedPressable>
         </>}
       >
@@ -273,13 +296,19 @@ function Ficha({ id }: { id: string }) {
           {custoPanel && <View style={{ gap: 12 }}>
             <Text style={[styles.bold, { color: colors.text }]}>{custoPanel.item.insumoNome}</Text>
             <Text style={muted}>Unidade: {custoPanel.item.insumoUnidade}</Text>
-            <Text style={muted}>Custo atual: {custoPanel.atual == null ? 'indisponível' : `${formatCurrency(custoPanel.atual)} por ${custoPanel.item.insumoUnidade}`}</Text>
+            <Text style={muted}>Custo atual desta ficha: {custoPanel.atual == null ? 'indisponível' : `${formatCurrency(custoPanel.atual)} por ${custoPanel.item.insumoUnidade}`}</Text>
             <Text style={[styles.bold, { color: colors.text }]}>Novo custo (R$)</Text>
             <CampoMoeda accessibilityLabel={`Novo custo por ${custoPanel.item.insumoUnidade}`} value={custoTexto} onChangeText={t => { setCustoTexto(t); setCustoErro(''); }} placeholder="0,00" placeholderTextColor={colors.textSecondary} style={input} editable={!busy} />
-            {outrosPratos && <View accessibilityRole="alert" style={{ gap: 4 }}>
-              <Text style={[styles.bold, { color: colors.warning }]}>Este custo vale para o insumo e também altera {outrosPratos.length} {outrosPratos.length === 1 ? 'outro prato' : 'outros pratos'}:</Text>
-              {outrosPratos.map((n, i) => <Text key={`${i}:${n}`} style={text}>• {n}</Text>)}
-            </View>}
+            <Text style={muted}>Este custo vale somente para este prato.</Text>
+            <AnimatedPressable accessibilityRole="checkbox" accessibilityState={{ checked: aplicarOutros }} accessibilityLabel="Aplicar também a outros pratos" disabled={busy} onPress={() => { void alternarOutros(); }} style={styles.row}>
+              <Text style={text}>Aplicar também a outros pratos</Text><Ionicons name={aplicarOutros ? 'checkbox' : 'square-outline'} size={24} color={colors.primary} />
+            </AnimatedPressable>
+            {aplicarOutros && (buscandoOutros ? <ActivityIndicator color={colors.primary} /> : outrosPratos && (outrosPratos.length === 0 ? <Text style={muted}>Nenhum outro prato usa este insumo.</Text> : <View style={{ gap: 4 }}>
+              <AnimatedPressable accessibilityRole="button" accessibilityLabel="Selecionar todos" disabled={busy} onPress={() => setMarcados(marcados.length === outrosPratos.length ? [] : outrosPratos.map(p => p.id))} style={{ minHeight: 44, justifyContent: 'center' }}><Text style={[styles.body, { color: colors.primary }]}>{marcados.length === outrosPratos.length ? 'Desmarcar todos' : 'Selecionar todos'}</Text></AnimatedPressable>
+              <ScrollView nestedScrollEnabled style={{ maxHeight: 180 }} keyboardShouldPersistTaps="handled">
+                {outrosPratos.map(p => <AnimatedPressable key={p.id} accessibilityRole="checkbox" accessibilityState={{ checked: marcados.includes(p.id) }} accessibilityLabel={p.nome} disabled={busy} onPress={() => alternarMarcado(p.id)} style={[styles.option, { borderColor: colors.border }]}><Text style={[text, { flexShrink: 1 }]}>{p.nome}</Text><Ionicons name={marcados.includes(p.id) ? 'checkbox' : 'square-outline'} size={24} color={colors.primary} /></AnimatedPressable>)}
+              </ScrollView>
+            </View>))}
             {!!custoErro && <Text accessibilityRole="alert" style={[styles.body, { color: colors.danger }]}>{custoErro}</Text>}
           </View>}
         </View>
