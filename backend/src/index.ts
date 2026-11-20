@@ -34,6 +34,8 @@ import { registerRenovacaoDeImagens } from './utils/imagem-assinada.js';
 import { enableSelectRetry } from './db/withRetry.js';
 import { garantirColunasDeCancelamento, garantirColunasDeModoComanda, garantirColunasContinuasDeDesconto, backfillQrTokens, garantirTabelaReservas, garantirTabelaTransacoesTerminal, garantirTabelaMensagensContato, garantirIndiceUnicoPratoInsumos } from './db/ensure-schema.js';
 import { garantirRestauranteIdTexto } from './db/ensure-restaurante-id.js';
+import { garantirPontoInicialHistoricoCusto } from './db/historico-custo.js';
+import { garantirCustoInicialDasFichas } from './db/historico-custo-ficha.js';
 
 // Combine schemas
 const schema = { ...appSchema, ...authSchema };
@@ -123,6 +125,22 @@ try {
   await garantirIndiceUnicoPratoInsumos(app);
 } catch (error) {
   app.logger.error({ err: error }, 'Failed to ensure prato_insumos unique index');
+  // Don't exit - this is not critical
+}
+
+// Ponto inicial do histórico de custo dos insumos (idempotente; só insere o que falta)
+try {
+  await garantirPontoInicialHistoricoCusto(app);
+} catch (error) {
+  app.logger.error({ err: error }, 'Failed to ensure insumo cost history initial point');
+  // Don't exit - this is not critical
+}
+
+// Custo próprio de cada ficha técnica: copia o custo atual do insumo para as linhas sem custo (idempotente)
+try {
+  await garantirCustoInicialDasFichas(app);
+} catch (error) {
+  app.logger.error({ err: error }, 'Failed to ensure ficha tecnica initial cost');
   // Don't exit - this is not critical
 }
 
