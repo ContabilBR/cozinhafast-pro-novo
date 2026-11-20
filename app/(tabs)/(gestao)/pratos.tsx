@@ -532,6 +532,15 @@ export default function GestaoPratos() {
             <Ionicons name="document-text-outline" size={20} color={COLORS.primary} />
             <Text style={{ fontFamily: 'Outfit_600SemiBold', fontSize: 15, color: COLORS.primary }}>Importar fichas técnicas</Text>
           </AnimatedPressable>
+          <AnimatedPressable
+            accessibilityRole="button"
+            accessibilityLabel="Importar cadastros e fichas"
+            onPress={() => router.push('/prato/ficha-tecnica/importar-cadastros' as any)}
+            style={{ minHeight: 48, borderRadius: 12, padding: 12, marginTop: 8, backgroundColor: COLORS.primaryMuted, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+          >
+            <Ionicons name="document-text-outline" size={20} color={COLORS.primary} />
+            <Text style={{ fontFamily: 'Outfit_600SemiBold', fontSize: 15, color: COLORS.primary }}>Importar cadastros e fichas</Text>
+          </AnimatedPressable>
         </View>
       )}
 
