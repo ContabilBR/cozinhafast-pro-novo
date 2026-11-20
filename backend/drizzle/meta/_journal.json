@@ -421,6 +421,13 @@
       "when": 1794503865383,
       "tag": "20261112171745_transacoes_terminal_neutra",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1794966975874,
+      "tag": "20261118015615_prato_insumos_unico",
+      "breakpoints": true
     }
   ]
 }

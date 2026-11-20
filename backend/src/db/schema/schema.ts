@@ -486,7 +486,10 @@ export const pratoInsumos = pgTable("prato_insumos", {
   insumoId: uuid("insumo_id").notNull().references(() => insumos.id, { onDelete: "cascade" }),
   quantidadeUsada: numeric("quantidade_usada", { precision: 10, scale: 3 }).notNull(),
   restauranteId: text("restaurante_id").notNull().references(() => restaurante.id, { onDelete: "restrict" }),
-});
+}, (table) => ({
+  // Um insumo aparece uma única vez na ficha técnica de cada prato
+  pratoInsumoUnique: uniqueIndex("prato_insumos_prato_insumo_uq").on(table.pratoId, table.insumoId),
+}));
 
 export const entregas = pgTable("entregas", {
   id: uuid("id").primaryKey().defaultRandom(),

@@ -18,7 +18,7 @@ import { Users } from "lucide-react-native";
 import { formatCurrency } from "@/utils/helpers";
 import { apiGet } from "@/utils/api";
 
-const BASE_URL = "https://j74mf38wgua3d4qd5mqbjjvza88n2qcp.app.specular.dev";
+const BASE_URL = "https://prod-proj-vybakydnnjqvqgpvqsu2h-liwg5h36mq-ey.a.run.app";
 
 // ─── Date display helper ──────────────────────────────────────────────────────
 

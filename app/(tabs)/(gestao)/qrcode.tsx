@@ -34,7 +34,7 @@ export default function QRCodeScreen() {
       setRestauranteId(d.id || "");
     }).catch(() => {});
   }, []);
-  const baseUrl = "https://j74mf38wgua3d4qd5mqbjjvza88n2qcp.app.specular.dev";
+  const baseUrl = "https://prod-proj-vybakydnnjqvqgpvqsu2h-liwg5h36mq-ey.a.run.app";
 
   useFocusEffect(useCallback(() => {
     setLoading(true);
