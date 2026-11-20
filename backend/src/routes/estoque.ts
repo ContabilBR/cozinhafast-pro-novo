@@ -3,6 +3,7 @@ import { eq, and, sql, desc, lte } from "drizzle-orm";
 import * as schema from "../db/schema/schema.js";
 import type { App } from "../index.js";
 import { registrarCustoInsumo } from "../db/historico-custo.js";
+import { criarLinhaDeFicha, alterarCustoNaFicha, validarCustoFicha } from "../db/historico-custo-ficha.js";
 import { requireAuth as customRequireAuth, requireTenant, requireRole } from "../utils/auth.js";
 
 export function registerEstoqueRoutes(app: App) {
@@ -366,6 +367,7 @@ export function registerEstoqueRoutes(app: App) {
         id: schema.pratoInsumos.id,
         insumoId: schema.pratoInsumos.insumoId,
         quantidadeUsada: schema.pratoInsumos.quantidadeUsada,
+        custoUnitario: schema.pratoInsumos.custoUnitario,
         insumoNome: schema.insumos.nome,
         insumoUnidade: schema.insumos.unidade,
       }).from(schema.pratoInsumos)
@@ -413,9 +415,11 @@ export function registerEstoqueRoutes(app: App) {
 
       let item: any;
       try {
-        [item] = await db.insert(schema.pratoInsumos).values({
-          pratoId, insumoId: insumo_id, quantidadeUsada: quantidade, restauranteId,
-        }).returning();
+        // Linha da ficha com o custo atual do insumo e o histórico da linha, na mesma transação
+        item = await db.transaction(async (tx: any) => criarLinhaDeFicha(tx, {
+          restauranteId, pratoId, insumoId: insumo_id, quantidadeUsada: quantidade,
+          usuarioId: (session as any).id || null, origem: "adicao_ficha",
+        }));
       } catch (insertErr: any) {
         const codigo = insertErr?.cause?.code || insertErr?.code;
         if (codigo === "23505") {
@@ -742,6 +746,115 @@ export function registerEstoqueRoutes(app: App) {
     return { resultados, resumo: { total: linhas.length, novas, atualizam, sem_alteracao, com_erro } };
   }
 
+  const uuidFichaRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+  // PUT /api/pratos/:pratoId/insumos/:insumoId/custo — altera o custo de um insumo na ficha de UM prato
+  app.fastify.put(
+    "/api/pratos/:pratoId/insumos/:insumoId/custo",
+    { schema: {} } as any,
+    async (request: FastifyRequest<{ Params: { pratoId: string; insumoId: string }; Body: any }>, reply: FastifyReply) => {
+    try {
+      const session = await customRequireAuth(app, request, reply);
+      if (!session) return;
+      if (!(await requireRole(session, ["gerente", "administrador", "admin"], reply))) return;
+      const restauranteId = requireTenant(session);
+      const { pratoId, insumoId } = request.params;
+      const body: any = request.body;
+
+      if (!uuidFichaRegex.test(pratoId) || !uuidFichaRegex.test(insumoId)) {
+        return await reply.code(404).send({ error: "Insumo não encontrado na ficha deste prato." });
+      }
+      if (!body || typeof body !== "object" || Array.isArray(body) || body.custo === undefined) {
+        return await reply.code(400).send({ error: "custo é obrigatório." });
+      }
+      const custo = validarCustoFicha(body.custo);
+      if (!custo.valido) return await reply.code(400).send({ error: custo.erro });
+
+      const resultado = await db.transaction(async (tx: any) =>
+        alterarCustoNaFicha(tx, {
+          restauranteId, pratoId, insumoId, custo: custo.custo as string,
+          usuarioId: (session as any).id || null, origem: "edicao_ficha",
+        })
+      );
+      if (!resultado) return await reply.code(404).send({ error: "Insumo não encontrado na ficha deste prato." });
+
+      return await reply.code(200).send({ ...resultado.linha, alterado: resultado.alterado });
+    } catch (err: any) {
+      if (err.statusCode) return await reply.code(err.statusCode).send({ error: err.message });
+      app.logger.error({}, "Erro ao alterar custo do insumo na ficha");
+      return await reply.code(500).send({ error: "Erro interno" });
+    }
+  });
+
+  // POST /api/estoque/ficha-tecnica/aplicar-custo — aplica o mesmo custo de um insumo a vários pratos
+  // Body: { insumo_id, prato_ids: string[], custo }. Tudo em uma única transação (tudo ou nada).
+  app.fastify.post(
+    "/api/estoque/ficha-tecnica/aplicar-custo",
+    { schema: {} } as any,
+    async (request: FastifyRequest<{ Body: any }>, reply: FastifyReply) => {
+    try {
+      const session = await customRequireAuth(app, request, reply);
+      if (!session) return;
+      if (!(await requireRole(session, ["gerente", "administrador", "admin"], reply))) return;
+      const restauranteId = requireTenant(session);
+      const body: any = request.body;
+
+      if (!body || typeof body !== "object" || Array.isArray(body)) {
+        return await reply.code(400).send({ error: "Body deve ser um objeto." });
+      }
+      const insumoId = body.insumo_id;
+      if (typeof insumoId !== "string" || !uuidFichaRegex.test(insumoId)) {
+        return await reply.code(400).send({ error: "insumo_id inválido." });
+      }
+      if (!Array.isArray(body.prato_ids) || body.prato_ids.length < 1 || body.prato_ids.length > 500) {
+        return await reply.code(400).send({ error: "prato_ids deve ter entre 1 e 500 pratos." });
+      }
+      for (const pid of body.prato_ids) {
+        if (typeof pid !== "string" || !uuidFichaRegex.test(pid)) {
+          return await reply.code(400).send({ error: "prato_ids contém um id inválido." });
+        }
+      }
+      const pratoIds: string[] = Array.from(new Set(body.prato_ids as string[]));
+      if (body.custo === undefined) return await reply.code(400).send({ error: "custo é obrigatório." });
+      const custo = validarCustoFicha(body.custo);
+      if (!custo.valido) return await reply.code(400).send({ error: custo.erro });
+
+      const saida: any = await db.transaction(async (tx: any) => {
+        // Cada prato precisa ter o insumo na ficha, neste restaurante; senão nada é gravado
+        const naoEncontrados: string[] = [];
+        const alteradas: any[] = [];
+        let semMudanca = 0;
+        for (const pratoId of pratoIds) {
+          const r = await alterarCustoNaFicha(tx, {
+            restauranteId, pratoId, insumoId, custo: custo.custo as string,
+            usuarioId: (session as any).id || null, origem: "aplicacao_em_lote",
+          });
+          if (!r) naoEncontrados.push(pratoId);
+          else if (r.alterado) alteradas.push(r.linha);
+          else semMudanca++;
+        }
+        if (naoEncontrados.length > 0) {
+          const erro: any = new Error("LOTE_COM_PRATO_SEM_INSUMO");
+          erro.naoEncontrados = naoEncontrados;
+          throw erro;
+        }
+        return { alteradas: alteradas.length, sem_mudanca: semMudanca, linhas: alteradas };
+      });
+
+      return await reply.code(200).send({ custo: custo.custo as string, ...saida });
+    } catch (err: any) {
+      if (err && err.message === "LOTE_COM_PRATO_SEM_INSUMO") {
+        return await reply.code(404).send({
+          error: "Alguns pratos não têm este insumo na ficha. Nada foi alterado.",
+          prato_ids: err.naoEncontrados,
+        });
+      }
+      if (err.statusCode) return await reply.code(err.statusCode).send({ error: err.message });
+      app.logger.error({}, "Erro ao aplicar custo do insumo em vários pratos");
+      return await reply.code(500).send({ error: "Erro interno" });
+    }
+  });
+
   // PUT /api/pratos/:pratoId/insumos/:id — atualizar quantidade do vínculo
   app.fastify.put(
     "/api/pratos/:pratoId/insumos/:id",
@@ -914,12 +1027,10 @@ export function registerEstoqueRoutes(app: App) {
             if (!qtyValidation.valid || qtyValidation.value === null) continue;
 
             const qtyStr = qtyValidation.value.toFixed(3);
-            const [inserted] = await tx.insert(schema.pratoInsumos).values({
-              pratoId,
-              insumoId,
-              quantidadeUsada: qtyStr,
-              restauranteId,
-            }).returning();
+            const inserted = await criarLinhaDeFicha(tx, {
+              restauranteId, pratoId, insumoId, quantidadeUsada: qtyStr,
+              usuarioId: (session as any).id || null, origem: "importacao",
+            });
 
             if (!inserted || typeof inserted !== "object" || Array.isArray(inserted)) {
               throw new Error("INSERT_UNEXPECTED");
