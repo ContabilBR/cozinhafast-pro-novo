@@ -2,6 +2,7 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import { eq, and, sql } from "drizzle-orm";
 import * as schema from "../db/schema/schema.js";
 import type { App } from "../index.js";
+import { registrarCustoInsumo } from "../db/historico-custo.js";
 import { requireAuth as customRequireAuth, requireTenant, requireRole } from "../utils/auth.js";
 
 const LIMITE_LINHAS = 500;
@@ -521,6 +522,10 @@ export function registerImportarCadastrosRoutes(app: App) {
             };
             const [ins] = await tx.insert(schema.insumos).values(valores).returning({ id: schema.insumos.id });
             if (!ins || !ins.id) throw new Error("INSERT_INSUMO_INESPERADO");
+            await registrarCustoInsumo(tx, {
+              restauranteId, insumoId: ins.id, custo: ni.custo,
+              usuarioId: (session as any).id || null, origem: "importacao",
+            });
             ni.entrada.id = ins.id;
             criados.insumos++;
           }

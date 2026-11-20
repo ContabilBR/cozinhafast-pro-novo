@@ -467,6 +467,22 @@ export const insumos = pgTable("insumos", {
   restauranteId: text("restaurante_id").notNull().references(() => restaurante.id, { onDelete: "restrict" }),
 });
 
+// Histórico de custo do insumo: cada valor de custo com a data de início da vigência.
+// Só é gravado (ponto inicial na subida do backend e a cada mudança de custo); nenhum relatório lê esta tabela ainda.
+// usuario_id fica vazio no ponto inicial. origem: ponto_inicial, cadastro, edicao ou importacao.
+export const insumoCustoHistorico = pgTable("insumo_custo_historico", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  restauranteId: text("restaurante_id").notNull().references(() => restaurante.id, { onDelete: "restrict" }),
+  insumoId: uuid("insumo_id").notNull().references(() => insumos.id, { onDelete: "restrict" }),
+  custo: numeric("custo", { precision: 10, scale: 2 }).notNull(),
+  vigenciaInicio: timestamp("vigencia_inicio", { withTimezone: true }).defaultNow().notNull(),
+  usuarioId: text("usuario_id"),
+  origem: text("origem").notNull(),
+}, (table) => ({
+  idxInsumoVigencia: index("idx_insumo_custo_historico_insumo_vigencia").on(table.insumoId, table.vigenciaInicio),
+  idxRestaurante: index("idx_insumo_custo_historico_restaurante").on(table.restauranteId),
+}));
+
 export const movimentacoesEstoque = pgTable("movimentacoes_estoque", {
   id: uuid("id").primaryKey().defaultRandom(),
   insumoId: uuid("insumo_id").notNull().references(() => insumos.id, { onDelete: "restrict" }),

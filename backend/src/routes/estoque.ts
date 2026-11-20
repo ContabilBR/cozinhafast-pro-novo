@@ -2,6 +2,7 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import { eq, and, sql, desc, lte } from "drizzle-orm";
 import * as schema from "../db/schema/schema.js";
 import type { App } from "../index.js";
+import { registrarCustoInsumo } from "../db/historico-custo.js";
 import { requireAuth as customRequireAuth, requireTenant, requireRole } from "../utils/auth.js";
 
 export function registerEstoqueRoutes(app: App) {
@@ -87,6 +88,48 @@ export function registerEstoqueRoutes(app: App) {
     }
   );
 
+  // GET /api/insumos/:id/historico-custo — últimos 50 registros do histórico de custo (somente leitura)
+  app.fastify.get(
+    "/api/insumos/:id/historico-custo",
+    { schema: {} } as any,
+    async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      try {
+        const session = await customRequireAuth(app, request, reply);
+        if (!session) return;
+        if (!(await requireRole(session, ["gerente", "administrador", "admin"], reply))) return;
+        const restauranteId = requireTenant(session);
+        const { id } = request.params;
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+          return await reply.code(400).send({ error: "Insumo inválido" });
+        }
+
+        const [insumo] = await db.select({ id: schema.insumos.id }).from(schema.insumos)
+          .where(and(eq(schema.insumos.id, id), eq(schema.insumos.restauranteId, restauranteId)));
+        if (!insumo) return await reply.code(404).send({ error: "Insumo não encontrado" });
+
+        const lista = await db.select({
+          id: schema.insumoCustoHistorico.id,
+          custo: schema.insumoCustoHistorico.custo,
+          vigenciaInicio: schema.insumoCustoHistorico.vigenciaInicio,
+          origem: schema.insumoCustoHistorico.origem,
+          alteradoPor: schema.usuarios.nome,
+        })
+          .from(schema.insumoCustoHistorico)
+          .leftJoin(schema.usuarios, eq(schema.insumoCustoHistorico.usuarioId, schema.usuarios.id))
+          .where(and(
+            eq(schema.insumoCustoHistorico.insumoId, id),
+            eq(schema.insumoCustoHistorico.restauranteId, restauranteId)
+          ))
+          .orderBy(desc(schema.insumoCustoHistorico.vigenciaInicio), desc(schema.insumoCustoHistorico.id))
+          .limit(50);
+        return await reply.code(200).send(lista);
+      } catch (err: any) {
+        if (err.statusCode) return await reply.code(err.statusCode).send({ error: err.message });
+        return await reply.code(500).send({ error: "Erro interno" });
+      }
+    }
+  );
+
   // POST /api/insumos — criar insumo
   app.fastify.post(
     "/api/insumos",
@@ -114,13 +157,20 @@ export function registerEstoqueRoutes(app: App) {
         return await reply.code(400).send({ error: "custoUnitario deve ser um número não-negativo." });
       }
 
-      const [insumo] = await db.insert(schema.insumos).values({
-        nome, descricao: descricao || null, unidade,
-        estoqueAtual: estoqueAtual || "0",
-        estoqueMinimo: estoqueMinimo || "0",
-        custoUnitario: custoUnitario || "0",
-        restauranteId,
-      }).returning();
+      const insumo = await db.transaction(async (tx: any) => {
+        const [criado] = await tx.insert(schema.insumos).values({
+          nome, descricao: descricao || null, unidade,
+          estoqueAtual: estoqueAtual || "0",
+          estoqueMinimo: estoqueMinimo || "0",
+          custoUnitario: custoUnitario || "0",
+          restauranteId,
+        }).returning();
+        await registrarCustoInsumo(tx, {
+          restauranteId, insumoId: criado.id, custo: criado.custoUnitario,
+          usuarioId: (session as any).id || null, origem: "cadastro",
+        });
+        return criado;
+      });
 
       return await reply.code(201).send(insumo);
     } catch (err: any) {
@@ -174,7 +224,20 @@ export function registerEstoqueRoutes(app: App) {
       if (body.custoUnitario !== undefined) updates.custoUnitario = body.custoUnitario;
       if (body.ativo !== undefined) updates.ativo = body.ativo;
 
-      const [updated] = await db.update(schema.insumos).set(updates).where(eq(schema.insumos.id, id)).returning();
+      const updated = await db.transaction(async (tx: any) => {
+        const [atualizado] = await tx.update(schema.insumos).set(updates).where(eq(schema.insumos.id, id)).returning();
+        // Só registra no histórico quando o custo realmente mudou em relação ao valor atual
+        if (
+          body.custoUnitario !== undefined &&
+          Math.round(parseFloat(body.custoUnitario) * 100) !== Math.round(parseFloat(existing.custoUnitario) * 100)
+        ) {
+          await registrarCustoInsumo(tx, {
+            restauranteId, insumoId: id, custo: atualizado.custoUnitario,
+            usuarioId: (session as any).id || null, origem: "edicao",
+          });
+        }
+        return atualizado;
+      });
       return await reply.code(200).send(updated);
     } catch (err: any) {
       if (err.statusCode) return await reply.code(err.statusCode).send({ error: err.message });
