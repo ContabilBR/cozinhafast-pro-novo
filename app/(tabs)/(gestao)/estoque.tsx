@@ -244,9 +244,10 @@ export default function EstoqueScreen() {
               <TextInput value={estoqueMinimo} onChangeText={setEstoqueMinimo} placeholder="0" keyboardType="decimal-pad" placeholderTextColor={COLORS.textSecondary}
                 style={{ backgroundColor: COLORS.surface, borderRadius: 10, padding: 12, color: COLORS.text, fontSize: 15, marginBottom: 12, borderWidth: 0.5, borderColor: COLORS.border }} />
 
-              <Text style={{ fontSize: 13, color: COLORS.textSecondary, marginBottom: 4 }}>Custo Unitário (R$)</Text>
+              <Text style={{ fontSize: 13, color: COLORS.textSecondary, marginBottom: 4 }}>Custo de referência (R$)</Text>
               <CampoMoeda value={custoUnitario} onChangeText={setCustoUnitario} placeholder="0,00" placeholderTextColor={COLORS.textSecondary}
-                style={{ backgroundColor: COLORS.surface, borderRadius: 10, padding: 12, color: COLORS.text, fontSize: 15, marginBottom: 16, borderWidth: 0.5, borderColor: COLORS.border }} />
+                style={{ backgroundColor: COLORS.surface, borderRadius: 10, padding: 12, color: COLORS.text, fontSize: 15, marginBottom: 4, borderWidth: 0.5, borderColor: COLORS.border }} />
+              <Text style={{ fontSize: 12, color: COLORS.textSecondary, marginBottom: 16 }}>Usado ao adicionar este insumo a novas fichas. Não altera o custo das fichas já cadastradas. Para mudar o custo em um prato, abra a ficha técnica do prato.</Text>
 
               <Pressable onPress={handleSave} disabled={saving} style={{ backgroundColor: COLORS.primary, borderRadius: 12, padding: 16, alignItems: "center" }}>
                 {saving ? <ActivityIndicator color="#fff" /> : <Text style={{ color: "#fff", fontSize: 16, fontWeight: "700" }}>Salvar</Text>}
