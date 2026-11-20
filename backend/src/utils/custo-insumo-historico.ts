@@ -28,17 +28,24 @@ export async function carregarHistoricoCustoInsumos(
   app: App,
   restauranteId: string
 ): Promise<HistoricoCustoInsumos> {
-  const resultado: any = await (app.db as any).execute(
-    sql`
-      SELECT h.insumo_id,
-             h.custo,
-             (h.vigencia_inicio AT TIME ZONE ${fusoSql(FUSO_PADRAO)})::date::text AS dia
-      FROM ${schema.insumoCustoHistorico} h
-      WHERE h.restaurante_id = ${restauranteId}
-      ORDER BY h.insumo_id, h.vigencia_inicio ASC, h.id ASC
-    `
-  );
-  const linhas: any[] = Array.isArray(resultado) ? resultado : resultado?.rows ?? [];
+  let linhas: any[] = [];
+  try {
+    const resultado: any = await (app.db as any).execute(
+      sql`
+        SELECT h.insumo_id,
+               h.custo,
+               (h.vigencia_inicio AT TIME ZONE ${fusoSql(FUSO_PADRAO)})::date::text AS dia
+        FROM ${schema.insumoCustoHistorico} h
+        WHERE h.restaurante_id = ${restauranteId}
+        ORDER BY h.insumo_id, h.vigencia_inicio ASC, h.id ASC
+      `
+    );
+    linhas = Array.isArray(resultado) ? resultado : resultado?.rows ?? [];
+  } catch (err) {
+    // Sem histórico (por exemplo, tabela ainda inexistente): os relatórios usam o custo atual do insumo.
+    app.logger.warn({ err, restauranteId }, "Histórico de custo dos insumos indisponível; usando o custo atual dos insumos");
+    linhas = [];
+  }
 
   // Em ordem crescente de início; em empate de início, o último registro vence.
   const porInsumo = new Map<string, Vigencia[]>();

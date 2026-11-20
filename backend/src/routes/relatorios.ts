@@ -4559,6 +4559,128 @@ LIMIT 5
           return await reply.code(500).send({ error: "Não foi possível gerar o relatório de margem por prato." });
         }
 
+        // Quantidade vendida por prato e por dia de fechamento da comanda (mesmo dia do CMV teórico).
+        // Mesmas regras de venda e mesmo agrupamento por prato/nome da consulta acima.
+        const vendasDiaResult: any = await (app.db as any).execute(
+          sql`
+            WITH comandas_fontes AS (
+              SELECT c.id, c.restaurante_id, c.status::text, c.total, c.closed_at, 0 AS prioridade_fonte
+              FROM ${schema.comandas} c
+              WHERE c.restaurante_id = ${restauranteId}
+              UNION ALL
+              SELECT ch.id, ch.restaurante_id, ch.status::text, ch.total, ch.closed_at, 1 AS prioridade_fonte
+              FROM ${schema.comandasHistorico} ch
+              WHERE ch.restaurante_id = ${restauranteId}
+            ),
+            comandas_unicas AS (
+              SELECT DISTINCT ON (cf.restaurante_id, cf.id)
+                cf.id, cf.restaurante_id, cf.status, cf.total, cf.closed_at
+              FROM comandas_fontes cf
+              ORDER BY cf.restaurante_id, cf.id, cf.prioridade_fonte ASC
+            ),
+            comandas_vendidas AS (
+              SELECT cu.id, (cu.closed_at AT TIME ZONE ${fusoSql(fuso)})::date::text AS dia
+              FROM comandas_unicas cu
+              WHERE cu.status = 'fechada' AND cu.total > 0
+                AND cu.closed_at >= ${dataInicioStr}::date::timestamp AT TIME ZONE ${fusoSql(fuso)}
+                AND cu.closed_at < (${dataFimStr}::date + INTERVAL '1 day')::timestamp AT TIME ZONE ${fusoSql(fuso)}
+            ),
+            itens_fontes AS (
+              SELECT p.id, p.comanda_id, p.prato_id, p.quantidade, p.status::text, p.cancelado_em, p.restaurante_id, NULL::text AS nome_prato, 0 AS prioridade_fonte
+              FROM ${schema.pedidos} p
+              WHERE p.restaurante_id = ${restauranteId}
+              UNION ALL
+              SELECT ph.id, ph.comanda_id, ph.prato_id, ph.quantidade, ph.status::text, ph.cancelado_em, ph.restaurante_id, ph.prato_nome AS nome_prato, 1 AS prioridade_fonte
+              FROM ${schema.pedidosHistorico} ph
+              WHERE ph.restaurante_id = ${restauranteId}
+            ),
+            itens_unicos AS (
+              SELECT DISTINCT ON (ifo.restaurante_id, ifo.id)
+                ifo.id, ifo.comanda_id, ifo.prato_id, ifo.quantidade, ifo.status, ifo.cancelado_em, ifo.nome_prato
+              FROM itens_fontes ifo
+              ORDER BY ifo.restaurante_id, ifo.id, ifo.prioridade_fonte ASC
+            )
+            SELECT
+              iu.prato_id,
+              COALESCE(NULLIF(TRIM(p.nome), ''), NULLIF(TRIM(iu.nome_prato), ''), 'Prato removido') AS prato_nome,
+              cv.dia,
+              SUM(iu.quantidade) AS quantidade
+            FROM itens_unicos iu
+            INNER JOIN comandas_vendidas cv ON iu.comanda_id = cv.id
+            LEFT JOIN ${schema.pratos} p ON iu.prato_id = p.id AND p.restaurante_id = ${restauranteId}
+            WHERE iu.status != 'cancelado' AND iu.cancelado_em IS NULL
+            GROUP BY iu.prato_id, COALESCE(NULLIF(TRIM(p.nome), ''), NULLIF(TRIM(iu.nome_prato), ''), 'Prato removido'), cv.dia
+          `
+        ) as any[];
+
+        // Ficha técnica de cada prato, com a quantidade usada de cada insumo (consulta separada, como no CMV teórico).
+        const fichaResult: any = await (app.db as any).execute(
+          sql`
+            SELECT pi.prato_id, pi.insumo_id, pi.quantidade_usada, i.custo_unitario
+            FROM ${schema.pratoInsumos} pi
+            INNER JOIN ${schema.insumos} i ON i.id = pi.insumo_id AND i.restaurante_id = pi.restaurante_id
+            WHERE pi.restaurante_id = ${restauranteId}
+          `
+        ) as any[];
+
+        // Histórico de custo dos insumos: UMA consulta por requisição.
+        const historicoCusto = await carregarHistoricoCustoInsumos(app, restauranteId);
+
+        const fichaMap = new Map<string, Array<{ insumoId: string; qtdUsada: number; custo: number }>>();
+        for (const f of fichaResult) {
+          const pid = String(f.prato_id);
+          if (!fichaMap.has(pid)) fichaMap.set(pid, []);
+          fichaMap.get(pid)!.push({
+            insumoId: String(f.insumo_id),
+            qtdUsada: Number(f.quantidade_usada) || 0,
+            custo: Number(f.custo_unitario) || 0,
+          });
+        }
+
+        const vendasDiaMap = new Map<string, Array<{ dia: string; qtd: number }>>();
+        for (const v of vendasDiaResult) {
+          const chave = `${v.prato_id || null}|${v.prato_nome}`;
+          if (!vendasDiaMap.has(chave)) vendasDiaMap.set(chave, []);
+          vendasDiaMap.get(chave)!.push({ dia: String(v.dia), qtd: Number(v.quantidade) || 0 });
+        }
+
+        // Custo da ficha de um prato por dia de venda, guardado por prato e dia.
+        const custoFichaCache = new Map<string, number>();
+        const custoFichaNoDia = (pratoId: string, dia: string): number => {
+          const chave = `${pratoId}|${dia}`;
+          const guardado = custoFichaCache.get(chave);
+          if (guardado !== undefined) return guardado;
+          const custo = (fichaMap.get(pratoId) || []).reduce(
+            (soma, i) => soma + i.qtdUsada * (historicoCusto.custoNoDia(i.insumoId, dia) ?? i.custo),
+            0
+          );
+          custoFichaCache.set(chave, custo);
+          return custo;
+        };
+
+        // Custo unitário e total do prato no período. Custo igual em todos os dias e igual ao atual:
+        // mesma conta de antes (quantidade total x custo da ficha). Custo variável: soma dia a dia, e o
+        // custo unitário vira a média ponderada pela quantidade.
+        const custoDoPrato = (pratoId: string | null, pratoNome: string, quantidadeTotal: number, custoFichaAtual: number) => {
+          const dias = pratoId ? vendasDiaMap.get(`${pratoId}|${pratoNome}`) : undefined;
+          if (!pratoId || !dias || dias.length === 0) {
+            return { unitario: custoFichaAtual, total: custoFichaAtual * quantidadeTotal };
+          }
+          const custos = dias.map(d => custoFichaNoDia(pratoId, d.dia));
+          if (custos.every(c => c === custos[0])) {
+            const atualTS = (fichaMap.get(pratoId) || []).reduce((soma, i) => soma + i.qtdUsada * i.custo, 0);
+            if (Math.abs(custos[0] - atualTS) < 1e-9) {
+              return { unitario: custoFichaAtual, total: custoFichaAtual * quantidadeTotal };
+            }
+            return { unitario: custos[0], total: custos[0] * quantidadeTotal };
+          }
+          let total = 0;
+          dias.forEach((d, idx) => {
+            total += d.qtd * custos[idx];
+          });
+          return { unitario: quantidadeTotal > 0 ? total / quantidadeTotal : custos[0], total };
+        };
+
         const comFicha: any[] = [];
         const semFicha: any[] = [];
         const custoIncompleto: any[] = [];
@@ -4629,7 +4751,9 @@ LIMIT 5
             custoIncompleto.push(item);
             custoIncompletoRawReceita.set(item, receitaTotal);
           } else {
-            const custoTotalPrato = custoFicha * quantidadeVendida;
+            const custoPrato = custoDoPrato(pratoId, pratoNome, quantidadeVendida, custoFicha);
+            const custoUnitarioPrato = custoPrato.unitario; // média ponderada pela quantidade se o custo variou
+            const custoTotalPrato = custoPrato.total;
             const margemPrato = receitaTotal - custoTotalPrato;
             const margemPercentualPrato = receitaTotal !== 0 ? (100 * margemPrato) / receitaTotal : null;
 
@@ -4641,7 +4765,7 @@ LIMIT 5
               nome: pratoNome,
               quantidade_vendida: quantidadeVendida,
               receita: Number(receitaTotal.toFixed(2)),
-              custo_unitario_ficha: Number(custoFicha.toFixed(2)),
+              custo_unitario_ficha: Number(custoUnitarioPrato.toFixed(2)),
               custo_total: Number(custoTotalPrato.toFixed(2)),
               margem: Number(margemPrato.toFixed(2)),
               margem_percentual: margemPercentualPrato !== null ? Number(margemPercentualPrato.toFixed(2)) : null,
@@ -4719,7 +4843,7 @@ LIMIT 5
           com_ficha: comFicha,
           sem_ficha: semFicha,
           custo_incompleto: custoIncompleto,
-          observacao_custo: "Custo calculado com o custo atual dos insumos, sem histórico de preços. Pratos sem ficha ou com custo incompleto não entram nos totais de custo e margem.",
+          observacao_custo: "Custo calculado com o custo que cada insumo tinha na data de cada venda. Pratos sem ficha ou com custo incompleto não entram nos totais de custo e margem.",
         });
       } catch (error) {
         app.logger.error({}, "Failed to get margem-pratos report");
