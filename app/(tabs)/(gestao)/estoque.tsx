@@ -60,9 +60,11 @@ export default function EstoqueScreen() {
         apiGet<any>("/api/insumos"),
         apiGet<any>("/api/insumos/alertas"),
       ]);
-      console.log("[EstoqueScreen] fetchData: insumos loaded", insRes.insumos?.length, "alertas", alertRes.alertas?.length);
-      setInsumos(insRes.insumos || []);
-      setAlertas(alertRes.alertas || []);
+      const listaInsumos: Insumo[] = Array.isArray(insRes) ? insRes : Array.isArray(insRes?.insumos) ? insRes.insumos : [];
+      const listaAlertas: Insumo[] = Array.isArray(alertRes) ? alertRes : Array.isArray(alertRes?.alertas) ? alertRes.alertas : [];
+      console.log("[EstoqueScreen] fetchData: insumos loaded", listaInsumos.length, "alertas", listaAlertas.length);
+      setInsumos(listaInsumos);
+      setAlertas(listaAlertas);
     } catch (e) {
       console.error("Erro ao carregar estoque:", e);
     } finally {
