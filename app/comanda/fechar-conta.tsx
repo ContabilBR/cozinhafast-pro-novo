@@ -34,8 +34,10 @@ export default function FecharContaScreen() {
   const [comanda, setComanda] = useState<any>(null);
   const [pedidos, setPedidos] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [gorjetaMode, setGorjetaMode] = useState<"none"|"10"|"custom">("none");
+  const [gorjetaMode, setGorjetaMode] = useState<"none"|"10"|"custom"|"gravada">("none");
   const [gorjetaInput, setGorjetaInput] = useState("0");
+  // Gorjeta já gravada na comanda (em reais), restaurada ao carregar; vale centavo por centavo
+  const [gorjetaGravada, setGorjetaGravada] = useState(0);
   const [dividir, setDividir] = useState(false);
   const [numPessoas, setNumPessoas] = useState(2);
   const [divisaoResult, setDivisaoResult] = useState<any>(null);
@@ -54,6 +56,9 @@ export default function FecharContaScreen() {
         const c = await apiGet<any>("/api/comandas/" + id);
         setComanda(c);
         setPedidos(c.pedidos || []);
+        // Gorjeta já gravada (ex.: ao voltar da maquininha): restaura como escolhida
+        const gravada = Math.round((Number(c.gorjeta) || 0) * 100) / 100;
+        if (gravada > 0) { setGorjetaGravada(gravada); setGorjetaMode("gravada"); }
         const pag = await apiGet<any>("/api/comandas/" + id + "/pagamentos");
         setPagamentos(pag.pagamentos || []);
         setTotalPago(pag.total_pago || 0);
@@ -72,7 +77,7 @@ export default function FecharContaScreen() {
   const subtotal = pedidos
     .filter((p: any) => p.status !== "cancelado")
     .reduce((s: number, p: any) => s + parseFloat(p.precoUnitario || p.preco_unitario || "0") * (p.quantidade || 1), 0);
-  const gorjetaValue = gorjetaMode === "10" ? subtotal * 0.1 : gorjetaMode === "custom" ? subtotal * (Math.max(0, parseFloat(gorjetaInput.replace(",", ".")) || 0) / 100) : 0;
+  const gorjetaValue = gorjetaMode === "gravada" ? gorjetaGravada : gorjetaMode === "10" ? subtotal * 0.1 : gorjetaMode === "custom" ? subtotal * (Math.max(0, parseFloat(gorjetaInput.replace(",", ".")) || 0) / 100) : 0;
   const { descontoEfetivo } = calcularTotalComDesconto(subtotal, comanda?.desconto_tipo, comanda?.desconto_valor);
   const temDesconto = comanda?.desconto_tipo === "desconto" || comanda?.desconto_tipo === "cortesia";
   const totalFinal = subtotal - descontoEfetivo + gorjetaValue;
@@ -81,8 +86,9 @@ export default function FecharContaScreen() {
   const valorPorPessoa = dividir && numPessoas > 1 ? Math.ceil(restante / numPessoas * 100) / 100 : restante;
   const valorPessoaAtual = dividir && divisaoResult?.divisao ? (divisaoResult.divisao[pessoaAtual]?.total_a_pagar || divisaoResult.divisao[pessoaAtual]?.valor || valorPorPessoa) : restante;
 
-  const selectGorjeta = (mode: "none"|"10"|"custom") => {
+  const selectGorjeta = (mode: "none"|"10"|"custom"|"gravada") => {
     setGorjetaMode(mode);
+    if (mode === "gravada") return;
     if (mode === "none") setGorjetaInput("0");
     if (mode === "10") setGorjetaInput("10");
     if (mode === "custom") setGorjetaInput("");
@@ -305,9 +311,10 @@ export default function FecharContaScreen() {
           {temDesconto && <View style={cardStyle}>{linhaDesconto}</View>}
           <Text style={labelStyle}>Gorjeta</Text>
           <View style={{ flexDirection: "row", gap: 8, marginBottom: 16 }}>
-            {[{ mode: "none" as const, label: "Sem gorjeta" }, { mode: "10" as const, label: "10%" }, { mode: "custom" as const, label: "Outro" }].map((opt) => (
+            {[{ mode: "none" as const, label: "Sem gorjeta" }, ...(gorjetaGravada > 0 ? [{ mode: "gravada" as const, label: "Gravada" }] : []), { mode: "10" as const, label: "10%" }, { mode: "custom" as const, label: "Outro" }].map((opt) => (
               <Pressable key={opt.mode} onPress={() => selectGorjeta(opt.mode)} style={{ flex: 1, backgroundColor: gorjetaMode === opt.mode ? COLORS.primary : COLORS.surface, borderRadius: 10, padding: 12, alignItems: "center", borderWidth: 0.5, borderColor: gorjetaMode === opt.mode ? COLORS.primary : COLORS.surfaceSecondary }}>
                 <Text style={{ fontSize: 13, fontWeight: "500", color: gorjetaMode === opt.mode ? "white" : COLORS.text }}>{opt.label}</Text>
+                {opt.mode === "gravada" && <Text style={{ fontSize: 11, color: gorjetaMode === opt.mode ? "rgba(255,255,255,0.7)" : COLORS.textTertiary, marginTop: 2 }}>{formatCurrency(gorjetaGravada)}</Text>}
                 {opt.mode === "10" && <Text style={{ fontSize: 11, color: gorjetaMode === opt.mode ? "rgba(255,255,255,0.7)" : COLORS.textTertiary, marginTop: 2 }}>{formatCurrency(subtotal * 0.1)}</Text>}
               </Pressable>
             ))}

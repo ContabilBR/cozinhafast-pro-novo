@@ -1,6 +1,6 @@
 import { Alert } from "react-native";
 import { router } from "expo-router";
-import { apiPost } from "@/utils/api";
+import { apiPost, apiPut } from "@/utils/api";
 import { obterExecutor, PROVEDOR_STONE } from "@/utils/provedoresMaquininha/registro";
 import type { InstrucaoPagamento } from "@/utils/provedoresMaquininha/tipos";
 import { salvarTransacaoPendente, limparTransacaoPendente, RetornoCobranca } from "@/utils/terminalPendente";
@@ -20,6 +20,12 @@ export type PedidoCobranca = {
 export async function cobrarNaMaquininha(p: PedidoCobranca): Promise<void> {
   console.log("[Maquininha] Cobrar:", p);
   try {
+    // Grava a gorjeta escolhida na comanda antes de abrir a maquininha (inclusive zero, para limpar
+    // um valor antigo). Se falhar, cai no catch: mostra o erro e não abre a maquininha.
+    // Só quando quem chama informa a gorjeta: sem esse dado (tela de pagamento avulso), não mexe no valor gravado.
+    if (typeof p.gorjeta === "number" && isFinite(p.gorjeta)) {
+      await apiPut("/api/comandas/" + p.comandaId + "/gorjeta", { gorjeta: Math.max(0, Math.round(p.gorjeta * 100) / 100) });
+    }
     const body: any = { forma_pagamento: p.forma, valor: p.valor };
     if (p.forma === "cartao_credito") {
       body.parcelas = p.parcelas || 1;
