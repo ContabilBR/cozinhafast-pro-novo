@@ -9,6 +9,7 @@ import { apiGet, apiPost } from "@/utils/api";
 import { formatCurrency } from "@/utils/helpers";
 import { CampoMoeda } from "@/components/CampoMoeda";
 import { formatReceipt } from "@/utils/printer";
+import { montarCupomStone } from "@/utils/receiptStone";
 import { useAuth } from "@/contexts/AuthContext";
 import { useReceiptPreview } from "@/components/ReceiptPreview";
 import { calcularTotalComDesconto } from "@/utils/desconto";
@@ -167,7 +168,7 @@ export default function FecharContaScreen() {
       const q = p.quantidade || 1;
       return { quantidade: q, nome: p.pratoNome || p.prato_nome || p.prato?.nome || "Item", preco: unit * q, precoUnitario: unit };
     });
-    const texto = formatReceipt({
+    const dadosCupom = {
       restaurante,
       mesa: comanda?.mesa_numero,
       rotulo: comanda?.rotulo,
@@ -180,8 +181,10 @@ export default function FecharContaScreen() {
       gorjeta: gorjetaValue,
       total: totalFinal,
       divisao: dividir && numPessoas > 1 ? { pessoas: numPessoas, valorPorPessoa } : null,
-    });
-    await previewReceipt(texto, "Conferência de conta da mesa", { usarMaquininhaStone: true });
+    };
+    const texto = formatReceipt(dadosCupom);
+    const conteudoStone = montarCupomStone(dadosCupom);
+    await previewReceipt(texto, "Conferência de conta da mesa", { usarMaquininhaStone: true, conteudoStone });
   };
   const botaoConferencia = (
     <Pressable onPress={imprimirConferencia} style={{ borderWidth: 1, borderColor: COLORS.primary, borderRadius: 12, padding: 14, alignItems: "center", flexDirection: "row", justifyContent: "center", gap: 8, marginBottom: 10 }}>

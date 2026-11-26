@@ -5,7 +5,8 @@ import { useColors } from '@/hooks/useColors';
 import { printBluetooth, RECEIPT_COLUMNS, RECEIPT_WIDTH_MM } from '@/utils/printer';
 import { imprimirNaStone } from '@/utils/impressaoStone';
 
-type Request = { text: string; title: string; usarMaquininhaStone?: boolean };
+type Request = { text: string; title: string; usarMaquininhaStone?: boolean; conteudoStone?: StoneItens };
+type StoneItens = Parameters<typeof imprimirNaStone>[0] & object;
 type Props = { request: Request; onClose: (printed: boolean) => void };
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : 'Não foi possível imprimir. Tente novamente.';
 
@@ -47,7 +48,7 @@ function ReceiptPreview({ request, onClose }: Props) {
       }
       if (usarStone && Platform.OS === 'android') {
         while (alive.current) {
-          const r = await imprimirNaStone(text);
+          const r = await imprimirNaStone(request.conteudoStone ?? text);
           if (r.tipo === 'impresso') { onClose(true); return; }
           if (r.tipo === 'indisponivel') break;
           if (!alive.current) return;
@@ -121,9 +122,9 @@ function ReceiptPreview({ request, onClose }: Props) {
 export function useReceiptPreview() {
   const [request, setRequest] = useState<Request | null>(null);
   const resolve = useRef<((printed: boolean) => void) | null>(null);
-  const previewReceipt = useCallback((text: string, title: string, options?: { usarMaquininhaStone?: boolean }): Promise<boolean> => {
+  const previewReceipt = useCallback((text: string, title: string, options?: { usarMaquininhaStone?: boolean; conteudoStone?: StoneItens }): Promise<boolean> => {
     if (resolve.current) return Promise.resolve(false);
-    return new Promise(done => { resolve.current = done; setRequest({ text, title, usarMaquininhaStone: options?.usarMaquininhaStone ?? false }); });
+    return new Promise(done => { resolve.current = done; setRequest({ text, title, usarMaquininhaStone: options?.usarMaquininhaStone ?? false, conteudoStone: options?.conteudoStone }); });
   }, []);
   const close = useCallback((printed: boolean) => {
     const done = resolve.current; resolve.current = null; setRequest(null); done?.(printed);

@@ -55,17 +55,22 @@ function semAcentos(s: string) {
   return s.normalize("NFD").replace(/[̀-ͯ]/g, "");
 }
 
-export async function imprimirNaStone(texto: string): Promise<ResultadoImpressaoStone> {
+export async function imprimirNaStone(conteudo: string | { type: string; content: string; align?: string; size?: string }[]): Promise<ResultadoImpressaoStone> {
   if (Platform.OS !== "android") return { tipo: "indisponivel" };
 
-  const linhas = texto.split("\n").map(l => {
-    const t = REMOVER_ACENTOS_STONE ? semAcentos(l) : l;
-    return t === "" ? " " : t;
-  });
-  const itens = linhas.map(content =>
-    TIPO_ITEM_STONE === "text"
-      ? { type: "text", content, align: TEXTO_STONE.align, size: TEXTO_STONE.size }
-      : { type: "line", content });
+  // Lista pronta: enviada como veio (só a opção de remover acentos é aplicada)
+  const itens = typeof conteudo === "string"
+    ? conteudo.split("\n").map(l => {
+        const t = REMOVER_ACENTOS_STONE ? semAcentos(l) : l;
+        return t === "" ? " " : t;
+      }).map(content =>
+        TIPO_ITEM_STONE === "text"
+          ? { type: "text", content, align: TEXTO_STONE.align, size: TEXTO_STONE.size }
+          : { type: "line", content })
+    : REMOVER_ACENTOS_STONE
+      ? conteudo.map(i => ({ ...i, content: semAcentos(i.content) }))
+      : conteudo;
+  const linhas = itens;
 
   const parametros: [string, string][] = [
     ["SHOW_FEEDBACK_SCREEN", "true"],
@@ -73,7 +78,7 @@ export async function imprimirNaStone(texto: string): Promise<ResultadoImpressao
     ["PRINTABLE_CONTENT", JSON.stringify(itens)],
   ];
   const url = "printer-app://print?" + parametros.map(([k, v]) => k + "=" + encodeURIComponent(v)).join("&");
-  console.log("[ImpressaoStone] Abrindo: printer-app://print (" + linhas.length + " linhas)");
+  console.log("[ImpressaoStone] Abrindo: printer-app://print (" + linhas.length + (typeof conteudo === "string" ? " linhas)" : " itens)"));
 
   // Registra quem aguarda antes de abrir, para não perder uma resposta rápida
   if (aguardando) aguardando({ tipo: "nao_confirmado" });
