@@ -4,7 +4,7 @@ import { useRouter, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { useAuth } from "@/contexts/AuthContext";
-import { apiPost } from "@/utils/api";
+import { apiGet, apiPost } from "@/utils/api";
 import { isAdmin } from "@/utils/helpers";
 import { lerTransacaoPendente, limparTransacaoPendente, TransacaoPendente } from "@/utils/terminalPendente";
 import { voltarDaMaquininha } from "@/utils/cobrancaMaquininha";
@@ -32,6 +32,10 @@ export default function PayResponseScreen() {
   const [desfecho, setDesfecho] = useState<Desfecho | null>(null);
   const emAndamento = useRef(false);
   const iniciou = useRef(false);
+  const encerrou = useRef(false);
+  const [encerrando, setEncerrando] = useState(false);
+  const [encerrada, setEncerrada] = useState(false);
+  const [erroEncerrar, setErroEncerrar] = useState<string | null>(null);
 
   const textoParams = useMemo(() => {
     const r: Record<string, string> = {};
@@ -92,7 +96,31 @@ export default function PayResponseScreen() {
     enviar(pendente, interpretado);
   }, [lido, pendente, interpretado, enviar]);
 
+  // Conta quitada com pagamento registrado: encerra a comanda uma única vez por resposta
+  useEffect(() => {
+    if (!desfecho || desfecho.tipo !== "aprovada" || !pendente?.comandaId || encerrou.current) return;
+    const r = desfecho.resposta;
+    if (r?.pagamento_registrado === false || !r?.resumo?.quitada) return;
+    encerrou.current = true;
+    const comandaId = pendente.comandaId;
+    setEncerrando(true);
+    (async () => {
+      try {
+        const c = await apiGet<any>("/api/comandas/" + comandaId);
+        const gorjeta = parseFloat(String(c?.gorjeta ?? c?.comanda?.gorjeta ?? "0")) || 0;
+        await apiPost("/api/comandas/" + comandaId + "/fechar", { gorjeta });
+        setEncerrada(true);
+      } catch (e: any) {
+        console.log("[PayResponse] Erro ao encerrar a comanda:", e);
+        setErroEncerrar(e?.message || "Não foi possível encerrar a comanda.");
+      } finally {
+        setEncerrando(false);
+      }
+    })();
+  }, [desfecho, pendente]);
+
   const voltar = () => {
+    if (encerrada) { router.replace("/(tabs)/(home)"); return; }
     console.log("[PayResponse] Voltar à comanda pressed");
     if (voltarDaMaquininha(pendente?.comandaId, pendente?.retorno)) return;
     if (pendente?.comandaId) router.replace({ pathname: "/comanda/[id]", params: { id: pendente.comandaId } });
@@ -157,7 +185,18 @@ export default function PayResponseScreen() {
               </>
             ) : null}
             {resp?.repetido ? <Text style={{ fontSize: 12, color: COLORS.textSecondary, marginTop: 6 }}>Resultado já registrado antes.</Text> : null}
-            <Text style={{ fontSize: 12, color: COLORS.textSecondary, marginTop: 6 }}>A comanda não é fechada automaticamente.</Text>
+            {encerrando ? (
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginTop: 6 }}>
+                <ActivityIndicator color={COLORS.primary} />
+                <Text style={texto}>Encerrando a comanda...</Text>
+              </View>
+            ) : encerrada ? (
+              <Text style={{ fontSize: 14, fontWeight: "700", color: COLORS.text, marginTop: 6 }}>Comanda encerrada.</Text>
+            ) : erroEncerrar ? (
+              <Text style={{ fontSize: 14, fontWeight: "700", color: "#B91C1C", marginTop: 6 }}>{erroEncerrar}</Text>
+            ) : (
+              <Text style={{ fontSize: 12, color: COLORS.textSecondary, marginTop: 6 }}>A comanda não é fechada automaticamente.</Text>
+            )}
           </View>
         ) : null}
 
@@ -192,8 +231,8 @@ export default function PayResponseScreen() {
           </>
         ) : null}
 
-        <Pressable onPress={voltar} disabled={enviando} style={{ backgroundColor: enviando ? COLORS.textTertiary : COLORS.primary, borderRadius: 12, padding: 16, alignItems: "center" }}>
-          <Text style={{ color: "white", fontSize: 16, fontWeight: "600" }}>Voltar à comanda</Text>
+        <Pressable onPress={voltar} disabled={enviando || encerrando} style={{ backgroundColor: enviando || encerrando ? COLORS.textTertiary : COLORS.primary, borderRadius: 12, padding: 16, alignItems: "center" }}>
+          <Text style={{ color: "white", fontSize: 16, fontWeight: "600" }}>{encerrada ? "Voltar às mesas" : "Voltar à comanda"}</Text>
         </Pressable>
       </ScrollView>
     </View>
