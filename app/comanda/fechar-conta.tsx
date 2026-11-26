@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { View, Text, Pressable, Alert, ActivityIndicator, TextInput } from "react-native";
 import { TelaComTeclado } from "@/components/TelaComTeclado";
-import { useRouter, useLocalSearchParams } from "expo-router";
+import { useRouter, useLocalSearchParams, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useColors } from "@/hooks/useColors";
@@ -50,7 +50,9 @@ export default function FecharContaScreen() {
   const { user } = useAuth();
   const [restaurante, setRestaurante] = useState<any>(null);
 
-  useEffect(() => {
+  // Busca ao montar e sempre que a tela volta a ficar em foco (ex.: ao voltar da maquininha).
+  // O carregamento em tela cheia só aparece na primeira carga (loading começa true e nunca volta a true).
+  useFocusEffect(useCallback(() => {
     const fetchData = async () => {
       try {
         const c = await apiGet<any>("/api/comandas/" + id);
@@ -66,7 +68,7 @@ export default function FecharContaScreen() {
       finally { setLoading(false); }
     };
     fetchData();
-  }, [id]);
+  }, [id]));
 
   // Dados do restaurante para o cabeçalho da conferência: carga separada, sem bloquear a tela.
   useEffect(() => {
@@ -388,7 +390,6 @@ export default function FecharContaScreen() {
               <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 4 }}><Text style={{ fontSize: 13, color: COLORS.textSecondary }}>Total da comanda</Text><Text style={{ fontSize: 13, color: COLORS.text }}>{formatCurrency(totalFinal)}</Text></View>
             </>) : (<>
               <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 4 }}><Text style={{ fontSize: 13, color: COLORS.textSecondary }}>Total da comanda</Text><Text style={{ fontSize: 13, color: COLORS.text }}>{formatCurrency(totalFinal)}</Text></View>
-              {gorjetaValue > 0 && <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 4 }}><Text style={{ fontSize: 13, color: COLORS.textSecondary }}>Gorjeta (no fechamento)</Text><Text style={{ fontSize: 13, color: COLORS.textSecondary }}>{formatCurrency(gorjetaValue)}</Text></View>}
               {gorjetaValue > 0 && <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 4 }}><Text style={{ fontSize: 13, color: COLORS.textSecondary }}>Gorjeta</Text><Text style={{ fontSize: 13, color: COLORS.text }}>{formatCurrency(gorjetaValue)}</Text></View>}
             </>)}
             {totalPago > 0 && <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 4 }}><Text style={{ fontSize: 13, color: "#22C55E" }}>Já pago</Text><Text style={{ fontSize: 13, color: "#22C55E" }}>{formatCurrency(totalPago)}</Text></View>}
