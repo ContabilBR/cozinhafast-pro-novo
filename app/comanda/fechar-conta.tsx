@@ -179,7 +179,7 @@ export default function FecharContaScreen() {
       total: totalFinal,
       divisao: dividir && numPessoas > 1 ? { pessoas: numPessoas, valorPorPessoa } : null,
     });
-    await previewReceipt(texto, "Conferência de conta da mesa");
+    await previewReceipt(texto, "Conferência de conta da mesa", { usarMaquininhaStone: true });
   };
   const botaoConferencia = (
     <Pressable onPress={imprimirConferencia} style={{ borderWidth: 1, borderColor: COLORS.primary, borderRadius: 12, padding: 14, alignItems: "center", flexDirection: "row", justifyContent: "center", gap: 8, marginBottom: 10 }}>

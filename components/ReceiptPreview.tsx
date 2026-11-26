@@ -3,8 +3,9 @@ import { ActivityIndicator, Alert, Modal, Platform, Pressable, ScrollView, Style
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useColors } from '@/hooks/useColors';
 import { printBluetooth, RECEIPT_COLUMNS, RECEIPT_WIDTH_MM } from '@/utils/printer';
+import { imprimirNaStone } from '@/utils/impressaoStone';
 
-type Request = { text: string; title: string };
+type Request = { text: string; title: string; usarMaquininhaStone?: boolean };
 type Props = { request: Request; onClose: (printed: boolean) => void };
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : 'Não foi possível imprimir. Tente novamente.';
 
@@ -13,6 +14,7 @@ function ReceiptPreview({ request, onClose }: Props) {
   // The snapshot shown here is also the exact Bluetooth payload. Do not trim,
   // reformat, wrap or regenerate it when the user confirms printing.
   const { text, title } = request;
+  const usarStone = !!request.usarMaquininhaStone;
   const lines = text.split('\n');
   const columns = lines.reduce((max, line) => Math.max(max, Array.from(line).length), RECEIPT_COLUMNS);
   const [paperWidth, setPaperWidth] = useState(0);
@@ -42,6 +44,33 @@ function ReceiptPreview({ request, onClose }: Props) {
         const { printReceiptTextOnDevice } = await import('@/utils/receiptPdf');
         await printReceiptTextOnDevice(text);
         return;
+      }
+      if (usarStone && Platform.OS === 'android') {
+        while (alive.current) {
+          const r = await imprimirNaStone(text);
+          if (r.tipo === 'impresso') { onClose(true); return; }
+          if (r.tipo === 'indisponivel') break;
+          if (!alive.current) return;
+          if (r.tipo === 'erro') {
+            const c = await new Promise<'retry' | 'cancel'>(resolve => {
+              Alert.alert('Impressora da maquininha', r.mensagem, [
+                { text: 'Tentar novamente', onPress: () => resolve('retry') },
+                { text: 'Cancelar', style: 'cancel', onPress: () => resolve('cancel') },
+              ], { cancelable: true, onDismiss: () => resolve('cancel') });
+            });
+            if (c === 'cancel' || !alive.current) return;
+          } else {
+            const c = await new Promise<'done' | 'retry' | 'cancel'>(resolve => {
+              Alert.alert('Impressora da maquininha', 'Não recebemos a confirmação da maquininha. Confira se o cupom saiu.', [
+                { text: 'Saiu, fechar', onPress: () => resolve('done') },
+                { text: 'Tentar novamente', onPress: () => resolve('retry') },
+                { text: 'Cancelar', style: 'cancel', onPress: () => resolve('cancel') },
+              ], { cancelable: true, onDismiss: () => resolve('cancel') });
+            });
+            if (c === 'done') { onClose(true); return; }
+            if (c === 'cancel' || !alive.current) return;
+          }
+        }
       }
       while (alive.current) {
         if (await printBluetooth(text)) { onClose(true); return; }
@@ -92,9 +121,9 @@ function ReceiptPreview({ request, onClose }: Props) {
 export function useReceiptPreview() {
   const [request, setRequest] = useState<Request | null>(null);
   const resolve = useRef<((printed: boolean) => void) | null>(null);
-  const previewReceipt = useCallback((text: string, title: string): Promise<boolean> => {
+  const previewReceipt = useCallback((text: string, title: string, options?: { usarMaquininhaStone?: boolean }): Promise<boolean> => {
     if (resolve.current) return Promise.resolve(false);
-    return new Promise(done => { resolve.current = done; setRequest({ text, title }); });
+    return new Promise(done => { resolve.current = done; setRequest({ text, title, usarMaquininhaStone: options?.usarMaquininhaStone ?? false }); });
   }, []);
   const close = useCallback((printed: boolean) => {
     const done = resolve.current; resolve.current = null; setRequest(null); done?.(printed);

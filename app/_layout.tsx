@@ -45,6 +45,8 @@ function RootLayoutNav() {
     // Retorno da maquininha (cozinhafastpro://pay-response): não redirecionar, senão os parâmetros se perdem
     const inPayResponse = segments[0] === "pay-response";
     if (inPayResponse) return;
+    // Retorno da impressão da Stone (cozinhafastpro://print): também não redirecionar
+    if ((segments[0] as string) === "print") return;
 
     if (mesaClienteConfigured) {
       // Tablet fixo em modo mesa: fica preso na tela do cliente, exceto na
@@ -88,6 +90,7 @@ function RootLayoutNav() {
         <Stack.Screen name="mesa-cliente-setup" options={{ headerShown: false }} />
         <Stack.Screen name="auth-screen" options={{ headerShown: false }} />
         <Stack.Screen name="pay-response" options={{ headerShown: false }} />
+        <Stack.Screen name="print" options={{ headerShown: false }} />
         <Stack.Screen name="comanda/aguardando-maquininha" options={{ headerShown: false }} />
         <Stack.Screen name="auth-popup" options={{ headerShown: false }} />
         <Stack.Screen name="auth-callback" options={{ headerShown: false }} />
