@@ -2,8 +2,8 @@ import { AppState, Platform } from "react-native";
 import * as Linking from "expo-linking";
 
 // Ajustes para o teste no aparelho
-export const TIPO_ITEM_STONE: "line" | "text" = "line";
-export const TEXTO_STONE = { size: "small", align: "left" } as const; // usado só quando o tipo for "text"
+export const TIPO_ITEM_STONE: "line" | "text" = "text";
+export const TEXTO_STONE = { size: "medium", align: "left" } as const; // usado só quando o tipo for "text"
 export const REMOVER_ACENTOS_STONE = false;
 
 export type ResultadoImpressaoStone =
