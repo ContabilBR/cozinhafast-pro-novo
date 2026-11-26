@@ -67,11 +67,12 @@ export async function imprimirNaStone(texto: string): Promise<ResultadoImpressao
       ? { type: "text", content, align: TEXTO_STONE.align, size: TEXTO_STONE.size }
       : { type: "line", content });
 
-  const qs = new URLSearchParams();
-  qs.set("SHOW_FEEDBACK_SCREEN", "true");
-  qs.set("SCHEME_RETURN", "cozinhafastpro");
-  qs.set("PRINTABLE_CONTENT", JSON.stringify(itens));
-  const url = "printer-app://print?" + qs.toString();
+  const parametros: [string, string][] = [
+    ["SHOW_FEEDBACK_SCREEN", "true"],
+    ["SCHEME_RETURN", "cozinhafastpro"],
+    ["PRINTABLE_CONTENT", JSON.stringify(itens)],
+  ];
+  const url = "printer-app://print?" + parametros.map(([k, v]) => k + "=" + encodeURIComponent(v)).join("&");
   console.log("[ImpressaoStone] Abrindo: printer-app://print (" + linhas.length + " linhas)");
 
   // Registra quem aguarda antes de abrir, para não perder uma resposta rápida
