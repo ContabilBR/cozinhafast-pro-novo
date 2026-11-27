@@ -79,7 +79,7 @@ const FORMAS: Record<string, string> = {
   dinheiro: 'Dinheiro',
   cartao_credito: 'Cartão de crédito',
   cartao_debito: 'Cartão de débito',
-  vale_refeicao: 'Vale-refeição',
+  vale_refeicao: 'Voucher (VR)',
 };
 
 const STATUS_PAGAMENTO: Record<string, string> = {

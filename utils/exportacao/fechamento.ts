@@ -30,7 +30,7 @@ export interface FechamentoDia {
   };
 }
 const FORMAS = [
-  ['dinheiro', 'Dinheiro'], ['pix', 'Pix'], ['cartao_debito', 'Cartão de débito'], ['vale_refeicao', 'Vale-refeição'], ['cartao_credito', 'Cartão de crédito'],
+  ['dinheiro', 'Dinheiro'], ['pix', 'Pix'], ['cartao_debito', 'Cartão de débito'], ['vale_refeicao', 'Voucher (VR)'], ['cartao_credito', 'Cartão de crédito'],
 ] as const;
 const soma = <T,>(lista: T[], f: (x: T) => number) => lista.reduce((s, x) => s + f(x), 0);
 const arred = (n: number) => Math.round(n * 100) / 100;

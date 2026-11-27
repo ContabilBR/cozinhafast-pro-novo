@@ -23,7 +23,7 @@ const FORMAS = [
   { key: "pix", label: "Pix", icon: "qr-code-outline" as const },
   { key: "cartao_credito", label: "Crédito", icon: "card-outline" as const },
   { key: "cartao_debito", label: "Débito", icon: "card-outline" as const },
-  { key: "vale_refeicao", label: "Vale-refeição", icon: "restaurant-outline" as const },
+  { key: "vale_refeicao", label: "Voucher (VR)", icon: "restaurant-outline" as const },
 ];
 
 export default function FecharContaScreen() {

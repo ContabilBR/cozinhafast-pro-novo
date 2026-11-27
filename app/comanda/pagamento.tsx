@@ -16,7 +16,7 @@ const FORMAS = [
   { key: "pix", label: "Pix", icon: "qr-code-outline" },
   { key: "cartao_credito", label: "Crédito", icon: "card-outline" },
   { key: "cartao_debito", label: "Débito", icon: "card-outline" },
-  { key: "vale_refeicao", label: "Vale-refeição", icon: "restaurant-outline" },
+  { key: "vale_refeicao", label: "Voucher (VR)", icon: "restaurant-outline" },
 ];
 
 export default function PagamentoScreen() {

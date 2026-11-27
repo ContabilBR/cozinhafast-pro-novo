@@ -109,7 +109,7 @@ const PAYMENT_FORMS = [
   { key: 'dinheiro', label: 'Dinheiro' },
   { key: 'pix', label: 'Pix' },
   { key: 'cartao_debito', label: 'Cartão de débito' },
-  { key: 'vale_refeicao', label: 'Vale-refeição' },
+  { key: 'vale_refeicao', label: 'Voucher (VR)' },
   { key: 'cartao_credito', label: 'Cartão de crédito' },
 ] as const;
 
