@@ -11,7 +11,7 @@ export type ItemStone = {
 };
 
 const LARGURA_SEPARADOR = 32;
-const LARGURA_ITEM = 30;
+const LARGURA_ITEM = 32;
 
 const ascii = (t: any) => String(t ?? "").normalize("NFC").replace(/[\s]+/g, " ").replace(/[^\x20-\x7e -ÿ]/g, "").trim();
 
@@ -32,7 +32,15 @@ const dataHora = (v: string | Date | null | undefined) => {
 function quebrar(text: string, largura: number): string[] {
   const out: string[] = [];
   let cur = "";
-  for (let word of text.split(" ").filter(Boolean)) {
+  // Número seguido de unidade (ex.: "350 ml") vira uma palavra só na quebra, mantendo o espaço normal
+  const palavras: string[] = [];
+  for (const w of text.split(" ").filter(Boolean)) {
+    const ant = palavras[palavras.length - 1];
+    if (ant !== undefined && /^(ml|l|g|kg|un|cm|mg)$/i.test(w) && /^\d+([.,]\d+)?$/.test(ant)) {
+      palavras[palavras.length - 1] = ant + " " + w;
+    } else palavras.push(w);
+  }
+  for (let word of palavras) {
     while (word.length > largura) {
       if (cur) { out.push(cur); cur = ""; }
       out.push(word.slice(0, largura));
@@ -108,7 +116,7 @@ export function montarCupomStone(params: ReceiptParams): ItemStone[] {
     const pctTxt = (Number.isInteger(pct) ? String(pct) : pct.toFixed(1)).replace(".", ",");
     direita("Gorjeta (" + pctTxt + "%): R$ " + money(params.gorjeta));
   }
-  add("TOTAL: R$ " + money(params.total), "right", "big");
+  add("TOTAL: R$ " + money(params.total), "right", "medium");
   sep();
 
   if (params.divisao && params.divisao.pessoas > 1) {
