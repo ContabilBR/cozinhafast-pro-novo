@@ -19,7 +19,7 @@ export interface FechamentoDia {
   };
   descontos: Bloco; cortesias: Bloco;
   pagamentos: {
-    formas: Record<'dinheiro' | 'pix' | 'cartao_debito' | 'cartao_credito', Forma>;
+    formas: Record<'dinheiro' | 'pix' | 'cartao_debito' | 'cartao_credito', Forma> & { vale_refeicao?: Forma };
     dinheiro_em_caixa: number; comandas_sem_pagamento: number;
     conciliacao: { comandas_pago_menor: number; valor_faltante: number; comandas_pago_maior: number; valor_excedente: number };
   };
@@ -30,7 +30,7 @@ export interface FechamentoDia {
   };
 }
 const FORMAS = [
-  ['dinheiro', 'Dinheiro'], ['pix', 'Pix'], ['cartao_debito', 'Cartão de débito'], ['cartao_credito', 'Cartão de crédito'],
+  ['dinheiro', 'Dinheiro'], ['pix', 'Pix'], ['cartao_debito', 'Cartão de débito'], ['vale_refeicao', 'Vale-refeição'], ['cartao_credito', 'Cartão de crédito'],
 ] as const;
 const soma = <T,>(lista: T[], f: (x: T) => number) => lista.reduce((s, x) => s + f(x), 0);
 const arred = (n: number) => Math.round(n * 100) / 100;
@@ -107,7 +107,7 @@ export function montarFechamento(dias: FechamentoDia[], periodo: Periodo, contex
         d.vendas.desconto_aplicado, d.vendas.total_recebido, d.vendas.comandas_fechadas > 0 ? arred(d.vendas.total_recebido / d.vendas.comandas_fechadas) : 0]),
     });
   }
-  const formas = FORMAS.map(([k, rotulo]) => [rotulo, ...(['quantidade', 'valor_entregue', 'troco', 'valor_liquido'] as const).map(c => v(d => d.pagamentos.formas[k][c]))] as Valor[]);
+  const formas = FORMAS.map(([k, rotulo]) => [rotulo, ...(['quantidade', 'valor_entregue', 'troco', 'valor_liquido'] as const).map(c => v(d => d.pagamentos.formas[k]?.[c] ?? 0))] as Valor[]);
   const pg = comRanking([
     { titulo: 'Forma de pagamento', tipo: 'texto' }, { titulo: 'Quantidade', tipo: 'inteiro', somar: true },
     { titulo: 'Valor entregue', tipo: 'moeda', somar: true }, { titulo: 'Troco', tipo: 'moeda', somar: true },

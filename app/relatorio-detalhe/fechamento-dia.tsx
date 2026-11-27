@@ -32,7 +32,7 @@ interface FechamentoDia {
   descontos: BlocoDesconto;
   cortesias: BlocoDesconto;
   pagamentos: {
-    formas: { dinheiro: Forma; pix: Forma; cartao_debito: Forma; cartao_credito: Forma };
+    formas: { dinheiro: Forma; pix: Forma; cartao_debito: Forma; cartao_credito: Forma; vale_refeicao?: Forma };
     total_liquido: number; dinheiro_em_caixa: number;
     conciliacao: {
       comandas_pago_menor: number; valor_faltante: number;
@@ -54,8 +54,10 @@ const FORMAS = [
   { key: 'dinheiro', label: 'Dinheiro' },
   { key: 'pix', label: 'Pix' },
   { key: 'cartao_debito', label: 'Cartão de débito' },
+  { key: 'vale_refeicao', label: 'Vale-refeição' },
   { key: 'cartao_credito', label: 'Cartão de crédito' },
 ] as const;
+const FORMA_ZERO: Forma = { quantidade: 0, valor_entregue: 0, troco: 0, valor_liquido: 0 };
 
 function hojeNoAparelho() {
   const parts = new Intl.DateTimeFormat('en-US', {
@@ -129,7 +131,8 @@ export default function FechamentoDiaScreen() {
       })
       && !!value.pagamentos && FORMAS.every(({ key }) => {
         const forma = value.pagamentos.formas?.[key];
-        return !!forma && [forma.quantidade, forma.valor_liquido, forma.troco].every(number);
+        if (key === 'vale_refeicao' && forma === undefined) return true;
+        return !!forma &&[forma.quantidade, forma.valor_liquido, forma.troco].every(number);
       })
       && [value.pagamentos.total_liquido, value.pagamentos.dinheiro_em_caixa,
         value.pagamentos.comandas_sem_pagamento, value.pagamentos.conciliacao?.comandas_pago_menor,
@@ -223,7 +226,7 @@ export default function FechamentoDiaScreen() {
       <ReportCard>
         <ReportTitle>Formas de pagamento</ReportTitle>
         {FORMAS.map(({ key, label }) => {
-          const forma = data.pagamentos.formas[key];
+          const forma = data.pagamentos.formas[key] ?? FORMA_ZERO;
           return <Linha key={key} label={label} value={formatCurrency(forma.valor_liquido)}
             note={`${contagem(forma.quantidade, 'pagamento', 'pagamentos')} · Valor líquido${key === 'dinheiro' ? ` · Troco devolvido: ${formatCurrency(forma.troco)}` : ''}`} />;
         })}

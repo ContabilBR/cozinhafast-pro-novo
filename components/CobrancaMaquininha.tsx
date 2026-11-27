@@ -15,13 +15,14 @@ type Props = {
   onValorInvalido: () => void;
 };
 
-// Opção "Cobrar na maquininha": só no Android e para Pix, crédito ou débito
+// Opção "Cobrar na maquininha": só no Android e para Pix, crédito, débito ou vale-refeição.
+// Parcelas só existem no crédito; Pix, débito e vale-refeição são sempre à vista (não enviam parcelas).
 export function CobrancaMaquininha({ comandaId, forma, obterValor, gorjeta, retorno, desabilitado, onValorInvalido }: Props) {
   const COLORS = useColors();
   const [parcelas, setParcelas] = useState(1);
   const [tipoParcelamento, setTipoParcelamento] = useState<"lojista" | "emissor">("lojista");
   const [cobrando, setCobrando] = useState(false);
-  if (Platform.OS !== "android" || !(forma === "pix" || forma === "cartao_credito" || forma === "cartao_debito")) return null;
+  if (Platform.OS !== "android" || !(forma === "pix" || forma === "cartao_credito" || forma === "cartao_debito" || forma === "vale_refeicao")) return null;
 
   const cobrar = async () => {
     const v = obterValor();

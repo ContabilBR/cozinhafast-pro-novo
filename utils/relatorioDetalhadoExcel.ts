@@ -88,7 +88,7 @@ interface FechamentoDia {
   pagamentos: {
     formas: Record<'dinheiro' | 'pix' | 'cartao_debito' | 'cartao_credito', {
       quantidade: number; valor_entregue: number; troco: number; valor_liquido: number;
-    }>;
+    }> & { vale_refeicao?: { quantidade: number; valor_entregue: number; troco: number; valor_liquido: number } };
     total_liquido: number; dinheiro_em_caixa: number; comandas_sem_pagamento: number;
     conciliacao: {
       comandas_pago_menor: number; valor_faltante: number;
@@ -109,6 +109,7 @@ const PAYMENT_FORMS = [
   { key: 'dinheiro', label: 'Dinheiro' },
   { key: 'pix', label: 'Pix' },
   { key: 'cartao_debito', label: 'Cartão de débito' },
+  { key: 'vale_refeicao', label: 'Vale-refeição' },
   { key: 'cartao_credito', label: 'Cartão de crédito' },
 ] as const;
 
@@ -342,6 +343,7 @@ function assertFechamento(data: FechamentoDia): void {
   }
   assertNumbers(data.pagamentos, ['total_liquido', 'dinheiro_em_caixa', 'comandas_sem_pagamento']);
   PAYMENT_FORMS.forEach(({ key }) => {
+    if (key === 'vale_refeicao' && data.pagamentos?.formas?.[key] === undefined) return;
     assertNumbers(data.pagamentos?.formas?.[key], ['quantidade', 'valor_entregue', 'troco', 'valor_liquido']);
   });
   assertNumbers(data.pagamentos?.conciliacao, ['comandas_pago_menor', 'valor_faltante', 'comandas_pago_maior', 'valor_excedente']);
@@ -421,7 +423,7 @@ function fechamentoSheets(data: FechamentoDia, contexto: ContextoExportacao): Sh
     { titulo: 'Troco', tipo: 'moeda', somar: true },
     { titulo: 'Valor líquido', tipo: 'moeda', somar: true },
   ], PAYMENT_FORMS.map(({ key, label }) => {
-    const forma = pagamentos.formas[key];
+    const forma = pagamentos.formas[key] ?? { quantidade: 0, valor_entregue: 0, troco: 0, valor_liquido: 0 };
     return [label, forma.quantidade, forma.valor_entregue, forma.troco, forma.valor_liquido];
   })));
 
