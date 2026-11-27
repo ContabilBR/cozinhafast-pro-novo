@@ -34,7 +34,7 @@ export function registerPagamentoRoutes(app: App) {
         body: {
           type: "object",
           properties: {
-            forma_pagamento: { type: "string", enum: ["pix", "dinheiro", "cartao_credito", "cartao_debito"] },
+            forma_pagamento: { type: "string", enum: ["pix", "dinheiro", "cartao_credito", "cartao_debito", "vale_refeicao"] },
             valor: { type: "number", minimum: 0.01 },
             troco: { type: "number", minimum: 0 },
             referencia: { type: "string" },
@@ -70,6 +70,9 @@ export function registerPagamentoRoutes(app: App) {
           }
           if (troco !== undefined && (!isFinite(troco) || troco < 0)) {
             return { status: 400, body: { error: "O troco deve ser um número maior ou igual a zero." } };
+          }
+          if (forma_pagamento === "vale_refeicao" && troco !== undefined && troco > 0) {
+            return { status: 400, body: { error: "Vale-refeição não tem troco." } };
           }
           const _gorjetaCheck = (request.body as any).gorjeta;
           if (_gorjetaCheck !== undefined && (!isFinite(_gorjetaCheck) || _gorjetaCheck < 0)) {

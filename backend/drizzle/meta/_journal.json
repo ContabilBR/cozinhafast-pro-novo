@@ -442,6 +442,13 @@
       "when": 1795211554285,
       "tag": "20261120215234_lying_mulholland_black",
       "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1795748008411,
+      "tag": "20261127025328_forma_pagamento_vale_refeicao",
+      "breakpoints": true
     }
   ]
 }

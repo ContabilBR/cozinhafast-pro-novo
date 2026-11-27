@@ -44,7 +44,7 @@ export interface ItemFiscal {
 }
 
 export interface FormaPagamentoBanco {
-  formaPagamento: 'pix' | 'dinheiro' | 'cartao_credito' | 'cartao_debito';
+  formaPagamento: 'pix' | 'dinheiro' | 'cartao_credito' | 'cartao_debito' | 'vale_refeicao';
   valor: number;
 }
 
@@ -131,12 +131,13 @@ export function validarRestauranteParaNfce(restaurante: Partial<RestauranteInput
 /**
  * Map payment form strings to SEFAZ codes
  */
-export function mapearFormaPagamento(forma: 'dinheiro' | 'cartao_credito' | 'cartao_debito' | 'pix'): string {
+export function mapearFormaPagamento(forma: 'dinheiro' | 'cartao_credito' | 'cartao_debito' | 'pix' | 'vale_refeicao'): string {
   const mapeamento: Record<string, string> = {
     dinheiro: '01',
     cartao_credito: '03',
     cartao_debito: '04',
     pix: '17',
+    vale_refeicao: '11',
   };
 
   if (!mapeamento[forma]) {

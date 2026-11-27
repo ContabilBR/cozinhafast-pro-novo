@@ -12,16 +12,18 @@ const NOME = "stone_deeplink";
 const MAX_PARCELAS = 12;
 
 // Vocabulário gravado na tabela (e enviado à Stone em maiúsculas pelo app)
-const TIPO_TRANSACAO: Record<FormaTerminal, "credit" | "debit" | "pix"> = {
+const TIPO_TRANSACAO: Record<FormaTerminal, "credit" | "debit" | "pix" | "voucher"> = {
   cartao_credito: "credit",
   cartao_debito: "debit",
   pix: "pix",
+  vale_refeicao: "voucher",
 };
 
 const FORMA_PAGAMENTO: Record<string, FormaTerminal> = {
   credit: "cartao_credito",
   debit: "cartao_debito",
   pix: "pix",
+  voucher: "vale_refeicao",
 };
 
 export const stoneDeeplink: ProvedorTerminal = {
@@ -31,7 +33,7 @@ export const stoneDeeplink: ProvedorTerminal = {
 
   traduzirCobranca({ forma_pagamento, parcelas, tipo_parcelamento }): ResultadoTraducao {
     const tipoTransacao = TIPO_TRANSACAO[forma_pagamento];
-    // Parcelamento só existe no crédito. Débito e Pix seguem sem parcelas.
+    // Parcelamento só existe no crédito. Débito, Pix e vale-refeição seguem sem parcelas.
     if (forma_pagamento !== "cartao_credito") {
       if ((parcelas !== undefined && parcelas > 1) || tipo_parcelamento !== undefined) {
         return { ok: false, erro: "Parcelamento só é permitido no cartão de crédito." };

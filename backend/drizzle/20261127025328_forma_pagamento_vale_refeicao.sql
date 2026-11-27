@@ -1,0 +1,1 @@
+ALTER TYPE "public"."forma_pagamento" ADD VALUE IF NOT EXISTS 'vale_refeicao';

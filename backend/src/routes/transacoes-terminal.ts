@@ -119,7 +119,7 @@ export function registerTransacoesTerminalRoutes(app: App) {
         body: {
           type: "object",
           properties: {
-            forma_pagamento: { type: "string", enum: ["cartao_credito", "cartao_debito", "pix"] },
+            forma_pagamento: { type: "string", enum: ["cartao_credito", "cartao_debito", "pix", "vale_refeicao"] },
             valor: { type: "number", minimum: 0.01 },
             parcelas: { type: "integer", minimum: 1, maximum: maxParcelasSchema },
             tipo_parcelamento: { type: "string", enum: ["lojista", "emissor"] },

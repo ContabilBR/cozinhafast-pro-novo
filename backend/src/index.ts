@@ -32,7 +32,7 @@ import { registerTransacoesTerminalRoutes } from './routes/transacoes-terminal.j
 import { registerMensagensContatoRoutes } from './routes/mensagens-contato.js';
 import { registerRenovacaoDeImagens } from './utils/imagem-assinada.js';
 import { enableSelectRetry } from './db/withRetry.js';
-import { garantirColunasDeCancelamento, garantirColunasDeModoComanda, garantirColunasContinuasDeDesconto, backfillQrTokens, garantirTabelaReservas, garantirTabelaTransacoesTerminal, garantirTabelaMensagensContato, garantirIndiceUnicoPratoInsumos } from './db/ensure-schema.js';
+import { garantirColunasDeCancelamento, garantirColunasDeModoComanda, garantirColunasContinuasDeDesconto, backfillQrTokens, garantirTabelaReservas, garantirTabelaTransacoesTerminal, garantirTabelaMensagensContato, garantirIndiceUnicoPratoInsumos, garantirFormaPagamentoValeRefeicao } from './db/ensure-schema.js';
 import { garantirRestauranteIdTexto } from './db/ensure-restaurante-id.js';
 import { garantirPontoInicialHistoricoCusto } from './db/historico-custo.js';
 import { garantirCustoInicialDasFichas } from './db/historico-custo-ficha.js';
@@ -126,6 +126,13 @@ try {
 } catch (error) {
   app.logger.error({ err: error }, 'Failed to ensure prato_insumos unique index');
   // Don't exit - this is not critical
+}
+
+// Garante o valor vale_refeicao no tipo forma_pagamento (idempotente)
+try {
+  await garantirFormaPagamentoValeRefeicao(app);
+} catch (error) {
+  app.logger.error({ err: error }, 'Failed to ensure vale_refeicao payment form');
 }
 
 // Ponto inicial do histórico de custo dos insumos (idempotente; só insere o que falta)
