@@ -1,5 +1,6 @@
 import { MOTIVOS_DESCONTO } from '@/utils/desconto';
 import { apiGet } from '@/utils/api';
+import { ROTULO_FORMA } from '@/utils/formasPagamento';
 import { comRanking, dataHoraBrasil, dataBR } from './definicao';
 import type { Contexto, Indicador, Periodo, RelatorioDef, TabelaDef, Valor } from './definicao';
 import { diasDoPeriodo, hojeNoAparelho } from './periodo';
@@ -30,7 +31,7 @@ export interface FechamentoDia {
   };
 }
 const FORMAS = [
-  ['dinheiro', 'Dinheiro'], ['pix', 'Pix'], ['cartao_debito', 'Cartão de débito'], ['vale_refeicao', 'Voucher (VR)'], ['cartao_credito', 'Cartão de crédito'],
+  ['dinheiro', ROTULO_FORMA.dinheiro], ['pix', ROTULO_FORMA.pix], ['cartao_debito', ROTULO_FORMA.cartao_debito], ['vale_refeicao', ROTULO_FORMA.vale_refeicao], ['cartao_credito', ROTULO_FORMA.cartao_credito],
 ] as const;
 const soma = <T,>(lista: T[], f: (x: T) => number) => lista.reduce((s, x) => s + f(x), 0);
 const arred = (n: number) => Math.round(n * 100) / 100;

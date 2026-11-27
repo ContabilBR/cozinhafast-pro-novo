@@ -11,13 +11,8 @@ import { formatCurrency } from "@/utils/helpers";
 import { CampoMoeda } from "@/components/CampoMoeda";
 import { CobrancaMaquininha } from "@/components/CobrancaMaquininha";
 
-const FORMAS = [
-  { key: "dinheiro", label: "Dinheiro", icon: "cash-outline" },
-  { key: "pix", label: "Pix", icon: "qr-code-outline" },
-  { key: "cartao_credito", label: "Crédito", icon: "card-outline" },
-  { key: "cartao_debito", label: "Débito", icon: "card-outline" },
-  { key: "vale_refeicao", label: "Voucher (VR)", icon: "restaurant-outline" },
-];
+import { SeletorFormaPagamento } from "@/components/SeletorFormaPagamento";
+import { rotuloForma } from "@/utils/formasPagamento";
 
 export default function PagamentoScreen() {
   const COLORS = useColors();
@@ -60,7 +55,7 @@ export default function PagamentoScreen() {
         forma_pagamento: forma, valor: v, troco: forma === "dinheiro" ? parseFloat(troco.replace(",", ".")) || 0 : 0,
       });
       console.log("[PagamentoScreen] Payment registered:", res);
-      const formaLabel = FORMAS.find(f => f.key === forma)?.label;
+      const formaLabel = rotuloForma(forma);
       if (res?.comanda_fechada) {
         // O servidor fechou a comanda junto com o pagamento que quitou a conta: a mesa já foi liberada
         Alert.alert("Conta paga e encerrada", formatCurrency(v) + " em " + formaLabel + ". A mesa foi liberada.", [{ text: "OK", onPress: () => router.dismissAll() }]);
@@ -97,14 +92,7 @@ export default function PagamentoScreen() {
         </View>
 
         <Text style={{ fontSize: 12, fontWeight: "600", color: COLORS.primary, marginBottom: 10, textTransform: "uppercase", letterSpacing: 0.5 }}>Forma de pagamento</Text>
-        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
-          {FORMAS.map(f => (
-            <Pressable key={f.key} onPress={() => { console.log("[PagamentoScreen] Payment method selected:", f.key); setForma(f.key); }} style={{ flex: 1, minWidth: "45%", backgroundColor: forma === f.key ? COLORS.primary : COLORS.surface, borderRadius: 12, padding: 14, alignItems: "center", borderWidth: 0.5, borderColor: forma === f.key ? COLORS.primary : COLORS.surfaceSecondary }}>
-              <Ionicons name={f.icon as any} size={24} color={forma === f.key ? "white" : COLORS.textSecondary} />
-              <Text style={{ fontSize: 13, fontWeight: "500", color: forma === f.key ? "white" : COLORS.text, marginTop: 6 }}>{f.label}</Text>
-            </Pressable>
-          ))}
-        </View>
+        <SeletorFormaPagamento forma={forma} onChange={(k) => { console.log("[PagamentoScreen] Payment method selected:", k); setForma(k); }} />
 
         <Text style={{ fontSize: 12, fontWeight: "600", color: COLORS.primary, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>Valor</Text>
         <CampoMoeda value={valor} onChangeText={setValor} placeholder="0,00" placeholderTextColor={COLORS.textTertiary} style={{ ...inputStyle, marginBottom: 12, fontSize: 24, textAlign: "center", fontWeight: "600" }} />
@@ -119,7 +107,7 @@ export default function PagamentoScreen() {
             <Text style={{ fontSize: 12, fontWeight: "600", color: COLORS.primary, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>Pagamentos anteriores</Text>
             {pagamentos.map((p: any, i: number) => (
               <View key={p.id || i} style={{ flexDirection: "row", justifyContent: "space-between", paddingVertical: 6 }}>
-                <Text style={{ fontSize: 13, color: COLORS.textSecondary }}>{p.formaPagamento || p.forma_pagamento}</Text>
+                <Text style={{ fontSize: 13, color: COLORS.textSecondary }}>{rotuloForma(p.formaPagamento || p.forma_pagamento)}</Text>
                 <Text style={{ fontSize: 13, color: p.status === "confirmado" ? "#22C55E" : "#F59E0B", fontWeight: "500" }}>{formatCurrency(parseFloat(p.valor))} {p.status === "pendente" ? "(pendente)" : ""}</Text>
               </View>
             ))}

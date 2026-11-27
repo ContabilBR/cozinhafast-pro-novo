@@ -2,6 +2,7 @@ import * as XLSX from 'xlsx';
 import { apiGet } from '@/utils/api';
 import { aguardarTodas } from '@/utils/promessasSettled';
 import { MOTIVOS_DESCONTO } from '@/utils/desconto';
+import { ROTULO_FORMA } from '@/utils/formasPagamento';
 import {
   FORMATOS, Planilha, Valor, celulaInteiro, celulaMoeda, dataBR, dataHoraBrasil,
   montarResumo, montarTabela, registrarTitulosImpressao,
@@ -106,11 +107,11 @@ interface FechamentoDia {
 }
 
 const PAYMENT_FORMS = [
-  { key: 'dinheiro', label: 'Dinheiro' },
-  { key: 'pix', label: 'Pix' },
-  { key: 'cartao_debito', label: 'Cartão de débito' },
-  { key: 'vale_refeicao', label: 'Voucher (VR)' },
-  { key: 'cartao_credito', label: 'Cartão de crédito' },
+  { key: 'dinheiro', label: ROTULO_FORMA.dinheiro },
+  { key: 'pix', label: ROTULO_FORMA.pix },
+  { key: 'cartao_debito', label: ROTULO_FORMA.cartao_debito },
+  { key: 'vale_refeicao', label: ROTULO_FORMA.vale_refeicao },
+  { key: 'cartao_credito', label: ROTULO_FORMA.cartao_credito },
 ] as const;
 
 type Cell = string | number | null | XLSX.CellObject;

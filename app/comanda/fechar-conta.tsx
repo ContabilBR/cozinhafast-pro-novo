@@ -18,13 +18,8 @@ import { CobrancaMaquininha } from "@/components/CobrancaMaquininha";
 const ETAPAS = ["resumo", "gorjeta", "divisao", "pagamento"] as const;
 type Etapa = typeof ETAPAS[number];
 
-const FORMAS = [
-  { key: "dinheiro", label: "Dinheiro", icon: "cash-outline" as const },
-  { key: "pix", label: "Pix", icon: "qr-code-outline" as const },
-  { key: "cartao_credito", label: "Crédito", icon: "card-outline" as const },
-  { key: "cartao_debito", label: "Débito", icon: "card-outline" as const },
-  { key: "vale_refeicao", label: "Voucher (VR)", icon: "restaurant-outline" as const },
-];
+import { SeletorFormaPagamento } from "@/components/SeletorFormaPagamento";
+import { rotuloForma } from "@/utils/formasPagamento";
 
 export default function FecharContaScreen() {
   const COLORS = useColors();
@@ -404,16 +399,9 @@ export default function FecharContaScreen() {
           </View>
           {semCobranca ? avisoSemCobranca : (<>
           <Text style={labelStyle}>Forma de pagamento</Text>
-          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
-            {FORMAS.map((f) => (
-              <Pressable key={f.key} onPress={() => setForma(f.key)} style={{ flex: 1, minWidth: "45%", backgroundColor: forma === f.key ? COLORS.primary : COLORS.surface, borderRadius: 12, padding: 14, alignItems: "center", borderWidth: 0.5, borderColor: forma === f.key ? COLORS.primary : COLORS.surfaceSecondary }}>
-                <Ionicons name={f.icon} size={24} color={forma === f.key ? "white" : COLORS.textSecondary} />
-                <Text style={{ fontSize: 13, fontWeight: "500", color: forma === f.key ? "white" : COLORS.text, marginTop: 6 }}>{f.label}</Text>
-              </Pressable>
-            ))}
-          </View>
+          <SeletorFormaPagamento forma={forma} onChange={setForma} />
           {forma === "dinheiro" && (<><Text style={labelStyle}>Troco para (R$)</Text><CampoMoeda value={trocoInput} onChangeText={setTrocoInput} placeholder="0,00" placeholderTextColor={COLORS.textTertiary} style={{ backgroundColor: COLORS.surface, borderRadius: 10, borderWidth: 0.5, borderColor: COLORS.surfaceSecondary, padding: 12, fontSize: 16, color: COLORS.text, marginBottom: 16 }} /></>)}
-          {pagamentos.length > 0 && <View style={{ ...cardStyle, marginBottom: 16 }}><Text style={labelStyle}>Pagamentos registrados</Text>{pagamentos.map((p: any, i: number) => (<View key={p.id || i} style={{ flexDirection: "row", justifyContent: "space-between", paddingVertical: 4 }}><Text style={{ fontSize: 13, color: COLORS.textSecondary }}>{p.formaPagamento || p.forma_pagamento}</Text><Text style={{ fontSize: 13, color: p.status === "confirmado" ? "#22C55E" : "#F59E0B", fontWeight: "500" }}>{formatCurrency(parseFloat(p.valor))} {p.status === "pendente" ? "(pendente)" : "✓"}</Text></View>))}</View>}
+          {pagamentos.length > 0 && <View style={{ ...cardStyle, marginBottom: 16 }}><Text style={labelStyle}>Pagamentos registrados</Text>{pagamentos.map((p: any, i: number) => (<View key={p.id || i} style={{ flexDirection: "row", justifyContent: "space-between", paddingVertical: 4 }}><Text style={{ fontSize: 13, color: COLORS.textSecondary }}>{rotuloForma(p.formaPagamento || p.forma_pagamento)}</Text><Text style={{ fontSize: 13, color: p.status === "confirmado" ? "#22C55E" : "#F59E0B", fontWeight: "500" }}>{formatCurrency(parseFloat(p.valor))} {p.status === "pendente" ? "(pendente)" : "✓"}</Text></View>))}</View>}
           <CobrancaMaquininha
             comandaId={String(id)}
             forma={forma}

@@ -7,6 +7,7 @@ import { useColors } from '@/hooks/useColors';
 import { apiGet } from '@/utils/api';
 import { formatCurrency } from '@/utils/helpers';
 import { MOTIVOS_CANCELAMENTO } from '@/utils/cancelamento';
+import { rotuloForma } from '@/utils/formasPagamento';
 
 type StatusComanda = 'aberta' | 'fechada' | 'cancelada';
 
@@ -72,14 +73,6 @@ const STATUS_ITEM: Record<string, string> = {
   pronto: 'Pronto',
   entregue: 'Entregue',
   cancelado: 'Cancelado',
-};
-
-const FORMAS: Record<string, string> = {
-  pix: 'Pix',
-  dinheiro: 'Dinheiro',
-  cartao_credito: 'Cartão de crédito',
-  cartao_debito: 'Cartão de débito',
-  vale_refeicao: 'Voucher (VR)',
 };
 
 const STATUS_PAGAMENTO: Record<string, string> = {
@@ -359,7 +352,7 @@ export default function ComandaDiaScreen() {
                 style={{ paddingVertical: 8, borderTopWidth: idx === 0 ? 0 : 1, borderTopColor: COLORS.surfaceSecondary }}
               >
                 <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 12 }}>
-                  <Text style={valorTxt}>{FORMAS[p.forma_pagamento] ?? p.forma_pagamento}</Text>
+                  <Text style={valorTxt}>{rotuloForma(p.forma_pagamento)}</Text>
                   <Text style={valorTxt}>{formatCurrency(p.valor)}</Text>
                 </View>
                 <Text style={[rotuloTxt, { fontSize: 13 }]}>
