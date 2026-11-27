@@ -29,7 +29,7 @@ export const pedidoStatusEnum = pgEnum("pedido_status", [
   "entregue",
   "cancelado",
 ]);
-export const formaPagamentoEnum = pgEnum("forma_pagamento", ["pix", "dinheiro", "cartao_credito", "cartao_debito"]);
+export const formaPagamentoEnum = pgEnum("forma_pagamento", ["pix", "dinheiro", "cartao_credito", "cartao_debito", "vale_refeicao"]);
 export const pagamentoStatusEnum = pgEnum("pagamento_status", ["pendente", "confirmado", "cancelado"]);
 export const nfceStatusEnum = pgEnum("nfce_status", ["pendente", "processando", "autorizada", "rejeitada", "cancelada", "erro"]);
 export const unidadeMedidaEnum = pgEnum("unidade_medida", ["kg", "g", "l", "ml", "un", "cx", "pct", "dz"]);

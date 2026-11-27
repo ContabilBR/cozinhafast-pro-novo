@@ -1,7 +1,7 @@
 // Camada comum (neutra) dos provedores de maquininha.
 // Cada provedor tem um adaptador que implementa ProvedorTerminal; as rotas só falam com esta interface.
 
-export type FormaTerminal = "cartao_credito" | "cartao_debito" | "pix";
+export type FormaTerminal = "cartao_credito" | "cartao_debito" | "pix" | "vale_refeicao";
 
 // "aparelho": o app abre o app de pagamento instalado no aparelho e devolve o resultado ao backend.
 // "nuvem": o backend manda a cobrança ao provedor e recebe o resultado por webhook/consulta.

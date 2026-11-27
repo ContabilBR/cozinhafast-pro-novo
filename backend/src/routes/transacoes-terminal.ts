@@ -119,7 +119,7 @@ export function registerTransacoesTerminalRoutes(app: App) {
         body: {
           type: "object",
           properties: {
-            forma_pagamento: { type: "string", enum: ["cartao_credito", "cartao_debito", "pix"] },
+            forma_pagamento: { type: "string", enum: ["cartao_credito", "cartao_debito", "pix", "vale_refeicao"] },
             valor: { type: "number", minimum: 0.01 },
             parcelas: { type: "integer", minimum: 1, maximum: maxParcelasSchema },
             tipo_parcelamento: { type: "string", enum: ["lojista", "emissor"] },
@@ -343,6 +343,7 @@ export function registerTransacoesTerminalRoutes(app: App) {
             .select({
               id: schema.comandas.id,
               status: schema.comandas.status,
+              gorjeta: schema.comandas.gorjeta,
               descontoTipo: schema.comandas.descontoTipo,
               descontoValor: schema.comandas.descontoValor,
             })
@@ -377,8 +378,10 @@ export function registerTransacoesTerminalRoutes(app: App) {
               .where(and(eq(schema.pagamentos.comandaId, t.comandaId), eq(schema.pagamentos.status, "confirmado")));
             const totalPago = pagos.reduce((s: number, p: any) => s + parseFloat(p.valor), 0);
             const subtotal = await subtotalDaComanda(tx, t.comandaId);
-            // A gorjeta só entra no fechamento; aqui "quitada" considera subtotal e desconto.
-            const { total: totalComanda } = calcularTotalComandaMesaComDesconto(subtotal, 0, comanda[0].descontoTipo, comanda[0].descontoValor);
+            // O app grava a gorjeta na comanda antes de abrir a maquininha e o valor cobrado já a inclui;
+            // aqui "quitada" considera subtotal, desconto e a gorjeta gravada.
+            const gorjetaGravada = parseFloat(String(comanda[0].gorjeta ?? "0")) || 0;
+            const { total: totalComanda } = calcularTotalComandaMesaComDesconto(subtotal, gorjetaGravada,comanda[0].descontoTipo, comanda[0].descontoValor);
             const restante = arredondar(totalComanda - totalPago);
             resumo = {
               total_comanda: totalComanda,

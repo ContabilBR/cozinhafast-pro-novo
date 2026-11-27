@@ -734,3 +734,25 @@ export async function garantirIndiceUnicoPratoInsumos(app: App): Promise<void> {
     // Não lança: a subida continua
   }
 }
+
+/**
+ * Garante o valor 'vale_refeicao' no tipo enumerado forma_pagamento (idempotente).
+ * Só acrescenta o valor se ainda não existir; nunca apaga nem altera registros.
+ * Não lança erro: se falhar, registra o código SQLSTATE e a subida continua.
+ */
+export async function garantirFormaPagamentoValeRefeicao(app: App): Promise<void> {
+  const db = app.db as any;
+
+  try {
+    await db.execute(
+      sql.raw(`ALTER TYPE "forma_pagamento" ADD VALUE IF NOT EXISTS 'vale_refeicao'`)
+    );
+  } catch (err) {
+    const sqlstate = (err as any)?.cause?.code || (err as any)?.code || "UNKNOWN";
+    app.logger.warn(
+      { codigo: sqlstate, mensagem: "Falha ao garantir o valor vale_refeicao em forma_pagamento" },
+      "Ensure forma_pagamento vale_refeicao"
+    );
+    // Não lança: a subida continua
+  }
+}
