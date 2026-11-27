@@ -2023,7 +2023,7 @@ LIMIT 5
                 items: {
                   type: "object",
                   properties: {
-                    forma: { type: "string", enum: ["pix", "dinheiro", "cartao_credito", "cartao_debito"] },
+                    forma: { type: "string", enum: ["pix", "dinheiro", "cartao_credito", "cartao_debito", "vale_refeicao"] },
                     valor_recebido: { type: "number" },
                     quantidade_pagamentos: { type: "integer" },
                     percentual: { type: "number" },
@@ -2222,6 +2222,8 @@ LIMIT 5
               COALESCE((SELECT quantidade FROM formas_agg WHERE forma = 'cartao_credito'), 0) AS credito_qtd,
               COALESCE((SELECT valor_recebido FROM formas_agg WHERE forma = 'cartao_debito'), 0) AS debito_valor,
               COALESCE((SELECT quantidade FROM formas_agg WHERE forma = 'cartao_debito'), 0) AS debito_qtd,
+              COALESCE((SELECT valor_recebido FROM formas_agg WHERE forma = 'vale_refeicao'), 0) AS vale_refeicao_valor,
+              COALESCE((SELECT quantidade FROM formas_agg WHERE forma = 'vale_refeicao'), 0) AS vale_refeicao_qtd,
               COALESCE(SUM(valor_recebido), 0) AS total_recebido
             FROM formas_agg
           `
@@ -2418,7 +2420,7 @@ LIMIT 5
         });
 
         // Build payment methods data
-        const formas = ["pix", "dinheiro", "cartao_credito", "cartao_debito"];
+        const formas = ["pix", "dinheiro", "cartao_credito", "cartao_debito", "vale_refeicao"];
         const formasMap = new Map<string, { valor_recebido: number; quantidade_pagamentos: number; troco: number }>();
         for (const forma of formas) {
           formasMap.set(forma, { valor_recebido: 0, quantidade_pagamentos: 0, troco: 0 });
@@ -2445,6 +2447,11 @@ LIMIT 5
           formasMap.set("cartao_debito", {
             valor_recebido: parseFloat(String(row.debito_valor || 0)),
             quantidade_pagamentos: parseInt(String(row.debito_qtd || 0)) || 0,
+            troco: 0,
+          });
+          formasMap.set("vale_refeicao", {
+            valor_recebido: parseFloat(String(row.vale_refeicao_valor || 0)),
+            quantidade_pagamentos: parseInt(String(row.vale_refeicao_qtd || 0)) || 0,
             troco: 0,
           });
           totalRecebido = parseFloat(String(row.total_recebido || 0));
@@ -3834,6 +3841,7 @@ LIMIT 5
                       dinheiro: { type: "object", properties: { quantidade: { type: "integer" }, valor_entregue: { type: "number" }, troco: { type: "number" }, valor_liquido: { type: "number" } } },
                       pix: { type: "object", properties: { quantidade: { type: "integer" }, valor_entregue: { type: "number" }, troco: { type: "number" }, valor_liquido: { type: "number" } } },
                       cartao_debito: { type: "object", properties: { quantidade: { type: "integer" }, valor_entregue: { type: "number" }, troco: { type: "number" }, valor_liquido: { type: "number" } } },
+                      vale_refeicao: { type: "object", properties: { quantidade: { type: "integer" }, valor_entregue: { type: "number" }, troco: { type: "number" }, valor_liquido: { type: "number" } } },
                       cartao_credito: { type: "object", properties: { quantidade: { type: "integer" }, valor_entregue: { type: "number" }, troco: { type: "number" }, valor_liquido: { type: "number" } } },
                     },
                   },
@@ -4150,6 +4158,7 @@ LIMIT 5
         formasMap.set("pix", { quantidade: 0, valor_entregue: 0, troco: 0 });
         formasMap.set("cartao_debito", { quantidade: 0, valor_entregue: 0, troco: 0 });
         formasMap.set("cartao_credito", { quantidade: 0, valor_entregue: 0, troco: 0 });
+        formasMap.set("vale_refeicao", { quantidade: 0, valor_entregue: 0, troco: 0 });
 
         for (const row of pagamentosResult) {
           const forma = row.forma || "pix";
@@ -4385,6 +4394,12 @@ LIMIT 5
                 valor_entregue: Number(Number((formasMap.get("cartao_debito")?.valor_entregue || 0)).toFixed(2)),
                 troco: Number(Number((formasMap.get("cartao_debito")?.troco || 0)).toFixed(2)),
                 valor_liquido: Number(Number(((formasMap.get("cartao_debito")?.valor_entregue || 0) - (formasMap.get("cartao_debito")?.troco || 0))).toFixed(2)),
+              },
+              vale_refeicao: {
+                quantidade: formasMap.get("vale_refeicao")?.quantidade || 0,
+                valor_entregue: Number(Number((formasMap.get("vale_refeicao")?.valor_entregue || 0)).toFixed(2)),
+                troco: Number(Number((formasMap.get("vale_refeicao")?.troco || 0)).toFixed(2)),
+                valor_liquido: Number(Number(((formasMap.get("vale_refeicao")?.valor_entregue || 0) - (formasMap.get("vale_refeicao")?.troco || 0))).toFixed(2)),
               },
               cartao_credito: {
                 quantidade: formasMap.get("cartao_credito")?.quantidade || 0,
